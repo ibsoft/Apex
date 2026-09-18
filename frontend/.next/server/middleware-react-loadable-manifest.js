@@ -1,0 +1,1 @@
+self.__REACT_LOADABLE_MANIFEST="{\"components/ApexHeroOrb.tsx -> ./ApexCore3D\":{\"id\":\"components/ApexHeroOrb.tsx -> ./ApexCore3D\",\"files\":[\"static/chunks/_app-pages-browser_components_ApexCore3D_jsx.js\"]}}"

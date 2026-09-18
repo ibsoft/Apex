@@ -1,0 +1,40 @@
+# APEX - Flask backend (gunicorn)
+#
+# Templated by deploy/install-services.sh: __ROOT__, __USER__, __GROUP__,
+# __GUNBIN__ are replaced with the real paths before installation.
+#
+# Application configuration (OpenAI OAuth, keys, DEV_MODE, wake word, ...) is
+# read from backend/.env at boot (python-dotenv), plus an optional
+# /etc/apex/backend.env override. No secrets belong in this file.
+
+[Unit]
+Description=APEX assistant - Flask backend (gunicorn)
+Documentation=file://__ROOT__/docs/linux-services.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__ROOT__/backend
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/apex/backend.env
+
+# 2 workers x 8 threads handles long SSE chat streams without blocking.
+# --timeout is large because Ollama-on-CPU turns can legitimately take minutes.
+ExecStart=__GUNBIN__ --workers 2 --threads 8 --worker-class gthread \
+  --timeout 600 --keep-alive 5 --capture-output \
+  --access-logfile - --error-logfile - \
+  --bind 127.0.0.1:5001 \
+  --chdir __ROOT__/backend \
+  "app:create_app()"
+
+Restart=on-failure
+RestartSec=3
+
+# A single reasonable/nice cap; remove or raise for heavier use.
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

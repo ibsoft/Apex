@@ -1,0 +1,10 @@
+flask>=3.0
+openai>=1.60
+chromadb>=0.5
+requests>=2.32
+PyJWT>=2.9
+python-dotenv>=1.0
+openai-agents>=0.1.0
+langgraph>=0.2.60
+langchain-openai>=0.2.14
+gunicorn>=22.0
