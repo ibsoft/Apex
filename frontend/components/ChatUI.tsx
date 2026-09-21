@@ -8,7 +8,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useApex, Message } from "./ApexProvider";
-import { api } from "../lib/api";
+import { api, BASE } from "../lib/api";
 
 const C = {
   cyan: "#00e5ff",
@@ -80,7 +80,7 @@ function InlineImage({ src, alt }: { src: string; alt: string }) {
 
 function renderRichText(text: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const regex = /(!\[([^\]]*)\]\(([^)]+)\))|(https?:\/\/[^\s<>"{}|\\^`[\]]+)/g;
+  const regex = /(!?)\[((?:\\.|[^\]\\])*)\]\((https?:\/\/[^\s)]+|\/api\/files\/download\/[A-Za-z0-9_.-]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/files\/download\/[A-Za-z0-9_.-]+)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
@@ -92,28 +92,24 @@ function renderRichText(text: string): React.ReactNode[] {
       );
     }
     const full = match[0];
-    const mdAlt = match[2];
-    const mdUrl = match[3];
-    const plainUrl = match[4];
-    const url = mdUrl || plainUrl;
-    if (mdUrl) {
-      nodes.push(
-        <InlineImage key={`img-${match.index}`} src={mdUrl} alt={mdAlt || "image"} />
-      );
-    } else if (plainUrl && isImageUrl(plainUrl)) {
-      nodes.push(
-        <InlineImage key={`img-${match.index}`} src={plainUrl} alt="image" />
-      );
-    } else if (plainUrl) {
+    const label = match[2]?.replace(/\\([\\\[\]])/g, "$1");
+    const url = match[3] || match[4] || match[5];
+    const isDownload = url.startsWith("/api/files/download/");
+    if (!isDownload && (match[1] === "!" || (!match[3] && isImageUrl(url)))) {
+      nodes.push(<InlineImage key={`img-${match.index}`} src={url} alt={label || "image"} />);
+    } else {
+      const base = BASE.replace(/\/$/, "");
+      const href = isDownload ? `${base.endsWith("/api") ? base.slice(0, -4) : base}${url}` : url;
       nodes.push(
         <a
           key={`a-${match.index}`}
-          href={plainUrl}
-          target="_blank"
+          href={href}
+          download={isDownload || undefined}
+          target={isDownload ? undefined : "_blank"}
           rel="noopener noreferrer"
-          style={{ color: C.cyan, textDecoration: "underline" }}
+          style={{ color: C.cyan, textDecoration: "underline", overflowWrap: "anywhere" }}
         >
-          {plainUrl}
+          {label || (isDownload ? "Download file" : url)}
         </a>
       );
     }

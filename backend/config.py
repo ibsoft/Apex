@@ -37,6 +37,8 @@ class Config:
     DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
     DB_PATH = Path(os.getenv("DB_PATH", DATA_DIR / "apex.db"))
     CHROMA_DIR = str(DATA_DIR / "chroma")
+    # Colon-separated search roots; OS permissions are always respected.
+    FILE_SEARCH_ROOTS = os.getenv("FILE_SEARCH_ROOTS", "/")
 
     # --- OpenAI OAuth (Sign in with ChatGPT / OpenAI) ----------------------
     # Register an OAuth app at https://platform.openai.com -> Apps -> OAuth.
