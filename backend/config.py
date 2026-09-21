@@ -74,9 +74,25 @@ class Config:
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
     # Model used when the user logged in with a ChatGPT subscription token.
     CHATGPT_MODEL = os.getenv("CHATGPT_MODEL", "gpt-5-codex")
+    # Model used by the "code" skill when no runtime/user model is selected.
+    CODE_MODEL = os.getenv("CODE_MODEL", CHATGPT_MODEL)
     # Tools that need special permission (only enabled via env).
     ENABLE_RUN_PYTHON = _bool("ENABLE_RUN_PYTHON", False)
+    ENABLE_RUN_SHELL = _bool("ENABLE_RUN_SHELL", False)
+    RUN_SHELL_TIMEOUT = _int("RUN_SHELL_TIMEOUT", 60)
     MAX_TOOL_STEPS = _int("MAX_TOOL_STEPS", 12)
+
+    # --- Web search --------------------------------------------------------
+    # These are configurable so the search tool does not rely on hardcoded
+    # endpoints. Defaults use DuckDuckGo's HTML form endpoint.
+    WEB_SEARCH_ENGINE = os.getenv("WEB_SEARCH_ENGINE", "duckduckgo").strip().lower()
+    WEB_SEARCH_DDG_URL = os.getenv("WEB_SEARCH_DDG_URL", "https://html.duckduckgo.com/html/")
+    WEB_SEARCH_DDG_REGION = os.getenv("WEB_SEARCH_DDG_REGION", "us-en")
+    WEB_SEARCH_TIMEOUT = _int("WEB_SEARCH_TIMEOUT", 20)
+    WEB_SEARCH_USER_AGENT = os.getenv(
+        "WEB_SEARCH_USER_AGENT",
+        "Mozilla/5.0 (X11; Linux x86_64) APEX-assistant/1.0",
+    )
 
     # --- Voice assistant ---------------------------------------------------
     WAKE_WORD = os.getenv("WAKE_WORD", "apex")

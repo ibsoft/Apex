@@ -40,6 +40,18 @@ MISSING_SKILL_TEMPLATE = (
 )
 
 
+def _expand_config_vars(value: str) -> str:
+    """Replace $VAR / ${VAR} in a skill frontmatter value with config attributes."""
+    if not value or "$" not in value:
+        return value
+
+    def repl(match: re.Match) -> str:
+        var = match.group(1) or match.group(2)
+        return str(getattr(config, var, ""))
+
+    return re.sub(r"\$\{(\w+)\}|\$(\w+)", repl, value)
+
+
 class SkillManager:
     def __init__(self, definitions_dir: Path | None = None):
         self._dir = Path(definitions_dir) if definitions_dir else Path(config.DATA_DIR) / "skills"
@@ -75,7 +87,7 @@ class SkillManager:
             description=str(meta.get("description") or "").strip(),
             system_prompt=body,
             tools=[t for t in tools if t != "ALL"] if tools else [],
-            model=str(meta.get("model") or ""),
+            model=_expand_config_vars(str(meta.get("model") or "")),
             builtin=path.parent == self._builtin_dir,
             source=str(path),
         )
