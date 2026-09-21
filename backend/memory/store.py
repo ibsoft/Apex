@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+import re
 
 import chromadb
 from chromadb.config import Settings
@@ -28,17 +29,43 @@ class MemoryStore:
         self._collections: dict[str, object] = {}
 
     # ---- collection helpers ------------------------------------------------
+    def _collection_name(self, user_id: str) -> str:
+        embedding_key = re.sub(r"[^a-z0-9]+", "_", self._embed.name().lower()).strip("_")
+        name = f"mem_{user_id}_{embedding_key}"
+        return name[:63].rstrip("_")
+
     def _coll(self, user_id: str):
         with self._lock:
             coll = self._collections.get(user_id)
             if coll is None:
+                embedding = self._embed.get()
+                name = self._collection_name(user_id)
                 coll = self._client.get_or_create_collection(
-                    name=f"mem_{user_id}",
+                    name=name,
                     metadata={"hnsw:space": "cosine"},
-                    embedding_function=self._embed.get(),
+                    embedding_function=embedding,
                 )
+                self._migrate_legacy(user_id, coll, embedding)
                 self._collections[user_id] = coll
             return coll
+
+    def _migrate_legacy(self, user_id: str, target, embedding):
+        """Copy entries from the pre-embedding-specific collection once."""
+        legacy_name = f"mem_{user_id}"
+        if legacy_name == target.name:
+            return
+        try:
+            legacy = self._client.get_collection(name=legacy_name)
+            data = legacy.get(include=["metadatas", "documents"])
+            ids = data.get("ids") or []
+            documents = data.get("documents") or []
+            metadatas = data.get("metadatas") or []
+            if ids and not target.count():
+                target.add(ids=ids, documents=documents, metadatas=metadatas)
+        except Exception:
+            # A missing legacy collection or an unavailable old embedder must
+            # not prevent the current collection from being usable.
+            return
 
     @property
     def embedding_name(self) -> str:
@@ -116,7 +143,7 @@ class MemoryStore:
             out.append(
                 {
                     "id": mem_id,
-                    "text": docs[idx] if idx < len(docs) else "",
+                    "text": str(docs[idx] or "") if idx < len(docs) else "",
                     "meta": metas[idx] if idx < len(metas) else {},
                     "score": None,
                 }

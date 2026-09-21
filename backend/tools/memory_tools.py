@@ -98,7 +98,10 @@ def memory_prompt_block(user_id: str, memory, query: str, n: int = 5) -> str:
         return ""
     if not hits:
         return ""
-    lines = [h["text"] for h in hits]
+    lines = [str(h.get("text") or "").strip() for h in hits]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
     return (
         "\n[Relevant long-term memory (auto-injected)]\n" + "\n- ".join(lines) + "\n"
     )
