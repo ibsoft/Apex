@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
@@ -225,6 +226,42 @@ def build_core_tools(registry, cfg):
             return f"exit {proc.returncode}\nstderr:\n{err}\nstdout:\n{out}"
         return out or "ok"
 
+    def t_create_skill(args, ctx: ToolContext):
+        name = (args.get("name") or "").strip()
+        description = (args.get("description") or "").strip()
+        system_prompt = (args.get("system_prompt") or "").strip()
+        tools = args.get("tools") or []
+        model = (args.get("model") or "").strip()
+        overwrite = bool(args.get("overwrite", False))
+        if not name or not description or not system_prompt:
+            return "name, description, and system_prompt are required."
+        if not re.match(r"^[\w-]+$", name):
+            return "Skill name must contain only letters, numbers, hyphens, and underscores."
+        skills_dir = Path(cfg.DATA_DIR) / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        file_path = skills_dir / f"{name}.md"
+        if file_path.exists() and not overwrite:
+            return f"Skill `{name}` already exists. Set overwrite=true to replace it."
+
+        meta_lines = [f"name: {name}", f"description: {description}"]
+        if tools:
+            if isinstance(tools, str):
+                meta_lines.append(f"tools: {tools}")
+            elif isinstance(tools, list):
+                if len(tools) == 1 and tools[0] == "ALL":
+                    meta_lines.append("tools: ALL")
+                else:
+                    meta_lines.append("tools: " + ", ".join(str(t) for t in tools))
+        if model:
+            meta_lines.append(f"model: {model}")
+        content = "---\n" + "\n".join(meta_lines) + "\n---\n\n" + system_prompt + "\n"
+        file_path.write_text(content, encoding="utf-8")
+
+        # Pick up the new skill immediately.
+        from skills.manager import get_skill_manager
+        get_skill_manager().refresh()
+        return f"Skill `{name}` created at {file_path}."
+
     return [
         Tool("current_time",
              "Get the current local date and time.",
@@ -273,6 +310,19 @@ def build_core_tools(registry, cfg):
               },
               "required": ["command"]},
              t_run_shell, dangerous=True),
+        Tool("create_skill",
+             "Create a new Apex skill by writing a markdown definition file.",
+             {"type": "object",
+              "properties": {
+                  "name": {"type": "string", "description": "Short skill name (letters, numbers, hyphens, underscores)."},
+                  "description": {"type": "string", "description": "One-line description of what the skill does."},
+                  "system_prompt": {"type": "string", "description": "The system prompt that defines the skill's behavior."},
+                  "tools": {"type": "array", "items": {"type": "string"}, "description": "Tool names the skill may use, e.g. ['web_search', 'web_fetch'] or ['ALL']."},
+                  "model": {"type": "string", "description": "Optional model override for this skill."},
+                  "overwrite": {"type": "boolean", "default": False, "description": "Replace the skill file if it already exists."},
+              },
+              "required": ["name", "description", "system_prompt"]},
+             t_create_skill, dangerous=True),
     ]
 
 
