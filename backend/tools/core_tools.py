@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+from ddgs import DDGS
 
 from tools.base import Tool, ToolContext  # noqa: F401
 
@@ -89,42 +90,42 @@ def build_core_tools(registry, cfg):
         n = min(int(args.get("max_results", 5) or 5), 10)
         if not query:
             return "Please provide a query."
-        # Read from config, but keep safe defaults so the tool still works if
-        # the process was started before the new config attributes were added.
-        engine = getattr(cfg, "WEB_SEARCH_ENGINE", "duckduckgo")
-        ddg_url = getattr(cfg, "WEB_SEARCH_DDG_URL", "https://html.duckduckgo.com/html/")
-        ddg_region = getattr(cfg, "WEB_SEARCH_DDG_REGION", "us-en")
-        timeout = getattr(cfg, "WEB_SEARCH_TIMEOUT", 20)
-        user_agent = getattr(
-            cfg,
-            "WEB_SEARCH_USER_AGENT",
-            "Mozilla/5.0 (X11; Linux x86_64) APEX-assistant/1.0",
-        )
-        if engine != "duckduckgo":
-            return f"web search engine '{engine}' is not supported."
         try:
-            # DDG's HTML endpoint often returns an empty 202 for GET requests;
-            # POST with the same form data and a Referer returns real results.
-            resp = requests.post(
-                ddg_url,
-                data={"q": query, "b": "", "kl": ddg_region},
-                headers={
-                    "User-Agent": user_agent,
-                    "Referer": ddg_url,
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            results = _parse_ddg(resp.text, n)
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=n))
             if not results:
-                return (
-                    f"No results found for `{query}`. "
-                    f"(HTTP {resp.status_code}, response length {len(resp.text)})"
-                )
+                return f"No results found for `{query}`."
             return json.dumps(results, ensure_ascii=False)[:4000]
         except Exception as exc:
             return f"web search failed: {exc}"
+
+    def t_web_image_search(args, ctx: ToolContext):
+        query = (args.get("query") or "").strip()
+        n = min(int(args.get("max_results", 5) or 5), 10)
+        if not query:
+            return "Please provide a query."
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.images(query, max_results=n))
+            if not results:
+                return f"No image results found for `{query}`."
+            return json.dumps(results, ensure_ascii=False)[:4000]
+        except Exception as exc:
+            return f"web image search failed: {exc}"
+
+    def t_web_news_search(args, ctx: ToolContext):
+        query = (args.get("query") or "").strip()
+        n = min(int(args.get("max_results", 5) or 5), 10)
+        if not query:
+            return "Please provide a query."
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.news(query, max_results=n))
+            if not results:
+                return f"No news results found for `{query}`."
+            return json.dumps(results, ensure_ascii=False)[:4000]
+        except Exception as exc:
+            return f"web news search failed: {exc}"
 
     def t_web_fetch(args, ctx: ToolContext):
         url = (args.get("url") or "").strip()
@@ -281,6 +282,22 @@ def build_core_tools(registry, cfg):
                   "max_results": {"type": "integer", "default": 5},
               }, "required": ["query"]},
              t_web_search),
+        Tool("web_image_search",
+             "Search the web for images (DuckDuckGo) and return direct image URLs that can be displayed to the user.",
+             {"type": "object",
+              "properties": {
+                  "query": {"type": "string", "description": "Image search query"},
+                  "max_results": {"type": "integer", "default": 5},
+              }, "required": ["query"]},
+             t_web_image_search),
+        Tool("web_news_search",
+             "Search the web for news (DuckDuckGo) and return news titles, snippets, source URLs and image URLs as JSON.",
+             {"type": "object",
+              "properties": {
+                  "query": {"type": "string", "description": "News search query"},
+                  "max_results": {"type": "integer", "default": 5},
+              }, "required": ["query"]},
+             t_web_news_search),
         Tool("web_fetch",
              "Fetch a URL and return its readable text content.",
              {"type": "object",
