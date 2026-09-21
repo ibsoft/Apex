@@ -88,17 +88,39 @@ def build_core_tools(registry, cfg):
         n = min(int(args.get("max_results", 5) or 5), 10)
         if not query:
             return "Please provide a query."
+        # Read from config, but keep safe defaults so the tool still works if
+        # the process was started before the new config attributes were added.
+        engine = getattr(cfg, "WEB_SEARCH_ENGINE", "duckduckgo")
+        ddg_url = getattr(cfg, "WEB_SEARCH_DDG_URL", "https://html.duckduckgo.com/html/")
+        ddg_region = getattr(cfg, "WEB_SEARCH_DDG_REGION", "us-en")
+        timeout = getattr(cfg, "WEB_SEARCH_TIMEOUT", 20)
+        user_agent = getattr(
+            cfg,
+            "WEB_SEARCH_USER_AGENT",
+            "Mozilla/5.0 (X11; Linux x86_64) APEX-assistant/1.0",
+        )
+        if engine != "duckduckgo":
+            return f"web search engine '{engine}' is not supported."
         try:
-            resp = requests.get(
-                "https://html.duckduckgo.com/html/",
-                params={"q": query},
-                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) APEX-assistant/1.0"},
-                timeout=20,
+            # DDG's HTML endpoint often returns an empty 202 for GET requests;
+            # POST with the same form data and a Referer returns real results.
+            resp = requests.post(
+                ddg_url,
+                data={"q": query, "b": "", "kl": ddg_region},
+                headers={
+                    "User-Agent": user_agent,
+                    "Referer": ddg_url,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+                timeout=timeout,
             )
             resp.raise_for_status()
             results = _parse_ddg(resp.text, n)
             if not results:
-                return f"No results found for `{query}`."
+                return (
+                    f"No results found for `{query}`. "
+                    f"(HTTP {resp.status_code}, response length {len(resp.text)})"
+                )
             return json.dumps(results, ensure_ascii=False)[:4000]
         except Exception as exc:
             return f"web search failed: {exc}"
@@ -178,6 +200,31 @@ def build_core_tools(registry, cfg):
                 return f"exit {proc.returncode}\nstderr:\n{err}\nstdout:\n{out}"
             return out or "ok"
 
+    def t_run_shell(args, ctx: ToolContext):
+        command = (args.get("command") or "").strip()
+        if not command:
+            return "Provide a shell command."
+        if not cfg.ENABLE_RUN_SHELL:
+            return "The run_shell tool is disabled (set ENABLE_RUN_SHELL=true)."
+        timeout = getattr(cfg, "RUN_SHELL_TIMEOUT", 60)
+        try:
+            proc = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=os.getcwd(),
+                env=os.environ,
+            )
+        except subprocess.TimeoutExpired:
+            return f"shell execution timed out after {timeout}s"
+        out = (proc.stdout or "")[-4000:]
+        err = (proc.stderr or "")[-1200:]
+        if proc.returncode != 0:
+            return f"exit {proc.returncode}\nstderr:\n{err}\nstdout:\n{out}"
+        return out or "ok"
+
     return [
         Tool("current_time",
              "Get the current local date and time.",
@@ -218,6 +265,14 @@ def build_core_tools(registry, cfg):
               "properties": {"code": {"type": "string"}},
               "required": ["code"]},
              t_run_python, dangerous=True),
+        Tool("run_shell",
+             "Run a local shell command on the host (e.g. ping, nmap, ss, ip, ifconfig, netstat, journalctl). Requires ENABLE_RUN_SHELL=true.",
+             {"type": "object",
+              "properties": {
+                  "command": {"type": "string", "description": "Shell command to execute verbatim."},
+              },
+              "required": ["command"]},
+             t_run_shell, dangerous=True),
     ]
 
 

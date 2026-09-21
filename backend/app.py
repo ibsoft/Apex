@@ -165,7 +165,13 @@ def create_app() -> Flask:
         rt = runtime()
         provider = provider or rt.get("provider") or config.PROVIDER_DEFAULT
         if provider == "codex":
-            return [config.CODEX_MODEL] if config.CODEX_MODEL else []
+            models = []
+            if config.CODEX_MODEL:
+                models.append(config.CODEX_MODEL)
+            for fallback in (config.CODE_MODEL, config.CHATGPT_MODEL, config.DEFAULT_MODEL):
+                if fallback and fallback not in models:
+                    models.append(fallback)
+            return models
         if provider == "ollama":
             from models.providers import list_ollama_models
 
@@ -509,8 +515,20 @@ def create_app() -> Flask:
             use_oauth_access=is_subscription_access(uid),
             runtime=rt,
         )
+
+        # skill model override, but only when compatible with the provider
+        skill_obj = get_skill_manager().select(skill_name)
+        skill_model = skill_obj.model
+        if skill_model:
+            allowed_models = set(model_list(provider_name))
+            if provider_name == "ollama" and skill_model not in allowed_models:
+                skill_model = ""
+            elif provider_name == "kimi" and skill_model not in allowed_models:
+                skill_model = ""
+            # openai / codex / torch accept the skill model as-is
+
         # resolve model per provider
-        model = data.get("model") or rt.get("model")
+        model = data.get("model") or rt.get("model") or skill_model
         if not model:
             if provider_name == "codex":
                 model = config.CODEX_MODEL
