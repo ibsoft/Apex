@@ -128,7 +128,7 @@ class SkillManager:
         language = {"en": "English", "el": "Greek"}.get(response_language, "English")
         parts = [
             "You are APEX, an autonomous multimodal AI assistant.",
-            f"You are helpful, concise and precise. Respond in {language} unless the user explicitly requests another language.",
+            f"You are helpful, concise and precise. Always respond in {language} until the user changes the Default response language setting in the UI. Do not switch response languages based on the user's input language. If asked for a translation, provide the requested translated content but keep your explanation and surrounding response in {language}.",
             f"## Skill: {skill.name}\n{base}",
         ]
         if user_name:

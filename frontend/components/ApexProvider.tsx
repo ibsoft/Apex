@@ -247,6 +247,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     wakeWord: settings.wake_word ?? cfg?.wake_word ?? "apex",
     followUpSeconds: Number(settings.follow_up_seconds ?? cfg?.follow_up_seconds ?? 30),
     voiceName: settings.voice ?? cfg?.voice ?? "",
+    responseLanguage: settings.response_language ?? cfg?.response_language ?? "en",
     onPhase: onVoicePhase,
     onCommand: (text: string) => {
       if (!userRef.current) return;
