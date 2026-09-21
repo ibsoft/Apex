@@ -6,7 +6,7 @@
    Styled to sit on the APEX world: glassy dark, cyan + gold, monospace caps.
 */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useApex, Message } from "./ApexProvider";
 import { api } from "../lib/api";
 
@@ -60,18 +60,87 @@ function ToolChips({ tools }: { tools?: NonNullable<Message["meta"]>["tools"] })
   );
 }
 
+function isImageUrl(url: string): boolean {
+  return /\.(jpg|jpeg|png|gif|webp|svg|bmp)(\?.*)?$/i.test(url);
+}
+
+function InlineImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+      style={{ maxWidth: "100%", maxHeight: 320, borderRadius: 8, display: "block", margin: "6px 0" }}
+    />
+  );
+}
+
+function renderRichText(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const regex = /(!\[([^\]]*)\]\(([^)]+)\))|(https?:\/\/[^\s<>"{}|\\^`[\]]+)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(
+        <span key={`t-${lastIndex}`} style={{ whiteSpace: "pre-wrap" }}>
+          {text.slice(lastIndex, match.index)}
+        </span>
+      );
+    }
+    const full = match[0];
+    const mdAlt = match[2];
+    const mdUrl = match[3];
+    const plainUrl = match[4];
+    const url = mdUrl || plainUrl;
+    if (mdUrl) {
+      nodes.push(
+        <InlineImage key={`img-${match.index}`} src={mdUrl} alt={mdAlt || "image"} />
+      );
+    } else if (plainUrl && isImageUrl(plainUrl)) {
+      nodes.push(
+        <InlineImage key={`img-${match.index}`} src={plainUrl} alt="image" />
+      );
+    } else if (plainUrl) {
+      nodes.push(
+        <a
+          key={`a-${match.index}`}
+          href={plainUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: C.cyan, textDecoration: "underline" }}
+        >
+          {plainUrl}
+        </a>
+      );
+    }
+    lastIndex = match.index + full.length;
+  }
+  if (lastIndex < text.length) {
+    nodes.push(
+      <span key={`t-${lastIndex}`} style={{ whiteSpace: "pre-wrap" }}>
+        {text.slice(lastIndex)}
+      </span>
+    );
+  }
+  return nodes;
+}
+
 function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === "user";
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
       <div style={{
         maxWidth: "92%", padding: "8px 11px", borderRadius: 12,
-        fontSize: 12.5, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
+        fontSize: 12.5, lineHeight: 1.5, wordBreak: "break-word",
         background: isUser ? `${C.cyan}14` : "rgba(255,255,255,0.04)",
         border: isUser ? `1px solid ${C.cyan}33` : "1px solid rgba(255,255,255,0.08)",
         color: C.text,
       }}>
-        {msg.content || (msg.streaming ? "…" : "")}
+        {msg.content ? renderRichText(msg.content) : (msg.streaming ? "…" : "")}
         {msg.streaming && <span className="apex-blink" style={{ color: C.cyan }}>▊</span>}
       </div>
       <ToolChips tools={msg.meta?.tools} />
