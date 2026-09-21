@@ -8,6 +8,7 @@ __pycache__/
 
 node_modules/
 .next/
+.next-https/
 dist/
 build/
 .env
@@ -158,6 +159,7 @@ activemq-data/
 # Environments
 .env
 .envrc
+.apex/
 .venv
 env/
 venv/
@@ -224,3 +226,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# APEX-managed Codex OAuth credentials and local state
+/backend/data/codex/

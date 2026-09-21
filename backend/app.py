@@ -130,6 +130,10 @@ def create_app() -> Flask:
         status["openai"] = {
             "available": bool(config.OPENAI_API_KEY or (config.oauth_configured and user_id and is_subscription_access(user_id)) or (config.oauth_configured and user_id and bearer_for_api(user_id))),
         }
+        import shutil
+
+        status["codex"] = {"available": bool(shutil.which(config.CODEX_BINARY)
+                                               and (config.CODEX_HOME / "auth.json").is_file())}
         ollama_models = []
         try:
             from models.providers import list_ollama_models
@@ -160,16 +164,18 @@ def create_app() -> Flask:
     def model_list(provider: str | None = None):
         rt = runtime()
         provider = provider or rt.get("provider") or config.PROVIDER_DEFAULT
+        if provider == "codex":
+            return [config.CODEX_MODEL] if config.CODEX_MODEL else []
         if provider == "ollama":
             from models.providers import list_ollama_models
 
-            return list_ollama_models() or ["qwen2.5:7b", "llama3.1:8b"]
+            return list_ollama_models() or [config.OLLAMA_MODEL, "llama3.1:8b"]
         if provider == "kimi":
             from models.providers import list_kimi_models
 
             return list_kimi_models()
         if provider == "torch":
-            return [rt.get("torch_model") or "Qwen/Qwen2.5-7B-Instruct"]
+            return [rt.get("torch_model") or config.TORCH_MODEL]
         return [
             config.CHATGPT_MODEL,
             "gpt-4o-mini",
@@ -286,6 +292,7 @@ def create_app() -> Flask:
                 "wake_word": rt.get("wake_word") or config.WAKE_WORD,
                 "follow_up_seconds": int(rt.get("follow_up_seconds") or config.FOLLOW_UP_SECONDS),
                 "voice": rt.get("voice") or config.VOICE,
+                "response_language": rt.get("response_language") or config.RESPONSE_LANGUAGE,
                 "skills": [
                     {
                         "name": s.name,
@@ -340,7 +347,7 @@ def create_app() -> Flask:
             return jsonify({"error": "unauthorized"}), 401
         data = request.get_json(silent=True) or {}
         allowed = {
-            "engine", "provider", "model", "temperature", "voice",
+            "engine", "provider", "model", "temperature", "voice", "response_language",
             "wake_word", "follow_up_seconds", "tts_enabled", "memory_enabled",
             "embedding_backend", "strict_tool_json", "ollama_base_url",
             "base_url", "torch_model", "model_extra",
@@ -352,6 +359,10 @@ def create_app() -> Flask:
                 value = float(value)
             if key in ("follow_up_seconds",):
                 value = int(value)
+            if key == "response_language":
+                value = str(value).lower()
+                if value not in {"en", "el"}:
+                    continue
             get_db().set_setting(key, value)
         get_skill_manager().refresh()
         return jsonify({"ok": True, "settings": runtime()})
@@ -484,6 +495,8 @@ def create_app() -> Flask:
 
         engine_name = (rt.get("engine") or config.AGENT_ENGINE).lower()
         provider_name = (rt.get("provider") or config.PROVIDER_DEFAULT).lower()
+        if provider_name == "codex":
+            engine_name = "responses"
         voice_mode = bool(data.get("voice_mode", False))
 
         # persist user message
@@ -499,12 +512,14 @@ def create_app() -> Flask:
         # resolve model per provider
         model = data.get("model") or rt.get("model")
         if not model:
-            if provider_name == "ollama":
-                model = rt.get("ollama_model") or "qwen2.5:7b"
+            if provider_name == "codex":
+                model = config.CODEX_MODEL
+            elif provider_name == "ollama":
+                model = rt.get("ollama_model") or config.OLLAMA_MODEL
             elif provider_name == "kimi":
                 model = rt.get("kimi_model") or config.KIMI_MODEL
             elif provider_name == "torch":
-                model = rt.get("torch_model") or "Qwen/Qwen2.5-7B-Instruct"
+                model = rt.get("torch_model") or config.TORCH_MODEL
             elif is_subscription_access(uid):
                 model = config.CHATGPT_MODEL
             else:
@@ -537,6 +552,7 @@ def create_app() -> Flask:
             memory_block=memory_block,
             voice_mode=voice_mode,
             user_name=session.get("name") or user.get("name") or "",
+            response_language=rt.get("response_language") or config.RESPONSE_LANGUAGE,
         )
 
         tools = make_registry(memory=mem)
@@ -629,10 +645,12 @@ def background_summarize(uid, conv_id, user_text, assistant_text, provider_mgr, 
         return
     if assistant_text and len(assistant_text) < 40:
         return
+    provider = None
     try:
         model = rt.get("model")
         if not model:
-            model = rt.get("ollama_model") or rt.get("torch_model") or config.DEFAULT_MODEL
+            model = config.CODEX_MODEL if provider_name == "codex" else (
+                rt.get("ollama_model") or rt.get("torch_model") or config.DEFAULT_MODEL)
         from models.providers import ProviderManager as PM
 
         pm = PM(provider_mgr.bearer, provider_mgr.use_oauth_access, rt)
@@ -645,11 +663,13 @@ def background_summarize(uid, conv_id, user_text, assistant_text, provider_mgr, 
         msgs = [{"role": "system", "content": prompt}]
         chunks = list(provider.chat_stream(msgs, None))
         text = "".join(c["content"] for c in chunks if c["type"] == "text").strip()
-        provider.close()
         if text:
             mem.remember(uid, f"[auto] {text}", category="exchange", conversation_id=conv_id)
     except Exception:
         pass
+    finally:
+        if provider is not None:
+            provider.close()
 
 
 # --------------------------------------------------------------------------- #

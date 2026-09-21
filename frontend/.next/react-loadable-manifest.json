@@ -1,8 +1,14 @@
 {
   "components/ApexHeroOrb.tsx -> ./ApexCore3D": {
-    "id": "components/ApexHeroOrb.tsx -> ./ApexCore3D",
+    "id": 8877,
     "files": [
-      "static/chunks/_app-pages-browser_components_ApexCore3D_jsx.js"
+      "static/chunks/b536a0f1.5c1a205a4354cbf3.js",
+      "static/chunks/bd904a5c.c095aec6639820b2.js",
+      "static/chunks/a3cd4a83.86e3028fad679734.js",
+      "static/chunks/f6211eb1.c50fe5c2d87a21b2.js",
+      "static/chunks/72c373f8.86282d6b23643270.js",
+      "static/chunks/355.3465a23593812a4b.js",
+      "static/chunks/877.85c19a2352e0ec6b.js"
     ]
   }
 }

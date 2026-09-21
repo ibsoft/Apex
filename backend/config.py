@@ -80,10 +80,11 @@ class Config:
 
     # --- Voice assistant ---------------------------------------------------
     WAKE_WORD = os.getenv("WAKE_WORD", "apex")
+    RESPONSE_LANGUAGE = os.getenv("RESPONSE_LANGUAGE", "en").strip().lower()
     # Keep listening for follow-ups (without repeating the wake word) for this
     # many seconds after an utterance. 0 disables follow-up mode.
     FOLLOW_UP_SECONDS = _int("FOLLOW_UP_SECONDS", 30)
-    VOICE = os.getenv("VOICE", "")  # e.g. "Google UK English Female" (empty = default)
+    VOICE = os.getenv("VOICE", "Google UK English Female")
 
     # --- Agent engine ------------------------------------------------------
     # One of: responses | agents_sdk | langgraph   (build one, run all)
@@ -91,10 +92,15 @@ class Config:
 
     # --- Local models ------------------------------------------------------
     # Default backend at boot; can be changed at runtime via /api/settings.
+    CODEX_HOME = Path(os.getenv("APEX_CODEX_HOME", BASE_DIR / "data" / "codex"))
+    CODEX_BINARY = os.getenv("CODEX_BINARY", "codex")
+    CODEX_MODEL = os.getenv("CODEX_MODEL", "")
     PROVIDER_DEFAULT = os.getenv("PROVIDER_DEFAULT", "openai")
     OLLAMA_BASE_URL = os.getenv(
         "OLLAMA_BASE_URL", "http://localhost:11434/v1"
     )
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+    TORCH_MODEL = os.getenv("TORCH_MODEL", "Qwen/Qwen2.5-7B-Instruct")
     OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
     TORCH_EXTRA = {
         "device_map": os.getenv("TORCH_DEVICE", "auto"),      # cuda:0 | mps | auto

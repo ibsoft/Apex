@@ -423,15 +423,17 @@ class ProviderManager:
 
     def config_for(self, provider_name: str, model: str | None = None) -> ProviderConfig:
         rt = self.runtime
-        model = model or rt.get("model") or (config.CHATGPT_MODEL if self.use_oauth_access else config.DEFAULT_MODEL)
+        model = model or rt.get("model")
         temp = float(rt.get("temperature", 0.7))
         extra = dict(rt.get("model_extra") or {})
+        if provider_name == "codex":
+            return ProviderConfig(kind="codex", model=model or config.CODEX_MODEL)
         if provider_name == "openai":
             use_resp = bool(self.use_oauth_access or rt.get("use_responses", False))
             return ProviderConfig(
                 kind="openai",
-                model=model,
-                base_url=rt.get("base_url", "") or None,
+                model=model or (config.CHATGPT_MODEL if self.use_oauth_access else config.DEFAULT_MODEL),
+                base_url=rt.get("base_url", "") or config.OPENAI_BASE_URL,
                 api_key=self.bearer or "",
                 temperature=temp,
                 use_responses=use_resp,
@@ -440,7 +442,7 @@ class ProviderManager:
         if provider_name == "ollama":
             return ProviderConfig(
                 kind="ollama",
-                model=model or rt.get("ollama_model") or "qwen2.5:7b",
+                model=model or rt.get("ollama_model") or config.OLLAMA_MODEL,
                 base_url=rt.get("ollama_base_url", "") or config.OLLAMA_BASE_URL,
                 temperature=temp,
                 extra=extra,
@@ -457,7 +459,7 @@ class ProviderManager:
         if provider_name == "torch":
             return ProviderConfig(
                 kind="torch",
-                model=model or rt.get("torch_model") or "Qwen/Qwen2.5-7B-Instruct",
+                model=model or rt.get("torch_model") or config.TORCH_MODEL,
                 temperature=temp,
                 extra={**config.TORCH_EXTRA, **extra},
             )
@@ -466,6 +468,10 @@ class ProviderManager:
     def build(self, provider_name: str | None = None, model: str | None = None):
         name = (provider_name or self.runtime.get("provider") or config.PROVIDER_DEFAULT).lower()
         cfg = self.config_for(name, model)
+        if name == "codex":
+            from models.codex_provider import CodexProvider
+
+            return CodexProvider(cfg)
         if name == "openai":
             # Bearer already covers the server OPENAI_API_KEY when configured
             # (bearer_for_api falls back to it), so an empty key here means

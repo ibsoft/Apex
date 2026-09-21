@@ -15,6 +15,7 @@ import ApexHeroOrb, { type OrbState } from "./ApexHeroOrb";
 import ReasoningWebJs from "./ReasoningWeb";
 import ShaderBackgroundJs from "./ShaderBackground";
 import OrbStatusBar from "./OrbStatusBar";
+import { useApex } from "./ApexProvider";
 
 export type NodeSel = { name: string; key: string; color: string };
 
@@ -119,6 +120,7 @@ const STATUS_LINE: Record<AgentInfo["status"], { color: string; text: string }> 
 
 /* ── AGENT OVERVIEW window - the site's template (the app opens live cockpits) ── */
 export function AgentOverview({ sel, onClose }: { sel: NodeSel; onClose: () => void }) {
+  const apex = useApex();
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ sx: number; sy: number } | null>(null);
   const info = INFO[sel.key] ?? { role: "Specialist", status: "online" as const, caps: ["Part of the Apex core"] };
@@ -210,10 +212,10 @@ export function AgentOverview({ sel, onClose }: { sel: NodeSel; onClose: () => v
             <div style={{ fontSize: 9, letterSpacing: "0.14em", color: `${c}99`, marginBottom: 8, fontFamily: "var(--font-mono)" }}>EXAMPLE REQUESTS</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {info.asks.map((task) => (
-                <span key={task} style={{
+                <button key={task} type="button" onClick={() => { onClose(); void apex.sendMessage(task); }} style={{
                   padding: "4px 10px", background: `${c}0d`, border: `1px solid ${c}2a`,
-                  borderRadius: 20, fontSize: 10.5, color: `${c}cc`,
-                }}>{task}</span>
+                  borderRadius: 20, fontSize: 10.5, color: `${c}cc`, cursor: "pointer",
+                }}>{task}</button>
               ))}
             </div>
           </div>

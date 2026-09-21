@@ -121,12 +121,14 @@ class SkillManager:
         voice_mode: bool = False,
         extra: str = "",
         user_name: str = "",
+        response_language: str = "en",
     ) -> str:
         skill = self.select(skill_name)
         base = skill.system_prompt.strip()
+        language = {"en": "English", "el": "Greek"}.get(response_language, "English")
         parts = [
             "You are APEX, an autonomous multimodal AI assistant.",
-            "You are helpful, concise and precise. Answer in the same language as the user.",
+            f"You are helpful, concise and precise. Respond in {language} unless the user explicitly requests another language.",
             f"## Skill: {skill.name}\n{base}",
         ]
         if user_name:

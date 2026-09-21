@@ -1,6 +1,6 @@
 # APEX — AI co-worker with real-time voice
 
-A self-hosted AI assistant with a ChatGPT-style **OpenAI OAuth sign-in**, an
+A self-hosted AI assistant with **ChatGPT subscription login through Codex**, an
 **always-on voice mode** (say **"Apex"** and talk to it — no push-to-talk), a
 tool-using agent core with skills and long-term vector memory, and full support
 for **local models** (Ollama / GPU) — all configurable at runtime from the UI.
@@ -14,8 +14,8 @@ backend/    Flask API — OAuth, agents, tools, skills, ChromaDB memory
 
 ## Features
 
-- **OpenAI OAuth sign-in** (Sign in with ChatGPT) — PKCE flow, id-token
-  verification, refresh tokens, optional "API on behalf of users" access.
+- **ChatGPT subscription login** — browser OAuth handled by Codex, with a
+  pasted callback fallback in the terminal setup wizard.
 - **Always-on voice assistant** — the browser mic keeps listening for the wake
   word (`apex` by default). After you speak a command it replies aloud (Web
   Speech TTS). Barge-in works: say the wake word mid-answer to cut it off.
@@ -41,13 +41,91 @@ backend/    Flask API — OAuth, agents, tools, skills, ChromaDB memory
 
 ### 1. Backend
 
+After the first setup, the backend and frontend services can be managed with
+the project command:
+
+```bash
+./apex install-service --no-build
+./apex start
+./apex stop
+./apex restart
+./apex status
+```
+
+`start` and `restart` also launch the HTTPS development frontend on port
+`3001`, for remote microphone testing. Use `--no-https` when it is not needed:
+
+```bash
+./apex start --no-https
+./apex restart --no-https
+```
+
+Then open `https://192.168.1.218:3001` and accept the local certificate.
+The HTTPS development server uses a separate `.next-https` build directory so
+it can run alongside the production frontend. Its log is written to
+`.apex/frontend-https.log`.
+
+Use `./apex install-service` without `--no-build` when the frontend production
+bundle must be rebuilt.
+
 ```bash
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env        # optional while bootstrapping
+python setup_provider.py            # interactive provider + .env setup
 DEV_MODE=true python app.py          # http://localhost:5001
 ```
+
+The terminal wizard supports ChatGPT subscriptions through Codex, OpenAI
+(including compatible API endpoints), Kimi,
+Ollama, and torch. Use arrow keys and Enter to select options; API keys are masked.
+Enter keeps an existing field, Ctrl+U clears typed input, and Esc cancels without
+writing. Review the settings and select **Save configuration** to update
+`backend/.env`. Unrelated settings and comments are preserved; the saved file is
+readable and writable only by its owner. A session secret is generated if absent.
+
+You can also run it from the project root:
+
+```bash
+.venv/bin/python backend/setup_provider.py
+# Optional alternate output file:
+.venv/bin/python backend/setup_provider.py --env /path/to/.env
+```
+
+Run the setup wizard from an interactive terminal. It writes provider settings
+to `backend/.env`, including the Codex account directory and model defaults:
+
+```bash
+cd /home/ioannisb/Development/Apex
+.venv/bin/python backend/setup_provider.py
+```
+
+Choose **ChatGPT subscription (Codex browser login)**, complete the browser
+login, and wait for the wizard to confirm that credentials were saved. Then
+restart the backend so it reloads `.env`:
+
+```bash
+.venv/bin/python backend/app.py
+```
+
+The wizard resets stale provider, engine, and model overrides saved by the UI
+when it writes the main `backend/.env`, so the selected setup becomes the next
+startup default. Existing Codex credentials are reused when the wizard offers
+that option.
+
+Requires an interactive Linux/macOS terminal and `python-dotenv` (included in
+backend requirements). Choose local auto-login only on a trusted local machine;
+it bypasses sign-in. Select **Configure OAuth sign-in** to enter your client ID,
+optional client secret, backend/frontend URLs, registered callback URL, and scopes.
+This disables local auto-login. For OpenAI, choose whether model requests use a
+server API key or an OAuth access token; token mode skips the API-key prompt and
+requires API authorization for your OAuth app. This configures the backend's
+existing OAuth integration; it does not register an OAuth app or perform sign-in.
+**Keep existing authentication settings** leaves the login configuration intact.
+It selects the built-in `responses` engine. Install/pull local models separately
+(`ollama pull <model>` or `pip install torch transformers`). Restart the backend
+after saving; existing per-user UI settings override these startup defaults.
+An alternate output file must be copied to `backend/.env` or loaded by your launcher.
 
 The heavy deps (`openai-agents`, `langgraph`) are optional — if one fails to
 import, only its engine disappears from `/api/settings`.
@@ -60,6 +138,21 @@ npm install
 npm run dev                  # http://localhost:3000
 ```
 
+For microphone and wake-word testing from another host, run the frontend over
+HTTPS:
+
+```bash
+cd frontend
+npm run dev -- --experimental-https
+# open the https://localhost:3000 URL printed by Next.js
+```
+
+Allow microphone access when prompted. Browser speech recognition requires the
+browser's speech service to be reachable; `network` recognition errors come
+from that browser service and are separate from the backend or Codex. Firefox
+does not support the Web Speech Recognition API used by Apex, so use Chrome or
+Edge for wake-word listening.
+
 In dev the UI proxies API calls through `next.config.mjs`:
 `/be/api/*` → `http://127.0.0.1:5001/api/*`. For a split deployment set
 `NEXT_PUBLIC_API_URL` to the backend URL (including `/api`).
@@ -67,47 +160,45 @@ In dev the UI proxies API calls through `next.config.mjs`:
 Open http://localhost:3000 — with dev mode enabled you land straight in the
 assistant. Hit **MIC ON** and say *"Apex, what's the weather?"*
 
-### 3. OpenAI OAuth login — use Codex (gpt-5-codex) as the model
+### 3. ChatGPT subscription — browser login through Codex
 
-Full procedure to let people **sign in with their OpenAI account** in the UI and
-chat with **gpt-5-codex** through their ChatGPT subscription:
+Install a current [Codex CLI](https://learn.chatgpt.com/docs/cli) and run:
 
-1. **Create the OAuth app**
-   Go to https://platform.openai.com → **Apps → OAuth Apps → Create**.
-   - Set the redirect/callback URI to
-     `<BASE_URL>/api/auth/callback` (default `http://localhost:5001/api/auth/callback`).
-   - Enable the **"API on behalf of users"-style / fine-grained token** setting
-     (this is what lets the server call the API with the user's token instead
-     of a server key).
-2. **Fill in `backend/.env`** and restart the backend:
+```bash
+.venv/bin/python backend/setup_provider.py
+```
 
-   ```bash
-   OPENAI_CLIENT_ID=....            # from the OAuth app
-   OPENAI_CLIENT_SECRET=....
-   USE_OAUTH_ACCESS_KEY=true        # call the API with the signed-in user's token
-   CHATGPT_MODEL=gpt-5-codex        # the subscription model (default already)
-   # DEV_MODE should be OFF (or unset) - with OAuth configured it disables itself
-   ```
+1. Choose **ChatGPT subscription (Codex browser login)**.
+2. Keep the model blank to use Codex's account default, or enter an available model.
+3. Review the local setup and choose **Continue to browser login**.
+4. Sign in to ChatGPT in the browser that opens. The terminal waits for completion.
+5. If the browser cannot reach the local callback (for example over SSH), copy its
+   complete `http://localhost:.../auth/callback?code=...&state=...` URL. Press **P**
+   in the wizard and paste it there. Do not paste it into chat or an issue.
+   The wizard validates the callback address and login state before passing it
+   to the local Codex listener. A success-page URL is not a callback URL.
+6. On successful login the wizard saves `backend/.env`. Restart the backend.
+   If you previously selected a different provider in the UI, select **codex**
+   in Settings; saved per-user choices override environment defaults.
 
-   When `OPENAI_CLIENT_ID` is present the dev auto-login turns off
-   automatically, so the UI shows the **SIGN IN WITH OPENAI** overlay.
-3. **Sign in**
-   Open http://localhost:3000 → *Sign in with OpenAI* → consent on
-   auth.openai.com → you're dropped back into the chat panel, logged in as your
-   ChatGPT account (`/api/me` shows it).
-4. **The model is already Codex**
-   With `USE_OAUTH_ACCESS_KEY=true` the assistant calls the Responses API with
-   your token (`chatgpt: true`) and model `gpt-5-codex`. The Settings panel
-   / model list shows `gpt-5-codex` at the top; the header chip reads
-   `responses · openai · gpt-5-codex`. A ChatGPT Plus/Pro plan is required or
-   the API returns 402.
-5. **Verify**
-   Send *"hello"* → an SSE stream appears (`responses · openai · gpt-5-codex`).
-   Typing `what is 2**10? use calculate` exercises tool calling against Codex.
+No client ID, client secret, or API key is needed. The integration uses the
+[Codex app-server protocol](https://learn.chatgpt.com/docs/app-server); Codex
+stores and refreshes the subscription credentials in `backend/data/codex`
+(or `APEX_CODEX_HOME`). This is separate from your normal Codex login. Cancelling
+before login completes leaves `.env` unchanged; a completed login may already
+have saved credentials in that Codex directory.
 
-If instead you don't want per-user tokens, leave `USE_OAUTH_ACCESS_KEY`
-unset, put a server `OPENAI_API_KEY` in `.env`, and set
-`DEFAULT_MODEL=gpt-5-codex` — sign-in still works, the server key funds the calls.
+This setup enables local APEX auto-login and is intended for a trusted personal
+machine. All APEX requests using this provider use that one ChatGPT account.
+Run the backend under the same OS user as setup. Account plan limits and model
+availability apply. The provider uses the `responses` agent engine and bridges
+APEX tools through Codex's experimental dynamic-tool protocol. Codex's shell,
+apps, plugins, and multi-agent features are disabled for this integration;
+threads run with a read-only sandbox in a temporary working directory.
+
+The separate **Configure OAuth sign-in** option is for a pre-existing OAuth
+application registration. It is not the ChatGPT subscription login path, and
+this project does not provide a public OpenAI OAuth client-registration process.
 
 ## Local models
 

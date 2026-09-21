@@ -53,7 +53,7 @@ type ApexContextType = {
   loading: boolean;
   ready: boolean;
   user: User | null;
-  config: { engine: string; provider: string; providers: any; engines: string[]; models: string[]; memory_enabled: boolean; embedding: string | null; wake_word: string; follow_up_seconds: number; voice: string; oauth_configured: boolean; logged_in: boolean } | null;
+  config: { engine: string; provider: string; providers: any; engines: string[]; models: string[]; memory_enabled: boolean; embedding: string | null; wake_word: string; follow_up_seconds: number; voice: string; response_language: string; oauth_configured: boolean; logged_in: boolean } | null;
   settings: Settings;
   conversations: Conversation[];
   activeId: string | null;
@@ -65,6 +65,7 @@ type ApexContextType = {
   orb: OrbState;
   voiceActive: boolean;
   voiceEnabled: boolean;
+  voiceError: string | null;
   error: string | null;
   /* actions */
   refresh: () => Promise<void>;
@@ -142,31 +143,37 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     }).catch(() => {});
   }, []);
 
-  const refreshConvos = useCallback(async () => {
-    if (!userRef.current) return;
+  const refreshConvos = useCallback(async (knownUser = userRef.current) => {
+    if (!knownUser) return;
     const list = await api.conversations.list().catch(() => []);
     setConversations(list);
   }, []);
 
-  const refreshMemory = useCallback(async () => {
-    if (!userRef.current) return;
+  const refreshMemory = useCallback(async (knownUser = userRef.current) => {
+    if (!knownUser) return;
     const m = await api.memory.list().catch(() => ({ entries: [] as MemoryEntry[] }));
     setMemory(m.entries ?? []);
   }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    await refreshConfig();
-    const me = await api.me().catch(() => null);
-    if (me?.ok && me.user) {
-      setUser(me.user);
-      setSettings(me.settings ?? {});
-    } else {
-      setUser(null);
+    try {
+      await refreshConfig();
+      const me = await api.me().catch(() => null);
+      if (me?.ok && me.user) {
+        setUser(me.user);
+        setSettings(me.settings ?? {});
+      } else {
+        setUser(null);
+      }
+      // The shell should not be blocked by optional history or memory data.
+      setLoading(false);
+      if (me?.ok && me.user) {
+        void Promise.all([refreshConvos(me.user), refreshMemory(me.user)]);
+      }
+    } catch {
+      setLoading(false);
     }
-    await refreshConvos();
-    await refreshMemory();
-    setLoading(false);
   }, [refreshConfig, refreshConvos, refreshMemory]);
 
   useEffect(() => {
@@ -301,6 +308,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         pushAssistant({ streaming: true, content: "", meta: { voice: !!opts.voice, tools: [] } });
 
         let spoken = "";
+        let streamError = "";
         const payload: any = {
           message: clean,
           conversation_id: convId,
@@ -331,10 +339,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           } else if (ev.type === "memory") {
             void refreshMemory();
           } else if (ev.type === "error") {
+            streamError = ev.message;
             setError(ev.message);
             pushAssistant({
               streaming: false,
-              content: spoken || ev.message,
+              content: spoken || streamError,
               meta: { voice: !!opts.voice, tools: [], error: true },
             });
           } else if (ev.type === "done") {
@@ -349,7 +358,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           }
         });
 
-        pushAssistant({ streaming: false, content: spoken });
+        pushAssistant({ streaming: false, content: spoken || streamError });
         setByConv((m) => {
           const list = (m[convId] ?? []).map((msg) =>
             msg.id === asstId && msg.streaming ? { ...msg, streaming: false, content: msg.content } : msg,
@@ -439,6 +448,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       orb,
       voiceActive: voice.active,
       voiceEnabled,
+      voiceError: voice.error,
       error,
       refresh,
       login,

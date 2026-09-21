@@ -31,6 +31,20 @@ npm run dev
 # open http://localhost:3000
 ```
 
+For microphone and wake-word testing from another host, use HTTPS so the
+browser treats the page as a secure context:
+
+```bash
+npm run dev -- --experimental-https
+# open the https://localhost:3000 URL printed by Next.js
+```
+
+Allow microphone access when prompted. Browser speech recognition also needs
+the browser's speech service to be reachable; a `network` recognition error is
+usually a browser/service connectivity issue, not a backend or Codex error.
+Firefox does not provide the Web Speech Recognition API used by Apex; use
+Chrome or Edge for wake-word listening.
+
 Then `npm run build` for a production build, or deploy to Vercel in one click.
 
 ## What's inside

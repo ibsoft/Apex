@@ -69,6 +69,29 @@ Skip the (slow) frontend rebuild on a re-run with:
 ./deploy/install-services.sh --no-build
 ```
 
+## 2a. Development HTTPS (microphone testing)
+
+For local development, run the backend in one terminal:
+
+```bash
+cd /home/ioannisb/Development/Apex
+.venv/bin/python backend/app.py
+```
+
+Run the frontend in another terminal. Use HTTPS when testing the microphone
+from another host or when the browser rejects an insecure-context page:
+
+```bash
+cd /home/ioannisb/Development/Apex/frontend
+npm run dev -- --experimental-https
+```
+
+Open the `https://localhost:3000` URL printed by Next.js and allow microphone
+access. Wake-word recognition uses the browser Web Speech API, so Chrome or
+Edge is required; Firefox does not provide this API. A browser `network`
+recognition error means the browser's remote speech service could not be
+reached and is unrelated to the Apex backend.
+
 ## 3. Manual install (everything the script does, by hand)
 
 ```bash
@@ -100,6 +123,30 @@ sudo systemctl enable --now apex-backend apex-frontend
 ```
 
 ## 4. Configuration
+
+### Provider setup wizard
+
+Use the interactive wizard from the repository root to configure Codex or
+another provider:
+
+```bash
+cd /home/ioannisb/Development/Apex
+.venv/bin/python backend/setup_provider.py
+```
+
+For Codex, choose **ChatGPT subscription (Codex browser login)** and complete
+the browser login. The wizard saves credentials under `backend/data/codex`
+and writes provider defaults to `backend/.env`. Restart the backend after a
+successful setup:
+
+```bash
+sudo systemctl restart apex-backend
+```
+
+When the wizard writes the main `backend/.env`, it clears stale UI overrides
+for provider, engine, and model so the new setup controls the next startup.
+The optional `--env /path/to/.env` mode writes another file and does not alter
+the main runtime configuration automatically.
 
 ### `backend/.env` (main)
 Loaded automatically at boot. The important ones:
@@ -149,6 +196,34 @@ server {
 ```
 
 ## 5. Everyday operations
+
+The repository includes a shortcut for these operations:
+
+```bash
+./apex install-service --no-build
+./apex start
+./apex stop
+./apex restart
+./apex status
+```
+
+For remote microphone testing, `start` and `restart` launch the HTTPS
+development frontend alongside the systemd services:
+
+```bash
+./apex start
+./apex restart
+```
+
+It listens on port `3001`; open `https://192.168.1.218:3001` and accept the
+local certificate. Stop it with `./apex stop`. Its output is stored in
+`.apex/frontend-https.log`; it uses a separate `.next-https` build directory
+so it does not interfere with the production frontend. Use
+`./apex start --no-https` to disable it.
+
+Use `./apex install-service` to rebuild the frontend before installing the
+units. The lifecycle commands require the services to have been installed;
+they use `sudo` for start, stop, and restart.
 
 ```bash
 systemctl status  apex-backend apex-frontend   # are they running?

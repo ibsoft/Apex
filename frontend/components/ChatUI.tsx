@@ -139,6 +139,7 @@ export default function ChatUI() {
   const provider = a.settings.provider ?? a.config?.provider ?? "";
   const model = a.settings.model ?? "<auto>";
   const wake = a.settings.wake_word ?? a.config?.wake_word ?? "apex";
+  const responseLanguage = a.settings.response_language ?? a.config?.response_language ?? "en";
 
   const providers = (a.config?.providers ?? {}) as Record<string, { available?: boolean; models?: string[] }>;
   const providerNames = Object.keys(providers);
@@ -159,6 +160,7 @@ export default function ChatUI() {
   const provAvail = (p: string) => !!(providers[p]?.available);
   const needHint = (p: string) =>
     p === "openai" ? (provAvail(p) ? null : "set OPENAI_API_KEY in backend/.env or sign in with OpenAI") :
+    p === "codex" ? (provAvail(p) ? null : "Sign in with ChatGPT using backend/setup_provider.py") :
     p === "kimi" ? (provAvail(p) ? null : "set KIMI_API_KEY in backend/.env (Moonshot AI)") :
     p === "ollama" ? null :
     p === "torch" ? (provAvail(p) ? null : "pip install torch transformers") :
@@ -264,6 +266,7 @@ export default function ChatUI() {
                       {a.voiceEnabled ? "MIC ON" : "MIC OFF"}
                     </button>
                     {a.voiceEnabled && !a.voiceActive && <span className="apex-blink">PENDING PERMISSION…</span>}
+                    {a.voiceError && <span style={{ color: C.gold }}>{a.voiceError}</span>}
                     {a.voiceEnabled && a.voiceActive && <span>{a.orb === "listening" ? "AWAITING COMMAND…" : `SAY "${wake}"…`}</span>}
                   </div>
 
@@ -370,13 +373,20 @@ export default function ChatUI() {
                 <Row label="Wake word">
                   <input style={inputBase} value={wake} onChange={(e) => void a.updateSettings({ wake_word: e.target.value })} />
                 </Row>
+                <Row label="Default response language">
+                  <select style={selectBase} value={responseLanguage}
+                    onChange={(e) => void a.updateSettings({ response_language: e.target.value })}>
+                    <option value="en">English</option>
+                    <option value="el">Greek</option>
+                  </select>
+                </Row>
                 <Row label="Follow-up window (sec)">
                   <input style={inputBase} type="number" min={0} max={120}
                     value={Number(a.settings.follow_up_seconds ?? 30)}
                     onChange={(e) => void a.updateSettings({ follow_up_seconds: Number(e.target.value) })} />
                 </Row>
                 <Row label="TTS voice name">
-                  <input style={inputBase} value={a.settings.voice ?? ""} placeholder="e.g. Google UK English Female"
+                  <input style={inputBase} value={a.settings.voice ?? a.config?.voice ?? ""} placeholder="e.g. Google UK English Female"
                     onChange={(e) => void a.updateSettings({ voice: e.target.value })} />
                 </Row>
                 <Row label="Spoken replies">

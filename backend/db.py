@@ -226,6 +226,12 @@ class Database:
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         return {r["key"]: json.loads(r["value"]) for r in rows}
 
+    def clear_settings(self, *keys: str):
+        if not keys:
+            return
+        with self._lock, self._connect() as conn:
+            conn.executemany("DELETE FROM settings WHERE key = ?", ((key,) for key in keys))
+
 
 _db: Database | None = None
 
