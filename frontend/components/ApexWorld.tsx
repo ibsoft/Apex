@@ -57,6 +57,7 @@ export const ROSTER: { key: string; name: string; color: string }[] = [
   { key: "calendar",       name: "Calendar",       color: "#7f9bb3" },
   { key: "email",          name: "Email",          color: "#7f9bb3" },
   { key: "drive",          name: "Drive",          color: "#7f9bb3" },
+  { key: "obsidian",       name: "Obsidian",       color: "#7f9bb3" },
 ];
 
 /* Overview data per ReasoningWeb roster id - the site's template content */
@@ -110,6 +111,9 @@ export const INFO: Record<string, AgentInfo> = {
     caps: ["Inbox triage and reply drafts", "Connected and in use"] },
   drive: { role: "File access", status: "integration",
     caps: ["Reads and files documents", "Connected and in use"] },
+  obsidian: { role: "Note vault", status: "integration",
+    caps: ["Reads and searches your Obsidian Markdown vault", "Answers from your notes"],
+    asks: ["Find my note about X", "Search Obsidian for Y"] },
 };
 
 const STATUS_LINE: Record<AgentInfo["status"], { color: string; text: string }> = {

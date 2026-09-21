@@ -146,6 +146,14 @@ class Config:
     MEMORY_RECALL_DEFAULT = _int("MEMORY_RECALL_DEFAULT", 5)
     MEMORY_SUMMARIZE = _bool("MEMORY_SUMMARIZE", True)
 
+    # --- Obsidian (local Markdown vault) -----------------------------------
+    # Path to the folder containing your Obsidian .md notes, e.g. /home/user/Obsidian
+    OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", "")
+    # Daily notes folder inside the vault (empty = vault root).
+    OBSIDIAN_DAILY_NOTES_FOLDER = os.getenv("OBSIDIAN_DAILY_NOTES_FOLDER", "")
+    # strftime format for the daily note filename. Default: 2026-09-21.md
+    OBSIDIAN_DAILY_NOTES_FORMAT = os.getenv("OBSIDIAN_DAILY_NOTES_FORMAT", "%Y-%m-%d")
+
     # --- Dev mode ---------------------------------------------------------
     # Skips OpenAI OAuth: the UI signs in as a fixed local user so the whole
     # stack (chat, memory, settings) runs against local/KO providers.
