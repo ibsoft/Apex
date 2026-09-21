@@ -21,6 +21,7 @@ import json
 import threading
 import time
 import uuid
+from pathlib import Path
 
 from flask import Flask, Response, jsonify, redirect, request, session
 
@@ -472,7 +473,51 @@ def create_app() -> Flask:
             deleted = mem.forget(user["id"], data.get("ids", []))
         return jsonify({"ok": True, "deleted": deleted})
 
-    # ---- chat --------------------------------------------------------------------
+    @app.post("/api/memory/upload")
+    def memory_upload():
+        user = require_user()
+        mem = memory_or_none()
+        if not user or mem is None:
+            return jsonify({"error": "unavailable"}), (401 if not user else 400)
+        files = request.files.getlist("files")
+        if not files:
+            return jsonify({"error": "no files provided"}), 400
+
+        from memory.documents import extract_text, chunk_text
+
+        max_size = 10 * 1024 * 1024
+        chunk_size = int(request.form.get("chunk_size") or 800)
+        overlap = int(request.form.get("overlap") or 100)
+        results = []
+        total = 0
+
+        for f in files:
+            if not f.filename:
+                continue
+            data = f.read()
+            if len(data) > max_size:
+                results.append({"filename": f.filename, "error": "file too large (>10MB)"})
+                continue
+            try:
+                text = extract_text(f.filename, data)
+                chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+                if not chunks:
+                    results.append({"filename": f.filename, "chunks": 0})
+                    continue
+                source = Path(f.filename).name
+                items = [
+                    (chunk, {"category": "document", "source": source, "chunk_index": i})
+                    for i, chunk in enumerate(chunks)
+                ]
+                ids = mem.remember_chunks(user["id"], items)
+                total += len(ids)
+                results.append({"filename": f.filename, "chunks": len(ids)})
+            except Exception as exc:
+                results.append({"filename": f.filename, "error": str(exc)})
+
+        return jsonify({"ok": True, "total": total, "files": results})
+
+    # ---- chat ----------------------------------------------------------------
     @app.post("/api/chat")
     def chat():
         user = require_user()

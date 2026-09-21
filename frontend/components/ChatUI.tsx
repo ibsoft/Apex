@@ -119,6 +119,9 @@ export default function ChatUI() {
   const [memSearch, setMemSearch] = useState("");
   const [memNote, setMemNote] = useState("");
   const [memResults, setMemResults] = useState<null | any[]>(null);
+  const [memFiles, setMemFiles] = useState<FileList | null>(null);
+  const [memUploading, setMemUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendDisabled, setSendDisabled] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -134,6 +137,21 @@ export default function ChatUI() {
       inputRef.current?.focus();
     }
   }, [a, draft]);
+
+  const uploadMemoryFiles = useCallback(async () => {
+    if (!memFiles || memFiles.length === 0) return;
+    setMemUploading(true);
+    try {
+      const res = await api.memory.upload(memFiles);
+      if (res.ok) {
+        setMemFiles(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        await a.refreshMemory();
+      }
+    } finally {
+      setMemUploading(false);
+    }
+  }, [memFiles, a]);
 
   const engine = a.settings.engine ?? a.config?.engine ?? "";
   const provider = a.settings.provider ?? a.config?.provider ?? "";
@@ -420,6 +438,27 @@ export default function ChatUI() {
                     onKeyDown={async (e) => { if (e.key === "Enter" && memSearch.trim()) setMemResults(await a.searchMemory(memSearch)); }} />
                   <button disabled={!memSearch.trim()} onClick={async () => setMemResults(await a.searchMemory(memSearch))}
                     style={{ ...inputBase, color: C.gold, cursor: "pointer", flexShrink: 0 }}>SEARCH</button>
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept=".txt,.md,.pdf,.json,.csv,.py,.js,.ts,.html,.yaml,.yml"
+                    style={{ display: "none" }}
+                    onChange={(e) => setMemFiles(e.target.files)}
+                  />
+                  <button onClick={() => fileInputRef.current?.click()}
+                    style={{ ...inputBase, color: C.cyan, cursor: "pointer", flexShrink: 0 }}>
+                    CHOOSE FILES
+                  </button>
+                  <span style={{ fontSize: 10, color: C.dim, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {memFiles ? `${memFiles.length} file${memFiles.length === 1 ? "" : "s"} selected` : "upload documents as memory chunks"}
+                  </span>
+                  <button disabled={!memFiles || memUploading} onClick={() => void uploadMemoryFiles()}
+                    style={{ ...inputBase, color: C.gold, cursor: "pointer", flexShrink: 0 }}>
+                    {memUploading ? "UPLOADING…" : "UPLOAD"}
+                  </button>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)", letterSpacing: "0.1em" }}>{a.memory.length} ENTRIES</span>

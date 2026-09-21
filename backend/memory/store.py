@@ -122,6 +122,22 @@ class MemoryStore:
             self._coll(user_id).add(ids=ids, documents=docs, metadatas=metas)
         return ids
 
+    def remember_chunks(self, user_id: str, chunks: list[tuple[str, dict]]) -> list[str]:
+        """Store pre-chunked text with custom metadata per chunk."""
+        if not chunks:
+            return []
+        ids, docs, metas = [], [], []
+        now = time.time()
+        for text, meta in chunks:
+            if not text.strip():
+                continue
+            ids.append(uuid.uuid4().hex)
+            docs.append(text.strip())
+            metas.append({**meta, "created_at": now})
+        if ids:
+            self._coll(user_id).add(ids=ids, documents=docs, metadatas=metas)
+        return ids
+
     # ---- read --------------------------------------------------------------
     def recall(self, user_id: str, query: str, n: int = 5) -> list[dict]:
         n = max(1, min(n, 25))

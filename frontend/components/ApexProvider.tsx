@@ -81,6 +81,7 @@ type ApexContextType = {
   addMemory: (text: string, category?: string) => Promise<void>;
   removeMemory: (ids: string[], all?: boolean) => Promise<void>;
   searchMemory: (q: string) => Promise<MemoryEntry[]>;
+  refreshMemory: () => Promise<void>;
   clearError: () => void;
 };
 
@@ -464,11 +465,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       addMemory,
       removeMemory,
       searchMemory,
+      refreshMemory,
       clearError,
     }),
     [loading, user, cfg, settings, conversations, activeId, messages, skill, skills, memory, busy, orb, voice.active, voiceEnabled, error,
      refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
-     addMemory, removeMemory, searchMemory, clearError],
+     addMemory, removeMemory, searchMemory, refreshMemory, clearError],
   );
 
   return <ApexContext.Provider value={value}>{children}</ApexContext.Provider>;
