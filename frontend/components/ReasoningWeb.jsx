@@ -45,6 +45,7 @@ const ROSTER = [
   ['calendar', 'Calendar', 'tool', 560, 356, true, -24, 5.5],
   ['email', 'Email', 'tool', 608, 286, false, -26, 5.5],
   ['drive', 'Drive', 'tool', 582, 132, false, 24, 5.5],
+  ['obsidian', 'Obsidian', 'tool', 640, 200, true, -24, 5.5],
 ]
 const META = {}; ROSTER.forEach((r) => { META[r[0]] = { label: r[1], col: COL[r[2]] } })
 

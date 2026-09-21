@@ -18,12 +18,13 @@ Endpoints
 from __future__ import annotations
 
 import json
+import mimetypes
 import threading
 import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, redirect, request, session
+from flask import Flask, Response, jsonify, redirect, request, send_file, session
 
 from agent.factory import build_engine, make_registry
 from agent.base import AgentContext
@@ -691,6 +692,26 @@ def create_app() -> Flask:
         resp.headers["Cache-Control"] = "no-cache, no-transform"
         resp.headers["X-Accel-Buffering"] = "no"
         return resp
+
+    # ---- Obsidian attachments -------------------------------------------------
+    @app.route("/api/obsidian/file", methods=["GET"])
+    def obsidian_file():
+        if not current_user():
+            return jsonify({"error": "Not signed in"}), 401
+        from tools.obsidian_tools import _is_md, _resolve, _vault_or_error
+        vault, err = _vault_or_error(config)
+        if err:
+            return jsonify({"error": err}), 400
+        rel = request.args.get("path", "").strip()
+        if not rel:
+            return jsonify({"error": "Missing path"}), 400
+        target, err = _resolve(vault, rel)
+        if err:
+            return jsonify({"error": err}), 400
+        if not target.exists() or _is_md(target):
+            return jsonify({"error": "Attachment not found or is a note"}), 404
+        mtype, _ = mimetypes.guess_type(str(target))
+        return send_file(str(target), mimetype=mtype)
 
     return app
 
