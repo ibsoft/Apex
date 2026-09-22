@@ -413,6 +413,24 @@ export default function ChatUI() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendDisabled, setSendDisabled] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const hasPreview = !!a.preview;
+
+  useEffect(() => {
+    if (collapsed || tab !== "chat" || !a.user || a.busy || hasPreview) return;
+    const focusInput = () => {
+      if (document.hidden || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      inputRef.current?.focus({ preventScroll: true });
+    };
+    // Wait for the visible textarea to be mounted and re-enabled after a reply.
+    const frame = requestAnimationFrame(focusInput);
+    window.addEventListener("focus", focusInput);
+    document.addEventListener("visibilitychange", focusInput);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("focus", focusInput);
+      document.removeEventListener("visibilitychange", focusInput);
+    };
+  }, [collapsed, tab, a.user?.id, a.busy, a.activeId, a.skill, hasPreview]);
 
   const send = useCallback(async (text?: string) => {
     const body = (text ?? draft).trim();
@@ -423,7 +441,6 @@ export default function ChatUI() {
       await a.sendMessage(body, { voice: false, skill: a.skill });
     } finally {
       setSendDisabled(false);
-      inputRef.current?.focus();
     }
   }, [a, draft]);
 
