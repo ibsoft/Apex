@@ -291,7 +291,8 @@ autonomous activity.
 APEX posts its suggestions as assistant messages and can also read them aloud
 when voice and spoken replies are enabled and the daily voice budget allows.
 Self-checks start after about a minute of idle operation and repeat hourly.
-They report diagnostics and can propose fixes; they do not edit code.
+They can take several minutes to run. They report diagnostics and can propose
+fixes; they do not edit code or rebuild the running frontend.
 **"Be quiet"** pauses autonomy for ten minutes; **"disable autonomous mode"**
 turns it off. Autonomous activity runs in the browser, so closing the tab stops it.
 

@@ -111,9 +111,6 @@ function harness(overrides = {}) {
         return options.chat ? options.chat(prompt) : 'An autonomous thought.';
       },
       publish: async (text, settings) => { calls.publish.push({ text, voice: settings.voice }); },
-      // Retained temporarily to demonstrate failures against the previous hook.
-      speak: (text) => { calls.publish.push({ text, voice: true }); },
-      sendMessage: async (text, settings) => { calls.publish.push({ text, voice: settings.voice }); },
     });
     for (const run of effects.splice(0)) run();
   }

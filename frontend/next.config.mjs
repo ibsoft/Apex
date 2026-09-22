@@ -7,6 +7,9 @@ const nextConfig = {
   },
   experimental: {
     optimizePackageImports: ["three"],
+    // Self-checks allow 120s for backend tests and 300s for the frontend build.
+    // Keep the proxy open long enough to return their diagnostics to the UI.
+    proxyTimeout: 480000,
   },
 };
 

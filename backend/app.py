@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -324,7 +327,7 @@ def create_app() -> Flask:
         root = Path(__file__).resolve().parent.parent
         out: dict = {"checks": [], "overall": "unknown"}
 
-        def run(cmd: list[str], cwd: Path, label: str, timeout: int = 120):
+        def run(cmd: list[str], cwd: Path, label: str, timeout: int = 120, env: dict | None = None):
             try:
                 proc = subprocess.run(
                     cmd,
@@ -332,6 +335,7 @@ def create_app() -> Flask:
                     capture_output=True,
                     text=True,
                     timeout=timeout,
+                    env=env,
                 )
                 ok = proc.returncode == 0
                 return {
@@ -357,9 +361,34 @@ def create_app() -> Flask:
 
         venv_python = root / ".venv" / "bin" / "python"
         pytest_cmd = [str(venv_python), "-m", "pytest", "backend/tests", "-q"] if venv_python.exists() else ["python", "-m", "pytest", "backend/tests", "-q"]
-        out["checks"].append(run(pytest_cmd, root, "backend tests"))
-        npm_cmd = ["npm", "run", "build"]
-        out["checks"].append(run(npm_cmd, root / "frontend", "frontend build", timeout=300))
+        try:
+            with tempfile.TemporaryDirectory(prefix="apex-self-check-data-") as directory:
+                test_env = {
+                    **os.environ,
+                    "DATA_DIR": directory,
+                    "DB_PATH": str(Path(directory) / "apex.db"),
+                    "DEV_MODE": "true",
+                    "DEV_AUTO_LOGIN": "apex-self-check",
+                }
+                out["checks"].append(run(pytest_cmd, root, "backend tests", env=test_env))
+        except Exception as exc:
+            out["checks"].append({"label": "backend tests", "ok": False, "error": str(exc)})
+        # Next builds can rewrite both output and TypeScript configuration.
+        # Diagnose a snapshot so autonomous checks cannot disrupt the live UI.
+        try:
+            with tempfile.TemporaryDirectory(prefix="apex-self-check-") as directory:
+                frontend = root / "frontend"
+                snapshot = Path(directory) / "frontend"
+                shutil.copytree(
+                    frontend, snapshot,
+                    ignore=shutil.ignore_patterns("node_modules", ".next*", "*.tsbuildinfo", "certificates"),
+                )
+                if (frontend / "node_modules").exists():
+                    (snapshot / "node_modules").symlink_to(frontend / "node_modules", target_is_directory=True)
+                build_env = {**os.environ, "NEXT_DIST_DIR": ".next", "NEXT_TELEMETRY_DISABLED": "1"}
+                out["checks"].append(run(["npm", "run", "build"], snapshot, "frontend build", timeout=300, env=build_env))
+        except Exception as exc:
+            out["checks"].append({"label": "frontend build", "ok": False, "error": str(exc)})
         out["overall"] = "healthy" if all(c.get("ok") for c in out["checks"]) else "needs_attention"
         return out
 
