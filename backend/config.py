@@ -167,6 +167,17 @@ class Config:
     # Leave empty to disable local browsing; internet image search still works.
     IMAGES_DIR = os.getenv("IMAGES_DIR", "")
 
+    # --- Autonomous mode ----------------------------------------------------
+    # When enabled, APEX may initiate interaction, propose actions and run
+    # lightweight self-improvement checks while the user is idle.
+    AUTONOMOUS_MODE = _bool("AUTONOMOUS_MODE", False)
+    # 1 = serious, 100 = maximum jokes.
+    HUMOR_LEVEL = _int("HUMOR_LEVEL", 30)
+    # 1 = sincere, 100 = maximum sarcasm.
+    SARCASM_LEVEL = _int("SARCASM_LEVEL", 20)
+    # 0 = no autonomous voice interactions, 100 = full daily budget.
+    AUTONOMOUS_VOICE_BUDGET = _int("AUTONOMOUS_VOICE_BUDGET", 50)
+
     # --- Dev mode ---------------------------------------------------------
     # Skips OpenAI OAuth: the UI signs in as a fixed local user so the whole
     # stack (chat, memory, settings) runs against local/KO providers.

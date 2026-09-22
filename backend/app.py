@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import subprocess
 import threading
 import time
 import uuid
@@ -41,6 +42,21 @@ from auth import (
     verify_subscription,
 )
 from config import config
+
+
+def _clamp_int(value, lo: int, hi: int) -> int:
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return lo
+
+
+def _rt_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 from db import get_db
 from memory.store import get_memory
 from models.embedders import EmbeddingManager
@@ -282,6 +298,68 @@ def create_app() -> Flask:
             }
         )
 
+    # ---- self health / healing (read-only diagnostics by default) -----------
+    _self_health_cache: dict = {"at": 0, "result": None}
+    _self_health_lock = threading.Lock()
+
+    @app.get("/api/self/health")
+    def self_health():
+        """Return cached self-health diagnostics. Use ?run=1 to refresh.
+
+        This endpoint never modifies code; it only reports test/build status so
+        the autonomous engine (or user) can decide whether to ask for a fix.
+        """
+        user = require_user()
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        run = request.args.get("run", "0") in {"1", "true", "yes"}
+        with _self_health_lock:
+            stale = run or (time.time() - _self_health_cache["at"] > 300)
+            if stale or _self_health_cache["result"] is None:
+                result = _run_self_diagnostics()
+                _self_health_cache = {"at": time.time(), "result": result}
+            return jsonify({"ok": True, "health": _self_health_cache["result"]})
+
+    def _run_self_diagnostics() -> dict:
+        root = Path(__file__).resolve().parent.parent
+        out: dict = {"checks": [], "overall": "unknown"}
+
+        def run(cmd: list[str], cwd: Path, label: str, timeout: int = 120):
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                ok = proc.returncode == 0
+                return {
+                    "label": label,
+                    "ok": ok,
+                    "returncode": proc.returncode,
+                    "stdout": proc.stdout[-800:] if proc.stdout else "",
+                    "stderr": proc.stderr[-800:] if proc.stderr else "",
+                }
+            except subprocess.TimeoutExpired as exc:
+                return {
+                    "label": label,
+                    "ok": False,
+                    "error": f"timed out after {timeout}s",
+                    "stdout": (exc.stdout or "")[-400:],
+                    "stderr": (exc.stderr or "")[-400:],
+                }
+            except Exception as exc:
+                return {"label": label, "ok": False, "error": str(exc)}
+
+        venv_python = root / ".venv" / "bin" / "python"
+        pytest_cmd = [str(venv_python), "-m", "pytest", "backend/tests", "-q"] if venv_python.exists() else ["python", "-m", "pytest", "backend/tests", "-q"]
+        out["checks"].append(run(pytest_cmd, root, "backend tests"))
+        npm_cmd = ["npm", "run", "build"]
+        out["checks"].append(run(npm_cmd, root / "frontend", "frontend build", timeout=300))
+        out["overall"] = "healthy" if all(c.get("ok") for c in out["checks"]) else "needs_attention"
+        return out
+
     @app.get("/api/logout")
     def logout():
         session.clear()
@@ -309,6 +387,10 @@ def create_app() -> Flask:
                 "follow_up_seconds": int(rt.get("follow_up_seconds") or config.FOLLOW_UP_SECONDS),
                 "voice": rt.get("voice") or config.VOICE,
                 "response_language": rt.get("response_language") or config.RESPONSE_LANGUAGE,
+                "autonomous_mode": _rt_bool(rt.get("autonomous_mode")) if "autonomous_mode" in rt else config.AUTONOMOUS_MODE,
+                "humor_level": _clamp_int(rt.get("humor_level"), 1, 100) if "humor_level" in rt else config.HUMOR_LEVEL,
+                "sarcasm_level": _clamp_int(rt.get("sarcasm_level"), 1, 100) if "sarcasm_level" in rt else config.SARCASM_LEVEL,
+                "autonomous_voice_budget": _clamp_int(rt.get("autonomous_voice_budget"), 0, 100) if "autonomous_voice_budget" in rt else config.AUTONOMOUS_VOICE_BUDGET,
                 "skills": [
                     {
                         "name": s.name,
@@ -366,7 +448,8 @@ def create_app() -> Flask:
             "engine", "provider", "model", "temperature", "voice", "response_language",
             "wake_word", "follow_up_seconds", "tts_enabled", "memory_enabled",
             "embedding_backend", "strict_tool_json", "ollama_base_url",
-            "base_url", "torch_model", "model_extra",
+            "base_url", "torch_model", "model_extra", "autonomous_mode",
+            "humor_level", "sarcasm_level", "autonomous_voice_budget",
         }
         for key, value in data.items():
             if key not in allowed:
@@ -379,6 +462,12 @@ def create_app() -> Flask:
                 value = str(value).lower()
                 if value not in {"en", "el"}:
                     continue
+            if key == "autonomous_mode":
+                value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+            if key in ("humor_level", "sarcasm_level"):
+                value = _clamp_int(value, 1, 100)
+            if key == "autonomous_voice_budget":
+                value = _clamp_int(value, 0, 100)
             get_db().set_setting(key, value)
         get_skill_manager().refresh()
         return jsonify({"ok": True, "settings": runtime()})
