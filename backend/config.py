@@ -152,10 +152,15 @@ class Config:
     # --- Obsidian (local Markdown vault) -----------------------------------
     # Path to the folder containing your Obsidian .md notes, e.g. /home/user/Obsidian
     OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", "")
-    # Daily notes folder inside the vault (empty = vault root).
+    # Optional daily-notes folder inside the vault (empty = vault root).
     OBSIDIAN_DAILY_NOTES_FOLDER = os.getenv("OBSIDIAN_DAILY_NOTES_FOLDER", "")
     # strftime format for the daily note filename. Default: 2026-09-21.md
     OBSIDIAN_DAILY_NOTES_FORMAT = os.getenv("OBSIDIAN_DAILY_NOTES_FORMAT", "%Y-%m-%d")
+
+    # --- EDITOR skill (Word / Excel generation) -----------------------------
+    EDITOR_ENABLED = _bool("EDITOR_ENABLED", True)
+    # Generated files are cleaned up after this many seconds.
+    EDITOR_FILE_TTL_SECONDS = _int("EDITOR_FILE_TTL_SECONDS", 3600)
 
     # --- Dev mode ---------------------------------------------------------
     # Skips OpenAI OAuth: the UI signs in as a fixed local user so the whole

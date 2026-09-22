@@ -117,8 +117,10 @@ def create_app() -> Flask:
         return row
 
     from tools.file_search import register_file_routes
+    from tools.editor_tools import register_editor_routes
 
     register_file_routes(app, require_user, config)
+    register_editor_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""

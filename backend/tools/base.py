@@ -99,6 +99,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.memory_tools import build_memory_tools
     from tools.obsidian_tools import build_obsidian_tools
     from tools.file_search import build_file_tools
+    from tools.editor_tools import build_editor_tools
 
     for tool in build_core_tools(registry, config):
         registry.register(tool)
@@ -108,5 +109,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     for tool in build_file_tools(config):
         registry.register(tool)
     for tool in build_obsidian_tools(config):
+        registry.register(tool)
+    for tool in build_editor_tools(config):
         registry.register(tool)
     return registry
