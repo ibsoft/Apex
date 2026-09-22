@@ -486,3 +486,23 @@ By default, the search root is `/`. To restrict it, set `FILE_SEARCH_ROOTS` in
 `backend/.env` to colon-separated directories and restart the backend. APEX users
 share the backend OS account's file permissions, so configure these roots for
 any shared deployment. Select the skill after restarting the backend to load it.
+
+
+### Public URLs for downloads and images
+
+Set `BASE_URL` in `backend/.env` to the public address of the **backend**:
+
+```dotenv
+BASE_URL=https://apex.example.com
+# Or a LAN address, for example: http://192.168.1.50:5001
+```
+
+All APEX-hosted file download and Obsidian attachment/image links use this base.
+It must serve `/api` routes; do not append `/api` to the setting. A reverse-proxy
+prefix such as `https://example.com/apex` is supported. Restart the backend and
+repeat the search to generate new links. Previously saved links retain their old
+address. External web-search image URLs still point to their original sources.
+
+File-search results also appear as **Download filename** links directly beneath
+chat replies. These come from the tool results and remain available when reopening
+the conversation, independently of how the model formats its answer.

@@ -20,7 +20,7 @@ class FileSearchTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.config = SimpleNamespace(FILE_SEARCH_ROOTS=str(self.root), SECRET_KEY='test-secret')
+        self.config = SimpleNamespace(FILE_SEARCH_ROOTS=str(self.root), SECRET_KEY='test-secret', BASE_URL='http://localhost')
         self.ctx = ToolContext(user_id='alice')
         self.document = self.root / 'Quarterly invoice [final].PDF'
         self.document.write_bytes(b'file content\x00\xff')
@@ -166,7 +166,7 @@ class FileSearchTests(unittest.TestCase):
         tool = build_file_tools(self.config)[0]
         result = json.loads(tool.call({'query': 'invoice'}, self.ctx))
         self.assertEqual(len(result['files']), 1)
-        self.assertTrue(result['files'][0]['download_url'].startswith('/api/files/download/'))
+        self.assertTrue(result['files'][0]['download_url'].startswith('http://localhost/api/files/download/'))
 
 
 if __name__ == '__main__':

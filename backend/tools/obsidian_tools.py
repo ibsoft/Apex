@@ -10,6 +10,7 @@ from urllib.parse import quote
 import yaml
 
 from tools.base import Tool, ToolContext
+from public_urls import public_url
 
 
 def _vault_or_error(config):
@@ -436,8 +437,7 @@ def build_obsidian_tools(config) -> list[Tool]:
             return aerr
         if not target.exists() or _is_md(target):
             return f"Attachment not found or is a note: {rel}"
-        base_url = getattr(config, "BASE_URL", "http://localhost:5001").rstrip("/")
-        return f"{base_url}/api/obsidian/file?path={quote(rel, safe='')}" if rel else err
+        return public_url(config, f"/api/obsidian/file?path={quote(rel, safe='')}") if rel else err
 
     schemas = {
         "obsidian_list_notes": {

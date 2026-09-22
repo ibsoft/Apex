@@ -31,6 +31,7 @@ import {
   ChatEvent,
 } from "../lib/api";
 import { useVoiceEngine, VoicePhase } from "../lib/voice";
+import { speechText } from "./speechText";
 
 export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -311,6 +312,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
         let spoken = "";
         let streamError = "";
+        let streamedTools: NonNullable<NonNullable<Message["meta"]>["tools"]> = [];
         const payload: any = {
           message: clean,
           conversation_id: convId,
@@ -325,19 +327,21 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             spoken += ev.content ?? "";
             pushAssistant({ streaming: true, content: spoken });
           } else if (ev.type === "tool_call") {
+            streamedTools = [...streamedTools, { name: ev.name, args: ev.arguments, running: true }];
             pushAssistant({
               streaming: true,
               content: spoken,
               meta: {
                 voice: !!opts.voice,
-                tools: [...(byConvRef.current[convId]?.find((msg) => msg.id === asstId)?.meta?.tools ?? []), { name: ev.name, args: ev.arguments, running: true }],
+                tools: streamedTools,
               },
             });
           } else if (ev.type === "tool_result") {
-            const tools = (byConvRef.current[convId]?.find((msg) => msg.id === asstId)?.meta?.tools ?? []).map(
-              (t) => (t.name === ev.name ? { ...t, output: ev.output, running: false } : t),
-            );
-            pushAssistant({ streaming: true, content: spoken, meta: { voice: !!opts.voice, tools } });
+            const pendingIndex = streamedTools.findIndex((t) => t.name === ev.name && t.running);
+            streamedTools = pendingIndex >= 0
+              ? streamedTools.map((t, i) => i === pendingIndex ? { ...t, output: ev.output, running: false } : t)
+              : [...streamedTools, { name: ev.name, output: ev.output, running: false }];
+            pushAssistant({ streaming: true, content: spoken, meta: { voice: !!opts.voice, tools: streamedTools } });
           } else if (ev.type === "memory") {
             void refreshMemory();
           } else if (ev.type === "error") {
@@ -346,13 +350,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             pushAssistant({
               streaming: false,
               content: spoken || streamError,
-              meta: { voice: !!opts.voice, tools: [], error: true },
+              meta: { voice: !!opts.voice, tools: streamedTools, error: true },
             });
           } else if (ev.type === "done") {
             pushAssistant({
               streaming: false,
               content: spoken,
-              meta: { voice: !!opts.voice, tools: undefined as any, usage: ev.usage },
+              meta: { voice: !!opts.voice,
+                tools: streamedTools, usage: ev.usage },
             });
           } else if (ev.type === "end") {
             pushAssistant({ streaming: false, content: spoken });
@@ -369,7 +374,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (opts.voice && spoken.trim() && settingsRef.current.tts_enabled !== false) {
-          voice.speak(spoken);
+          voice.speak(speechText(spoken));
         } else if (!opts.voice) {
           setOrb("idle");
         }

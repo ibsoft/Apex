@@ -1,34 +1,34 @@
 {
   "pages": {
     "/_not-found/page": [
-      "static/chunks/webpack-439639aa6e54be01.js",
-      "static/chunks/4bd1b696-264964512f52e923.js",
-      "static/chunks/684-5f84ad1b561cb929.js",
+      "static/chunks/webpack-72bab2da79c61a69.js",
+      "static/chunks/4bd1b696-bc828aaa2d7dacea.js",
+      "static/chunks/684-2ab9f3bd227e075a.js",
       "static/chunks/main-app-626937ad4b993850.js",
-      "static/chunks/app/_not-found/page-7d607780c8240968.js"
+      "static/chunks/app/_not-found/page-5e7a68b3767f5b98.js"
     ],
     "/layout": [
-      "static/chunks/webpack-439639aa6e54be01.js",
-      "static/chunks/4bd1b696-264964512f52e923.js",
-      "static/chunks/684-5f84ad1b561cb929.js",
+      "static/chunks/webpack-72bab2da79c61a69.js",
+      "static/chunks/4bd1b696-bc828aaa2d7dacea.js",
+      "static/chunks/684-2ab9f3bd227e075a.js",
       "static/chunks/main-app-626937ad4b993850.js",
       "static/css/86b1f3e88883fa13.css",
       "static/chunks/app/layout-fee11ee7d072b70e.js"
     ],
     "/api/weather/route": [
-      "static/chunks/webpack-439639aa6e54be01.js",
-      "static/chunks/4bd1b696-264964512f52e923.js",
-      "static/chunks/684-5f84ad1b561cb929.js",
+      "static/chunks/webpack-72bab2da79c61a69.js",
+      "static/chunks/4bd1b696-bc828aaa2d7dacea.js",
+      "static/chunks/684-2ab9f3bd227e075a.js",
       "static/chunks/main-app-626937ad4b993850.js",
       "static/chunks/app/api/weather/route-4fec6a8d8e965c89.js"
     ],
     "/page": [
-      "static/chunks/webpack-439639aa6e54be01.js",
-      "static/chunks/4bd1b696-264964512f52e923.js",
-      "static/chunks/684-5f84ad1b561cb929.js",
+      "static/chunks/webpack-72bab2da79c61a69.js",
+      "static/chunks/4bd1b696-bc828aaa2d7dacea.js",
+      "static/chunks/684-2ab9f3bd227e075a.js",
       "static/chunks/main-app-626937ad4b993850.js",
       "static/css/6ea392da1762a308.css",
-      "static/chunks/app/page-e89d86fac342806d.js"
+      "static/chunks/app/page-77c0cd33cda9b8f5.js"
     ]
   }
 }

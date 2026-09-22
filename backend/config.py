@@ -32,7 +32,8 @@ class Config:
     SECRET_KEY = os.getenv(
         "SECRET_KEY", "dev-change-me-" + os.urandom(8).hex()
     )
-    BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}")
+    # Public backend address used for ALL hosted file/media links and OAuth callbacks.
+    BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}").strip().rstrip("/")
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
     DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
     DB_PATH = Path(os.getenv("DB_PATH", DATA_DIR / "apex.db"))

@@ -13,6 +13,7 @@ from flask import jsonify, send_file
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from tools.base import Tool, ToolContext
+from public_urls import public_url
 
 # Virtual filesystems can expose streams/devices rather than ordinary files.
 VIRTUAL_ROOTS = (Path('/proc'), Path('/sys'), Path('/dev'), Path('/run'))
@@ -113,6 +114,10 @@ def search_files(args, ctx: ToolContext, config):
         limit = max(1, min(int(args.get('limit', 20)), 100))
     except (TypeError, ValueError):
         return {'error': 'limit must be a number from 1 to 100.'}
+    try:
+        download_base = public_url(config, '/api/files/download/')
+    except ValueError:
+        return {'error': 'BASE_URL must be configured as a valid public http(s) server URL.'}
     root_arg = args.get('root')
     try:
         configured_roots = allowed_roots(config)
@@ -156,7 +161,7 @@ def search_files(args, ctx: ToolContext, config):
                             token = signer(config).dumps({'user': str(ctx.user_id), 'path': str(path),
                                                           'fingerprint': fingerprint(info)})
                             results.append({'name': entry.name, 'path': str(path), 'size_bytes': info.st_size,
-                                            'download_url': '/api/files/download/' + token})
+                                            'download_url': download_base + token})
                             if len(results) >= limit:
                                 truncated = True
                                 break
