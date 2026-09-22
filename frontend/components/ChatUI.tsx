@@ -81,7 +81,7 @@ function InlineImage({ src, alt }: { src: string; alt: string }) {
 
 function renderRichText(text: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const regex = /(!?)\[((?:\\.|[^\]\\])*)\]\((https?:\/\/[^\s)]+|\/api\/files\/download\/[A-Za-z0-9_.-]+|\/api\/editor\/download\/[A-Za-z0-9_.-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/files\/download\/[A-Za-z0-9_.-]+)|(\/api\/editor\/download\/[A-Za-z0-9_.-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
+  const regex = /(!?)\[((?:\\.|[^\]\\])*)\]\((https?:\/\/[^\s)]+|\/api\/files\/download\/[A-Za-z0-9_.-]+|\/api\/editor\/download\/[A-Za-z0-9_.-]+|\/api\/images\/file\/[A-Za-z0-9_.-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/files\/download\/[A-Za-z0-9_.-]+)|(\/api\/editor\/download\/[A-Za-z0-9_.-]+)|(\/api\/images\/file\/[A-Za-z0-9_.-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
@@ -333,6 +333,65 @@ function PreviewModal() {
   );
 }
 
+function useNow() {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+function formatTimeLeft(ms: number): string {
+  if (ms <= 0) return "now";
+  const totalSeconds = Math.ceil(ms / 1000);
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function TimersPanel() {
+  const a = useApex();
+  const now = useNow();
+  const items = [
+    ...a.timers.map((t) => ({ ...t, type: "timer" as const })),
+    ...a.reminders.map((r) => ({ ...r, type: "reminder" as const })),
+  ].sort((a, b) => a.fireAt - b.fireAt);
+  if (!items.length) return null;
+  return (
+    <div style={{ padding: "8px 12px", borderTop: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 6 }}>
+      {items.map((item) => (
+        <div key={item.id} style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "6px 10px", borderRadius: 8,
+          background: "rgba(255,255,255,0.03)", border: `1px solid ${C.line}`,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <span style={{ fontSize: 10, color: C.cyan, fontFamily: "var(--font-mono)", letterSpacing: "0.08em" }}>
+              {item.type === "timer" ? "TIMER" : "REMINDER"}
+            </span>
+            <span style={{ fontSize: 11, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {item.name}
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+            <span style={{ fontSize: 11, color: C.gold, fontFamily: "var(--font-mono)" }}>
+              {formatTimeLeft(item.fireAt - now)}
+            </span>
+            <button onClick={() => item.type === "timer" ? a.cancelTimer(item.id) : a.cancelReminder(item.id)}
+              aria-label="Cancel"
+              style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 14, lineHeight: 1 }}>
+              ×
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Empty({ label }: { label: string }) {
   return <div style={{ color: C.dim, fontSize: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.1em", textAlign: "center", padding: "18px 8px" }}>{label}</div>;
 }
@@ -486,6 +545,7 @@ export default function ChatUI() {
             {tab === "chat" && (
               <>
                 <MensajeList messages={a.messages} />
+                <TimersPanel />
                 <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 8 }}>
                   {/* skills */}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
