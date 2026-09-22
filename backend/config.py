@@ -162,6 +162,11 @@ class Config:
     # Generated files are cleaned up after this many seconds.
     EDITOR_FILE_TTL_SECONDS = _int("EDITOR_FILE_TTL_SECONDS", 3600)
 
+    # --- Image browser (optional local gallery) -----------------------------
+    # Absolute path to a directory of images APEX can browse locally by voice.
+    # Leave empty to disable local browsing; internet image search still works.
+    IMAGES_DIR = os.getenv("IMAGES_DIR", "")
+
     # --- Dev mode ---------------------------------------------------------
     # Skips OpenAI OAuth: the UI signs in as a fixed local user so the whole
     # stack (chat, memory, settings) runs against local/KO providers.

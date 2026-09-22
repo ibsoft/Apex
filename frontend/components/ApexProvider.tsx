@@ -50,6 +50,9 @@ export type Message = {
 
 export type Settings = Record<string, any>;
 
+export type TimerItem = { id: string; name: string; fireAt: number };
+export type ReminderItem = { id: string; name: string; fireAt: number };
+
 type ApexContextType = {
   loading: boolean;
   ready: boolean;
@@ -75,6 +78,8 @@ type ApexContextType = {
   } | null;
   previewMaximized: boolean;
   chatCollapsed: boolean;
+  timers: TimerItem[];
+  reminders: ReminderItem[];
   /* actions */
   refresh: () => Promise<void>;
   login: () => void;
@@ -97,6 +102,12 @@ type ApexContextType = {
   togglePreviewMaximized: () => void;
   nextPreview: () => void;
   previousPreview: () => void;
+  setTimer: (name: string, seconds: number) => string;
+  setReminder: (name: string, fireAt: number) => string;
+  cancelTimer: (id: string) => void;
+  cancelReminder: (id: string) => void;
+  openImageBrowser: (query?: string, source?: "web" | "local") => Promise<void>;
+  searchImages: (query: string, source?: "web" | "local") => Promise<void>;
 };
 
 const ApexContext = createContext<ApexContextType | null>(null);
@@ -136,6 +147,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   } | null>(null);
   const [previewMaximized, setPreviewMaximized] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [timers, setTimers] = useState<TimerItem[]>([]);
+  const [reminders, setReminders] = useState<ReminderItem[]>([]);
 
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -155,6 +168,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   previewRef.current = preview;
   const previewMaximizedRef = useRef(previewMaximized);
   previewMaximizedRef.current = previewMaximized;
+  const timersRef = useRef(timers);
+  timersRef.current = timers;
+  const remindersRef = useRef(reminders);
+  remindersRef.current = reminders;
 
   const messages = activeId ? byConv[activeId] ?? [] : [];
 
@@ -286,6 +303,102 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setPreview((p) => (p ? { ...p, index: (p.index - 1 + p.items.length) % p.items.length } : p));
   }, []);
 
+  /* ---------- image browser ---------- */
+
+  const openImageBrowser = useCallback(async (query = "", source: "web" | "local" = "web") => {
+    try {
+      const result: any = source === "local"
+        ? await api.images.localSearch(query)
+        : await api.images.webSearch(query);
+      if (result?.error) {
+        speakRef.current(result.error);
+        return;
+      }
+      const images = result?.images ?? [];
+      if (!images.length) {
+        speakRef.current(query ? `No images found for ${query}` : "No images found");
+        return;
+      }
+      const items = images.map((img: any) => ({ url: img.url, title: img.name, kind: "image" as const }));
+      const titlePrefix = source === "local" ? "Local Images" : "Web Images";
+      setPreview({ title: query ? `${titlePrefix}: ${query}` : titlePrefix, items, index: 0 });
+      speakRef.current(query ? `Found ${images.length} images for ${query}` : `Found ${images.length} images`);
+    } catch (err: any) {
+      speakRef.current(err?.message || "Could not open image browser");
+    }
+  }, []);
+
+  const searchImages = useCallback(async (query: string, source: "web" | "local" = "web") => {
+    await openImageBrowser(query, source);
+  }, [openImageBrowser]);
+
+  /* ---------- timers & reminders ---------- */
+
+  const playNotification = useCallback(() => {
+    try {
+      const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AC) return;
+      const ctx = new AC();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.5);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.6);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.6);
+      setTimeout(() => ctx.close().catch(() => {}), 700);
+    } catch {
+      // ignore audio errors
+    }
+  }, []);
+
+  const setTimer = useCallback((name: string, seconds: number) => {
+    const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setTimers((prev) => [...prev, { id, name: name || "Timer", fireAt: Date.now() + seconds * 1000 }]);
+    return id;
+  }, []);
+
+  const setReminder = useCallback((name: string, fireAt: number) => {
+    const id = `r_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setReminders((prev) => [...prev, { id, name: name || "Reminder", fireAt }]);
+    return id;
+  }, []);
+
+  const cancelTimer = useCallback((id: string) => {
+    setTimers((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const cancelReminder = useCallback((id: string) => {
+    setReminders((prev) => prev.filter((r) => r.id !== id));
+  }, []);
+
+  // Fire timers/reminders every second.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = Date.now();
+      setTimers((prev) => {
+        const fired = prev.filter((t) => t.fireAt <= now);
+        if (fired.length) {
+          playNotification();
+          fired.forEach((t) => speakRef.current(`Timer ${t.name} is done`));
+        }
+        return prev.filter((t) => t.fireAt > now);
+      });
+      setReminders((prev) => {
+        const fired = prev.filter((r) => r.fireAt <= now);
+        if (fired.length) {
+          playNotification();
+          fired.forEach((r) => speakRef.current(`Reminder: ${r.name}`));
+        }
+        return prev.filter((r) => r.fireAt > now);
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [playNotification]);
+
   // Auto-open/update preview for voice assistant messages that contain images
   // or backend file/document links. Only pop up when the chat panel is
   // collapsed so the inline chat view is not duplicated.
@@ -313,6 +426,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const NORMALIZE_PREVIEW_RE = /^(normali(?:ze|ise)|minimize|shrink|restore|small(er)?\s+window)\b/i;
   const NEXT_PREVIEW_RE = /^(next|forward|next\s+(image|one|photo|picture|page))\b/i;
   const PREV_PREVIEW_RE = /^(previous|back|last|prev|earlier\s+(image|one|photo|picture|page))\b/i;
+  const CANCEL_TIMER_RE = /^(cancel|stop|clear)\s+(?:all\s+)?timers?/i;
+  const CANCEL_REMINDER_RE = /^(cancel|stop|clear)\s+(?:all\s+)?reminders?/i;
+  const OPEN_IMAGES_RE = /^(?:show|open|browse)\s+(?:me\s+)?(?:all\s+)?(?:my\s+)?(?:the\s+)?(?:image\s+)?(?:browser|gallery|images?|pictures?|pics?|photos?)$/i;
+  const SEARCH_IMAGES_RE = /^(?:search|find|show)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|pic)s?\s+(?:of|for)?\s*(.+)$/i;
+  const LOCAL_IMAGE_RE = /\b(local|my folder|my computer|from my pc|on my computer|from my folder|from my pictures|my pictures)\b/i;
 
   const voice = useVoiceEngine({
     enabled: voiceEnabled,
@@ -323,7 +441,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     onPhase: onVoicePhase,
     onCommand: (text: string) => {
       if (!userRef.current) return;
-      const trimmed = text.trim();
+      const trimmed = text.trim().replace(/[.!?;]+$/, "");
       if (previewRef.current && CLOSE_PREVIEW_RE.test(trimmed)) {
         closePreview();
         speakRef.current("Preview closed");
@@ -349,6 +467,46 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         previousPreview();
         const item = previewRef.current?.items[previewRef.current?.index ?? 0];
         speakRef.current(item ? `Showing ${item.title}` : "Previous");
+        return;
+      }
+      if (CANCEL_TIMER_RE.test(trimmed)) {
+        setTimers([]);
+        speakRef.current("All timers cancelled");
+        return;
+      }
+      if (CANCEL_REMINDER_RE.test(trimmed)) {
+        setReminders([]);
+        speakRef.current("All reminders cancelled");
+        return;
+      }
+      const timerCmd = parseTimerCommand(trimmed);
+      if (timerCmd) {
+        const id = setTimer(timerCmd.name, timerCmd.seconds);
+        const t = timersRef.current.find((x) => x.id === id);
+        speakRef.current(t ? `Timer ${t.name} set for ${formatDuration(timerCmd.seconds)}` : "Timer set");
+        return;
+      }
+      const reminderCmd = parseReminderCommand(trimmed);
+      if (reminderCmd) {
+        const id = setReminder(reminderCmd.name, reminderCmd.fireAt);
+        const r = remindersRef.current.find((x) => x.id === id);
+        speakRef.current(r ? `Reminder set: ${r.name}` : "Reminder set");
+        return;
+      }
+      if (OPEN_IMAGES_RE.test(trimmed)) {
+        const source: "web" | "local" = LOCAL_IMAGE_RE.test(trimmed) ? "local" : "web";
+        if (source === "web") {
+          speakRef.current("What should I search for?");
+        } else {
+          void openImageBrowser("", source);
+        }
+        return;
+      }
+      const imageSearchMatch = trimmed.match(SEARCH_IMAGES_RE);
+      if (imageSearchMatch) {
+        const query = imageSearchMatch[1].trim();
+        const source: "web" | "local" = LOCAL_IMAGE_RE.test(trimmed) ? "local" : "web";
+        void openImageBrowser(query, source);
         return;
       }
       const switchCmd = parseSkillSwitch(trimmed, skillsRef.current);
@@ -378,37 +536,104 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   const sendMessage = useCallback(
     async (text: string, opts: { voice?: boolean; skill?: string } = {}) => {
-      let clean = text.trim();
+      let clean = text.trim().replace(/[.!?;]+$/, "");
       if (!clean || busy) return;
-
-      // Handle explicit skill-switching commands in typed input so the UI
-      // highlights the new skill immediately.
-      const switchCmd = parseSkillSwitch(clean, skillsRef.current);
-      if (switchCmd) {
-        setSkill(switchCmd.skill);
-        if (!switchCmd.rest) {
-          setBusy(false);
-          setOrb("idle");
-          return;
-        }
-        clean = switchCmd.rest;
-        opts = { ...opts, skill: switchCmd.skill };
-      }
-
-      const fallbackId = activeIdRef.current;
 
       try {
         setBusy(true);
         setError(null);
         setOrb("thinking");
 
-        let convId = fallbackId;
+        // Make sure a conversation exists before handling commands that need to
+        // post a reply into the chat.
+        let convId = activeIdRef.current;
         if (!convId) {
           const conv = await api.conversations.create({ skill: opts.skill ?? skillRef.current });
           setConversations((l) => [conv, ...l]);
           setActiveId(conv.id);
           setByConv((m) => ({ ...m, [conv.id]: [] }));
           convId = conv.id;
+        }
+
+        // Handle explicit skill-switching commands in typed input so the UI
+        // highlights the new skill immediately.
+        const switchCmd = parseSkillSwitch(clean, skillsRef.current);
+        if (switchCmd) {
+          setSkill(switchCmd.skill);
+          if (!switchCmd.rest) {
+            if (!opts.voice) {
+              setByConv((m) => ({
+                ...m,
+                [convId]: [...(m[convId] ?? []), mkMsg("assistant", `Switched to ${switchCmd.skill} skill.`)],
+              }));
+            }
+            setBusy(false);
+            setOrb("idle");
+            return;
+          }
+          clean = switchCmd.rest;
+          opts = { ...opts, skill: switchCmd.skill };
+        }
+
+        const timerCmd = parseTimerCommand(clean);
+        if (timerCmd) {
+          const id = setTimer(timerCmd.name, timerCmd.seconds);
+          const t = timersRef.current.find((x) => x.id === id);
+          const reply = t ? `Timer "${t.name}" set for ${formatDuration(timerCmd.seconds)}.` : "Timer set.";
+          if (opts.voice) {
+            speakRef.current(reply);
+          } else {
+            setByConv((m) => ({
+              ...m,
+              [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)],
+            }));
+          }
+          setBusy(false);
+          setOrb("idle");
+          return;
+        }
+
+        const reminderCmd = parseReminderCommand(clean);
+        if (reminderCmd) {
+          const id = setReminder(reminderCmd.name, reminderCmd.fireAt);
+          const r = remindersRef.current.find((x) => x.id === id);
+          const timeStr = new Date(reminderCmd.fireAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          const reply = r ? `Reminder set: "${r.name}" at ${timeStr}.` : "Reminder set.";
+          if (opts.voice) {
+            speakRef.current(reply);
+          } else {
+            setByConv((m) => ({
+              ...m,
+              [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)],
+            }));
+          }
+          setBusy(false);
+          setOrb("idle");
+          return;
+        }
+
+        if (OPEN_IMAGES_RE.test(clean)) {
+          const source: "web" | "local" = LOCAL_IMAGE_RE.test(clean) ? "local" : "web";
+          if (source === "web") {
+            setByConv((m) => ({
+              ...m,
+              [convId]: [...(m[convId] ?? []), mkMsg("assistant", "What should I search for?")],
+            }));
+          } else {
+            await openImageBrowser("", source);
+          }
+          setBusy(false);
+          setOrb("idle");
+          return;
+        }
+        const imageSearchMatch = clean.match(SEARCH_IMAGES_RE);
+        if (imageSearchMatch) {
+          const query = imageSearchMatch[1].trim();
+          const source: "web" | "local" = LOCAL_IMAGE_RE.test(clean) ? "local" : "web";
+          await openImageBrowser(query, source);
+          setBusy(false);
+          setOrb("idle");
+          return;
         }
 
         // append the user message optimistically
@@ -585,6 +810,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       preview,
       previewMaximized,
       chatCollapsed,
+      timers,
+      reminders,
       refresh,
       login,
       logout,
@@ -606,10 +833,17 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       togglePreviewMaximized,
       nextPreview,
       previousPreview,
+      setTimer,
+      setReminder,
+      cancelTimer,
+      cancelReminder,
+      openImageBrowser,
+      searchImages,
     }),
     [loading, user, cfg, settings, conversations, activeId, messages, skill, skills, memory, busy, orb, voice.active, voiceEnabled, error,
-     preview, previewMaximized, chatCollapsed, refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
-     addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview],
+     preview, previewMaximized, chatCollapsed, timers, reminders, refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
+     addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview,
+     setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages],
   );
 
   return <ApexContext.Provider value={value}>{children}</ApexContext.Provider>;
@@ -622,6 +856,138 @@ const PREVIEWABLE_URL_RE = /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|ed
 
 function isPreviewImage(url: string): boolean {
   return IMAGE_EXT_RE.test(url);
+}
+
+const WRITTEN_NUMBERS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+  sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
+  thirty: 30, forty: 40, fifty: 50, sixty: 60,
+};
+
+function parseNumber(token: string): number | null {
+  const digits = /^\d+$/.test(token) ? parseInt(token, 10) : null;
+  if (digits !== null) return digits;
+  return WRITTEN_NUMBERS[token.toLowerCase()] ?? null;
+}
+
+function parseDurationSeconds(text: string): number | null {
+  const hours = text.match(/(\d+|\w+)\s*hours?/i);
+  const minutes = text.match(/(\d+|\w+)\s*minutes?/i);
+  const seconds = text.match(/(\d+|\w+)\s*seconds?/i);
+  let total = 0;
+  if (hours) {
+    const n = parseNumber(hours[1]);
+    if (n !== null) total += n * 3600;
+  }
+  if (minutes) {
+    const n = parseNumber(minutes[1]);
+    if (n !== null) total += n * 60;
+  }
+  if (seconds) {
+    const n = parseNumber(seconds[1]);
+    if (n !== null) total += n;
+  }
+  return total > 0 ? total : null;
+}
+
+function parseClockTime(text: string): number | null {
+  // Match "3 PM", "15:30", "3:30 PM", "14:00"
+  const m = text.match(/\b(\d{1,2}):(\d{2})\s*(AM|PM)?\b|\b(\d{1,2})\s*(AM|PM)\b/i);
+  if (!m) return null;
+  let hour = m[1] ? parseInt(m[1], 10) : parseInt(m[4], 10);
+  const minute = m[2] ? parseInt(m[2], 10) : 0;
+  const ampm = (m[3] || m[5] || "").toUpperCase();
+  if (ampm === "PM" && hour !== 12) hour += 12;
+  if (ampm === "AM" && hour === 12) hour = 0;
+  const now = new Date();
+  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
+  if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target.getTime();
+}
+
+function formatDuration(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const parts: string[] = [];
+  if (h) parts.push(`${h} hour${h > 1 ? "s" : ""}`);
+  if (m) parts.push(`${m} minute${m > 1 ? "s" : ""}`);
+  if (s || parts.length === 0) parts.push(`${s} second${s !== 1 ? "s" : ""}`);
+  return parts.join(" ");
+}
+
+function parseTimerCommand(text: string): { name: string; seconds: number } | null {
+  const clean = text.trim().replace(/[.!?;]+$/, "");
+  // "set a timer for 5 seconds", "timer 5 seconds", "countdown 5 seconds",
+  // "start timer for 10 minutes", "create a timer for 1 hour"
+  const patterns = [
+    /^(?:set|start|create)\s+(?:a\s+)?timer\s+(?:for\s+)?(.+)$/i,
+    /^(?:set|start|create)\s+(?:a\s+)?countdown\s+(?:for\s+)?(.+)$/i,
+    /^timer\s+(?:for\s+)?(.+)$/i,
+    /^countdown\s+(?:for\s+)?(.+)$/i,
+  ];
+  for (const re of patterns) {
+    const m = clean.match(re);
+    if (m) {
+      const body = m[1];
+      const seconds = parseDurationSeconds(body);
+      if (!seconds) continue;
+      const name = body.replace(/\d+|\w+\s*(hours?|minutes?|seconds?)/gi, "").replace(/^[\s,]+|[\s,]+$/g, "").trim() || "Timer";
+      return { name, seconds };
+    }
+  }
+  return null;
+}
+
+function parseReminderCommand(text: string): { name: string; fireAt: number } | null {
+  const clean = text.trim().replace(/[.!?;]+$/, "");
+
+  // Helper to resolve a time expression (duration or clock time).
+  const resolveTime = (expr: string): { fireAt: number; isDuration: boolean } | null => {
+    const seconds = parseDurationSeconds(expr);
+    if (seconds) return { fireAt: Date.now() + seconds * 1000, isDuration: true };
+    const clock = parseClockTime(expr);
+    if (clock) return { fireAt: clock, isDuration: false };
+    return null;
+  };
+
+  // Pattern groups: each returns [timeExpr, task] in either order.
+  const patterns: { re: RegExp; timeIdx: number; taskIdx: number }[] = [
+    // remind me in 5 minutes to call John
+    { re: /^remind\s+me\s+in\s+(.+?)\s+to\s+(.+)$/i, timeIdx: 1, taskIdx: 2 },
+    // remind me at 3 PM to call John
+    { re: /^remind\s+me\s+at\s+(.+?)\s+to\s+(.+)$/i, timeIdx: 1, taskIdx: 2 },
+    // remind me to call John in 5 minutes
+    { re: /^remind\s+me\s+to\s+(.+?)\s+in\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
+    // remind me to call John at 3 PM
+    { re: /^remind\s+me\s+to\s+(.+?)\s+at\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
+    // add a reminder to call John in 5 minutes / at 3 PM
+    { re: /^(?:add|set)\s+a?\s*reminder\s+to\s+(.+?)\s+(?:in|at)\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
+    // add reminder call John in 5 minutes (optional "to")
+    { re: /^(?:add|set)\s+a?\s*reminder\s+(?:to\s+)?(.+?)\s+(?:in|at)\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
+    // reminder to call John in 5 minutes
+    { re: /^reminder\s+(?:to\s+)?(.+?)\s+(?:in|at)\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
+    // remind me in 5 minutes (no task)
+    { re: /^remind\s+me\s+in\s+(.+)$/i, timeIdx: 1, taskIdx: 0 },
+    // remind me at 3 PM (no task)
+    { re: /^remind\s+me\s+at\s+(.+)$/i, timeIdx: 1, taskIdx: 0 },
+  ];
+
+  for (const { re, timeIdx, taskIdx } of patterns) {
+    const m = clean.match(re);
+    if (!m) continue;
+    const timeExpr = m[timeIdx].trim();
+    const task = taskIdx > 0 ? m[taskIdx].trim() : "";
+    const resolved = resolveTime(timeExpr);
+    if (!resolved) continue;
+    return { name: task || "Reminder", fireAt: resolved.fireAt };
+  }
+
+  return null;
 }
 
 function parseSkillSwitch(text: string, skills: Skill[]): { skill: string; rest: string } | null {
