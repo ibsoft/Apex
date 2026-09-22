@@ -705,6 +705,31 @@ export default function ChatUI() {
                     Read responses aloud
                   </label>
                 </Row>
+                <Row label="Autonomous mode">
+                  <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+                    <input type="checkbox" checked={!!(a.settings.autonomous_mode ?? a.config?.autonomous_mode)}
+                      onChange={(e) => void a.updateSettings({ autonomous_mode: e.target.checked })} />
+                    Let APEX initiate, evolve and play
+                  </label>
+                </Row>
+                <Row label="Humor level">
+                  <input type="range" min={1} max={100}
+                    value={Number(a.settings.humor_level ?? a.config?.humor_level ?? 30)}
+                    onChange={(e) => void a.updateSettings({ humor_level: Number(e.target.value) })} />
+                  <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.humor_level ?? a.config?.humor_level ?? 30)}</span>
+                </Row>
+                <Row label="Sarcasm level">
+                  <input type="range" min={1} max={100}
+                    value={Number(a.settings.sarcasm_level ?? a.config?.sarcasm_level ?? 20)}
+                    onChange={(e) => void a.updateSettings({ sarcasm_level: Number(e.target.value) })} />
+                  <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.sarcasm_level ?? a.config?.sarcasm_level ?? 20)}</span>
+                </Row>
+                <Row label="Daily voice budget">
+                  <input type="range" min={0} max={100}
+                    value={Number(a.settings.autonomous_voice_budget ?? a.config?.autonomous_voice_budget ?? 50)}
+                    onChange={(e) => void a.updateSettings({ autonomous_voice_budget: Number(e.target.value) })} />
+                  <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.autonomous_voice_budget ?? a.config?.autonomous_voice_budget ?? 50)}%</span>
+                </Row>
                 <Row label="Account">
                   <div style={{ display: "flex", gap: 8 }}>
                     {a.user

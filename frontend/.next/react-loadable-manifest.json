@@ -10,5 +10,9 @@
       "static/chunks/355.3465a23593812a4b.js",
       "static/chunks/877.85c19a2352e0ec6b.js"
     ]
+  },
+  "lib/autonomous.ts -> ./api": {
+    "id": 1886,
+    "files": []
   }
 }

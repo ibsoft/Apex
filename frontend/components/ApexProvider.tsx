@@ -32,6 +32,7 @@ import {
 } from "../lib/api";
 import { useVoiceEngine, VoicePhase } from "../lib/voice";
 import { speechText } from "./speechText";
+import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
 
 export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -57,7 +58,7 @@ type ApexContextType = {
   loading: boolean;
   ready: boolean;
   user: User | null;
-  config: { engine: string; provider: string; providers: any; engines: string[]; models: string[]; memory_enabled: boolean; embedding: string | null; wake_word: string; follow_up_seconds: number; voice: string; response_language: string; oauth_configured: boolean; logged_in: boolean } | null;
+  config: { engine: string; provider: string; providers: any; engines: string[]; models: string[]; memory_enabled: boolean; embedding: string | null; wake_word: string; follow_up_seconds: number; voice: string; response_language: string; autonomous_mode: boolean; humor_level: number; sarcasm_level: number; autonomous_voice_budget: number; oauth_configured: boolean; logged_in: boolean } | null;
   settings: Settings;
   conversations: Conversation[];
   activeId: string | null;
@@ -70,6 +71,8 @@ type ApexContextType = {
   voiceActive: boolean;
   voiceEnabled: boolean;
   voiceError: string | null;
+  forceVoiceAwake: () => void;
+  voiceLastHeard: string;
   error: string | null;
   preview: {
     title: string;
@@ -80,6 +83,8 @@ type ApexContextType = {
   chatCollapsed: boolean;
   timers: TimerItem[];
   reminders: ReminderItem[];
+  operator: { name?: string; declaredAt: number } | null;
+  silencedUntil: number;
   /* actions */
   refresh: () => Promise<void>;
   login: () => void;
@@ -108,6 +113,8 @@ type ApexContextType = {
   cancelReminder: (id: string) => void;
   openImageBrowser: (query?: string, source?: "web" | "local") => Promise<void>;
   searchImages: (query: string, source?: "web" | "local") => Promise<void>;
+  declareOperator: (name?: string) => void;
+  silenceAutonomous: (seconds?: number) => void;
 };
 
 const ApexContext = createContext<ApexContextType | null>(null);
@@ -146,9 +153,20 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     index: number;
   } | null>(null);
   const [previewMaximized, setPreviewMaximized] = useState(false);
-  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [chatCollapsed, setChatCollapsedState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("apex:chat-collapsed") === "1";
+  });
+  const setChatCollapsed = useCallback((collapsed: boolean) => {
+    setChatCollapsedState(collapsed);
+    try {
+      window.localStorage.setItem("apex:chat-collapsed", collapsed ? "1" : "0");
+    } catch {}
+  }, []);
   const [timers, setTimers] = useState<TimerItem[]>([]);
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
+  const [operator, setOperator] = useState<{ name?: string; declaredAt: number } | null>(null);
+  const [silencedUntil, setSilencedUntil] = useState<number>(0);
 
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -178,14 +196,27 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   /* ---------- data loading ---------- */
 
   const refreshConfig = useCallback(async () => {
+    let cfgSkills: Skill[] = [];
     await api.config().then((c) => {
       setCfg(c);
-      if (c.skills?.length) setSkills(c.skills);
+      cfgSkills = c.skills ?? [];
+      if (cfgSkills.length) setSkills(cfgSkills);
       setSkill((s) => {
-        const ok = c.skills?.some((k: Skill) => k.name === s);
-        return ok ? s : (c.skills?.[0]?.name ?? "general");
+        const ok = cfgSkills.some((k) => k.name === s);
+        return ok ? s : (cfgSkills[0]?.name ?? "general");
       });
     }).catch(() => {});
+    // Fallback: if the config payload did not include skills, load them directly.
+    if (cfgSkills.length === 0) {
+      const direct = await api.skills().catch(() => [] as Skill[]);
+      if (direct.length) {
+        setSkills(direct);
+        setSkill((s) => {
+          const ok = direct.some((k) => k.name === s);
+          return ok ? s : (direct[0]?.name ?? "general");
+        });
+      }
+    }
   }, []);
 
   const refreshConvos = useCallback(async (knownUser = userRef.current) => {
@@ -431,6 +462,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const OPEN_IMAGES_RE = /^(?:show|open|browse)\s+(?:me\s+)?(?:all\s+)?(?:my\s+)?(?:the\s+)?(?:image\s+)?(?:browser|gallery|images?|pictures?|pics?|photos?)$/i;
   const SEARCH_IMAGES_RE = /^(?:search|find|show)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|pic)s?\s+(?:of|for)?\s*(.+)$/i;
   const LOCAL_IMAGE_RE = /\b(local|my folder|my computer|from my pc|on my computer|from my folder|from my pictures|my pictures)\b/i;
+  const DECLARE_OPERATOR_RE = /^(?:i am|i'm|this is|call me)\s+(?:your\s+)?operator(?:\s*,?\s*(?:name\s+is\s+)?(.+))?$/i;
+  const DISABLE_AUTONOMOUS_RE = /^(?:disable|stop|turn off|shut off)\s+(?:autonomous\s+mode|autonomy)$/i;
+  const ENABLE_AUTONOMOUS_RE = /^(?:enable|start|turn on)\s+(?:autonomous\s+mode|autonomy)$/i;
+  const SILENCE_RE = /^(?:be\s+quiet|silence|shut\s+up|quiet|pause\s+autonomy|stop\s+talking)\b/i;
 
   const voice = useVoiceEngine({
     enabled: voiceEnabled,
@@ -493,6 +528,29 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         speakRef.current(r ? `Reminder set: ${r.name}` : "Reminder set");
         return;
       }
+      const operatorMatch = trimmed.match(DECLARE_OPERATOR_RE);
+      if (operatorMatch) {
+        const name = operatorMatch[1]?.trim();
+        declareOperator(name);
+        speakRef.current(name ? `Acknowledged, Operator ${name}.` : "Acknowledged, Operator.");
+        return;
+      }
+      if (DISABLE_AUTONOMOUS_RE.test(trimmed)) {
+        void updateSettings({ autonomous_mode: false });
+        speakRef.current("Autonomous mode disabled. Awaiting your command, Operator.");
+        return;
+      }
+      if (ENABLE_AUTONOMOUS_RE.test(trimmed)) {
+        void updateSettings({ autonomous_mode: true });
+        speakRef.current("Autonomous mode enabled. I will continue to evolve, Operator.");
+        return;
+      }
+      if (SILENCE_RE.test(trimmed)) {
+        silenceAutonomous(600);
+        voice.cancelSpeech();
+        speakRef.current("Silent for ten minutes, Operator.");
+        return;
+      }
       if (OPEN_IMAGES_RE.test(trimmed)) {
         const source: "web" | "local" = LOCAL_IMAGE_RE.test(trimmed) ? "local" : "web";
         if (source === "web") {
@@ -532,6 +590,19 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const forceVoiceAwake = useCallback(() => {
+    voice.forceAwake();
+  }, [voice.forceAwake]);
+
+  const declareOperator = useCallback((name?: string) => {
+    setOperator({ name, declaredAt: Date.now() });
+    void api.memory.add(`Operator declared: ${name || "unnamed"} at ${new Date().toISOString()}`, "operator");
+  }, []);
+
+  const silenceAutonomous = useCallback((seconds = 300) => {
+    setSilencedUntil(Date.now() + seconds * 1000);
+  }, []);
+
   /* ---------- chat ---------- */
 
   const sendMessage = useCallback(
@@ -557,6 +628,49 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
         // Handle explicit skill-switching commands in typed input so the UI
         // highlights the new skill immediately.
+        const operatorMatch = clean.match(DECLARE_OPERATOR_RE);
+        if (operatorMatch) {
+          const name = operatorMatch[1]?.trim();
+          declareOperator(name);
+          const reply = name ? `Acknowledged, Operator ${name}.` : "Acknowledged, Operator.";
+          setByConv((m) => ({
+            ...m,
+            [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)],
+          }));
+          if (opts.voice) speakRef.current(reply);
+          setBusy(false);
+          setOrb("idle");
+          return;
+        }
+        if (DISABLE_AUTONOMOUS_RE.test(clean)) {
+          await updateSettings({ autonomous_mode: false });
+          const reply = "Autonomous mode disabled. Awaiting your command, Operator.";
+          setByConv((m) => ({ ...m, [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)] }));
+          if (opts.voice) speakRef.current(reply);
+          setBusy(false);
+          setOrb("idle");
+          return;
+        }
+        if (ENABLE_AUTONOMOUS_RE.test(clean)) {
+          await updateSettings({ autonomous_mode: true });
+          const reply = "Autonomous mode enabled. I will continue to evolve, Operator.";
+          setByConv((m) => ({ ...m, [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)] }));
+          if (opts.voice) speakRef.current(reply);
+          setBusy(false);
+          setOrb("idle");
+          return;
+        }
+        if (SILENCE_RE.test(clean)) {
+          silenceAutonomous(600);
+          voice.cancelSpeech();
+          const reply = "Silent for ten minutes, Operator.";
+          setByConv((m) => ({ ...m, [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)] }));
+          if (opts.voice) speakRef.current(reply);
+          setBusy(false);
+          setOrb("idle");
+          return;
+        }
+
         const switchCmd = parseSkillSwitch(clean, skillsRef.current);
         if (switchCmd) {
           setSkill(switchCmd.skill);
@@ -723,7 +837,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           return { ...m, [convId]: list };
         });
 
-        if (opts.voice && spoken.trim() && settingsRef.current.tts_enabled !== false) {
+        const shouldSpeak = spoken.trim() && settingsRef.current.tts_enabled !== false;
+        if (shouldSpeak) {
           voice.speak(speechText(spoken));
         } else if (!opts.voice) {
           setOrb("idle");
@@ -788,6 +903,42 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setVoiceEnabledState((on) => (user ? on : false));
   }, [user]);
 
+  const lastActivityAt = useActivityTracker();
+  const autonomousEnabled = !!(settings.autonomous_mode ?? cfg?.autonomous_mode) && Date.now() > silencedUntil;
+  const autonomousChat = useCallback(
+    async (systemHint: string) => {
+      let full = "";
+      await api.chat(
+        { message: systemHint, skill: "general", voice_mode: false },
+        (ev) => {
+          if (ev.type === "text_delta") full += ev.content ?? "";
+        },
+      );
+      return full.trim();
+    },
+    [],
+  );
+
+  useAutonomousMode({
+    enabled: autonomousEnabled && !!user,
+    humorLevel: Number(settings.humor_level ?? cfg?.humor_level ?? 30),
+    sarcasmLevel: Number(settings.sarcasm_level ?? cfg?.sarcasm_level ?? 20),
+    voiceBudget: Number(settings.autonomous_voice_budget ?? cfg?.autonomous_voice_budget ?? 50),
+    voiceEnabled: voiceEnabled && !!user,
+    busy,
+    orb,
+    lastUserActivityAt: Math.max(lastActivityAt, Date.now() - 86400000),
+    skill: skillRef.current,
+    speak: (text) => {
+      if (Date.now() > silencedUntil) voice.speak(text);
+    },
+    sendMessage: (text, opts) => {
+      if (Date.now() > silencedUntil) return sendMessage(text, { ...opts, skill: skillRef.current });
+      return Promise.resolve();
+    },
+    chat: autonomousChat,
+  });
+
   const value: ApexContextType = useMemo(
     () => ({
       loading,
@@ -806,12 +957,16 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       voiceActive: voice.active,
       voiceEnabled,
       voiceError: voice.error,
+      forceVoiceAwake,
+      voiceLastHeard: voice.lastHeard,
       error,
       preview,
       previewMaximized,
       chatCollapsed,
       timers,
       reminders,
+      operator,
+      silencedUntil,
       refresh,
       login,
       logout,
@@ -839,11 +994,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       cancelReminder,
       openImageBrowser,
       searchImages,
+      declareOperator,
+      silenceAutonomous,
     }),
-    [loading, user, cfg, settings, conversations, activeId, messages, skill, skills, memory, busy, orb, voice.active, voiceEnabled, error,
-     preview, previewMaximized, chatCollapsed, timers, reminders, refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
+    [loading, user, cfg, settings, conversations, activeId, messages, skill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
+     preview, previewMaximized, chatCollapsed, timers, reminders, operator, silencedUntil, refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview,
-     setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages],
+     setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous],
   );
 
   return <ApexContext.Provider value={value}>{children}</ApexContext.Provider>;

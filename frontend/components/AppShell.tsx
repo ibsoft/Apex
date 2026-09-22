@@ -4,7 +4,7 @@
    controlled APEX world (orb state driven by chat/voice), login overlay,
    chat/settings/memory panel and error toasts. */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import ApexWorld from "./ApexWorld";
 import ChatUI from "./ChatUI";
 import { useApex } from "./ApexProvider";
@@ -106,9 +106,17 @@ function LoadingSplash() {
 export default function AppShell() {
   const a = useApex();
 
+  const lastTapRef = useRef<number>(0);
   const handleTap = () => {
     if (!a.user) {
       a.login();
+      return;
+    }
+    const now = Date.now();
+    const doubleTap = now - lastTapRef.current < 350;
+    lastTapRef.current = now;
+    if (doubleTap && a.voiceEnabled) {
+      a.forceVoiceAwake();
       return;
     }
     a.setVoiceEnabled(!a.voiceEnabled);
