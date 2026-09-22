@@ -317,7 +317,7 @@ def create_app() -> Flask:
             stale = run or (time.time() - _self_health_cache["at"] > 300)
             if stale or _self_health_cache["result"] is None:
                 result = _run_self_diagnostics()
-                _self_health_cache = {"at": time.time(), "result": result}
+                _self_health_cache.update(at=time.time(), result=result)
             return jsonify({"ok": True, "health": _self_health_cache["result"]})
 
     def _run_self_diagnostics() -> dict:
@@ -342,12 +342,15 @@ def create_app() -> Flask:
                     "stderr": proc.stderr[-800:] if proc.stderr else "",
                 }
             except subprocess.TimeoutExpired as exc:
+                def decoded(value):
+                    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else (value or "")
+
                 return {
                     "label": label,
                     "ok": False,
                     "error": f"timed out after {timeout}s",
-                    "stdout": (exc.stdout or "")[-400:],
-                    "stderr": (exc.stderr or "")[-400:],
+                    "stdout": decoded(exc.stdout)[-400:],
+                    "stderr": decoded(exc.stderr)[-400:],
                 }
             except Exception as exc:
                 return {"label": label, "ok": False, "error": str(exc)}

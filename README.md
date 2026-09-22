@@ -25,6 +25,7 @@ backend/    Flask API — OAuth, agents, tools, skills, ChromaDB memory
   - [Agent orb](#agent-orb)
   - [Chat rendering](#chat-rendering)
   - [Voice mode](#voice-mode)
+  - [Autonomous mode](#autonomous-mode)
 - [Memory](#memory)
   - [Vector store](#vector-store)
   - [Document upload](#document-upload)
@@ -277,6 +278,22 @@ Controls (also in the settings panel):
 
 If the browser's SpeechRecognition is unavailable (Firefox, older Safari) the
 mic button shows a warning; typing still works.
+
+## Autonomous mode
+
+Enable **Autonomous mode** in Settings, or say/type **"enable autonomous mode"**.
+Keep APEX open in a visible tab and leave the mouse and keyboard idle. At the
+default humor level, the first social prompt starts after about 55 seconds of
+inactivity, plus model response time. Later social prompts are at least ten
+minutes apart. Listening, speaking, active chat requests and hidden tabs pause
+autonomous activity.
+
+APEX posts its suggestions as assistant messages and can also read them aloud
+when voice and spoken replies are enabled and the daily voice budget allows.
+Self-checks start after about a minute of idle operation and repeat hourly.
+They report diagnostics and can propose fixes; they do not edit code.
+**"Be quiet"** pauses autonomy for ten minutes; **"disable autonomous mode"**
+turns it off. Autonomous activity runs in the browser, so closing the tab stops it.
 
 ## Memory
 

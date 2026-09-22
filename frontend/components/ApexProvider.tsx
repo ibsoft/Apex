@@ -167,6 +167,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [operator, setOperator] = useState<{ name?: string; declaredAt: number } | null>(null);
   const [silencedUntil, setSilencedUntil] = useState<number>(0);
+  const silencedUntilRef = useRef(silencedUntil);
+  silencedUntilRef.current = silencedUntil;
 
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -412,18 +414,16 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       const now = Date.now();
       setTimers((prev) => {
         const fired = prev.filter((t) => t.fireAt <= now);
-        if (fired.length) {
-          playNotification();
-          fired.forEach((t) => speakRef.current(`Timer ${t.name} is done`));
-        }
+        if (!fired.length) return prev;
+        playNotification();
+        fired.forEach((t) => speakRef.current(`Timer ${t.name} is done`));
         return prev.filter((t) => t.fireAt > now);
       });
       setReminders((prev) => {
         const fired = prev.filter((r) => r.fireAt <= now);
-        if (fired.length) {
-          playNotification();
-          fired.forEach((r) => speakRef.current(`Reminder: ${r.name}`));
-        }
+        if (!fired.length) return prev;
+        playNotification();
+        fired.forEach((r) => speakRef.current(`Reminder: ${r.name}`));
         return prev.filter((r) => r.fireAt > now);
       });
     }, 1000);
@@ -600,8 +600,18 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const silenceAutonomous = useCallback((seconds = 300) => {
-    setSilencedUntil(Date.now() + seconds * 1000);
+    const until = Date.now() + seconds * 1000;
+    silencedUntilRef.current = until;
+    setSilencedUntil(until);
   }, []);
+
+  useEffect(() => {
+    if (!silencedUntil) return;
+    const timeout = setTimeout(() => {
+      setSilencedUntil((current) => current === silencedUntil ? 0 : current);
+    }, Math.max(0, silencedUntil - Date.now()));
+    return () => clearTimeout(timeout);
+  }, [silencedUntil]);
 
   /* ---------- chat ---------- */
 
@@ -904,38 +914,72 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   const lastActivityAt = useActivityTracker();
-  const autonomousEnabled = !!(settings.autonomous_mode ?? cfg?.autonomous_mode) && Date.now() > silencedUntil;
+  const autonomousEnabled = !!(settings.autonomous_mode ?? cfg?.autonomous_mode) && Date.now() >= silencedUntil;
+  const autonomousVoiceEnabled = voiceEnabled && !!user && settings.tts_enabled !== false
+    && typeof window !== "undefined" && !!window.speechSynthesis;
+  const autonomousDeliveryRef = useRef({ busy, orb, voiceEnabled: autonomousVoiceEnabled });
+  autonomousDeliveryRef.current = { busy, orb, voiceEnabled: autonomousVoiceEnabled };
+
   const autonomousChat = useCallback(
     async (systemHint: string) => {
       let full = "";
+      let streamError = "";
       await api.chat(
         { message: systemHint, skill: "general", voice_mode: false },
         (ev) => {
           if (ev.type === "text_delta") full += ev.content ?? "";
+          else if (ev.type === "error") streamError = ev.message || "Autonomous response failed";
+          else if (ev.type === "end" && !ev.ok) streamError ||= "Autonomous response failed";
         },
       );
+      // The SSE parser catches callback exceptions, so report failures only
+      // after the stream resolves to let the autonomous hook use its fallback.
+      if (streamError) throw new Error(streamError);
+      if (!full.trim()) throw new Error("Empty autonomous response");
       return full.trim();
     },
     [],
   );
+
+  const publishAutonomous = useCallback(async (text: string, opts: { voice: boolean }) => {
+    const content = text.trim();
+    const owner = userRef.current?.id;
+    const canPublish = () => !!owner && userRef.current?.id === owner
+      && !!(settingsRef.current.autonomous_mode ?? cfgRef.current?.autonomous_mode)
+      && Date.now() >= silencedUntilRef.current
+      && !autonomousDeliveryRef.current.busy && autonomousDeliveryRef.current.orb === "idle";
+    if (!content || !canPublish()) return;
+
+    let convId = activeIdRef.current;
+    if (!convId) {
+      const conv = await api.conversations.create({ skill: skillRef.current });
+      if (!canPublish()) return;
+      setConversations((list) => [conv, ...list]);
+      // Respect a conversation opened while creation was in flight.
+      convId = activeIdRef.current ?? conv.id;
+      if (!activeIdRef.current) {
+        activeIdRef.current = conv.id;
+        setActiveId(conv.id);
+      }
+    }
+
+    const shouldSpeak = opts.voice && autonomousDeliveryRef.current.voiceEnabled;
+    const message = mkMsg("assistant", content, { meta: { voice: shouldSpeak } });
+    setByConv((current) => ({ ...current, [convId]: [...(current[convId] ?? []), message] }));
+    if (shouldSpeak) speakRef.current(speechText(content));
+  }, []);
 
   useAutonomousMode({
     enabled: autonomousEnabled && !!user,
     humorLevel: Number(settings.humor_level ?? cfg?.humor_level ?? 30),
     sarcasmLevel: Number(settings.sarcasm_level ?? cfg?.sarcasm_level ?? 20),
     voiceBudget: Number(settings.autonomous_voice_budget ?? cfg?.autonomous_voice_budget ?? 50),
-    voiceEnabled: voiceEnabled && !!user,
+    voiceEnabled: autonomousVoiceEnabled,
     busy,
     orb,
     lastUserActivityAt: Math.max(lastActivityAt, Date.now() - 86400000),
     skill: skillRef.current,
-    speak: (text) => {
-      if (Date.now() > silencedUntil) voice.speak(text);
-    },
-    sendMessage: (text, opts) => {
-      if (Date.now() > silencedUntil) return sendMessage(text, { ...opts, skill: skillRef.current });
-      return Promise.resolve();
-    },
+    publish: publishAutonomous,
     chat: autonomousChat,
   });
 
