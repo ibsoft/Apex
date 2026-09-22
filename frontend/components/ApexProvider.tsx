@@ -68,6 +68,13 @@ type ApexContextType = {
   voiceEnabled: boolean;
   voiceError: string | null;
   error: string | null;
+  preview: {
+    title: string;
+    items: { url: string; title: string; kind: "image" | "document" }[];
+    index: number;
+  } | null;
+  previewMaximized: boolean;
+  chatCollapsed: boolean;
   /* actions */
   refresh: () => Promise<void>;
   login: () => void;
@@ -84,6 +91,12 @@ type ApexContextType = {
   searchMemory: (q: string) => Promise<MemoryEntry[]>;
   refreshMemory: () => Promise<void>;
   clearError: () => void;
+  openPreview: (items: { url: string; title: string; kind: "image" | "document" }[], title?: string, startIndex?: number) => void;
+  closePreview: () => void;
+  setChatCollapsed: (collapsed: boolean) => void;
+  togglePreviewMaximized: () => void;
+  nextPreview: () => void;
+  previousPreview: () => void;
 };
 
 const ApexContext = createContext<ApexContextType | null>(null);
@@ -116,6 +129,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [orb, setOrb] = useState<OrbState>("idle");
   const [voiceEnabled, setVoiceEnabledState] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{
+    title: string;
+    items: { url: string; title: string; kind: "image" | "document" }[];
+    index: number;
+  } | null>(null);
+  const [previewMaximized, setPreviewMaximized] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
 
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -123,12 +143,18 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   byConvRef.current = byConv;
   const skillRef = useRef(skill);
   skillRef.current = skill;
+  const skillsRef = useRef(skills);
+  skillsRef.current = skills;
   const cfgRef = useRef(cfg);
   cfgRef.current = cfg;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const userRef = useRef(user);
   userRef.current = user;
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
+  const previewMaximizedRef = useRef(previewMaximized);
+  previewMaximizedRef.current = previewMaximized;
 
   const messages = activeId ? byConv[activeId] ?? [] : [];
 
@@ -236,6 +262,43 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     }
   }, [conversations]);
 
+  /* ---------- preview window ---------- */
+
+  const openPreview = useCallback((items: { url: string; title: string; kind: "image" | "document" }[], title = "Preview", startIndex = 0) => {
+    if (!items.length) return;
+    setPreview({ title, items, index: Math.max(0, Math.min(startIndex, items.length - 1)) });
+  }, []);
+
+  const closePreview = useCallback(() => {
+    setPreview(null);
+    setPreviewMaximized(false);
+  }, []);
+
+  const togglePreviewMaximized = useCallback(() => {
+    setPreviewMaximized((m) => !m);
+  }, []);
+
+  const nextPreview = useCallback(() => {
+    setPreview((p) => (p ? { ...p, index: (p.index + 1) % p.items.length } : p));
+  }, []);
+
+  const previousPreview = useCallback(() => {
+    setPreview((p) => (p ? { ...p, index: (p.index - 1 + p.items.length) % p.items.length } : p));
+  }, []);
+
+  // Auto-open/update preview for voice assistant messages that contain images
+  // or backend file/document links. Only pop up when the chat panel is
+  // collapsed so the inline chat view is not duplicated.
+  useEffect(() => {
+    if (!chatCollapsed) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant" || last.streaming || !last.meta?.voice || !last.content) return;
+    const items = collectPreviewableItems(last.content);
+    if (items.length) {
+      setPreview({ title: "Voice Preview", items, index: 0 });
+    }
+  }, [messages, chatCollapsed]);
+
   /* ---------- voice + orb ---------- */
 
   const onVoicePhase = useCallback((p: VoicePhase) => {
@@ -243,6 +306,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const sendRef = useRef<any>(null);
+  const speakRef = useRef<(text: string) => void>(() => {});
+
+  const CLOSE_PREVIEW_RE = /^(close|hide|dismiss|shut)\b.*(preview|it|window|image|document|that)?/i;
+  const MAXIMIZE_PREVIEW_RE = /^(maxim(?:ize|ise)|full[-\s]?screen|enlarge|expand)\b/i;
+  const NORMALIZE_PREVIEW_RE = /^(normali(?:ze|ise)|minimize|shrink|restore|small(er)?\s+window)\b/i;
+  const NEXT_PREVIEW_RE = /^(next|forward|next\s+(image|one|photo|picture|page))\b/i;
+  const PREV_PREVIEW_RE = /^(previous|back|last|prev|earlier\s+(image|one|photo|picture|page))\b/i;
 
   const voice = useVoiceEngine({
     enabled: voiceEnabled,
@@ -253,9 +323,49 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     onPhase: onVoicePhase,
     onCommand: (text: string) => {
       if (!userRef.current) return;
+      const trimmed = text.trim();
+      if (previewRef.current && CLOSE_PREVIEW_RE.test(trimmed)) {
+        closePreview();
+        speakRef.current("Preview closed");
+        return;
+      }
+      if (previewRef.current && MAXIMIZE_PREVIEW_RE.test(trimmed)) {
+        if (!previewMaximizedRef.current) togglePreviewMaximized();
+        speakRef.current(previewMaximizedRef.current ? "Already maximized" : "Preview maximized");
+        return;
+      }
+      if (previewRef.current && NORMALIZE_PREVIEW_RE.test(trimmed)) {
+        if (previewMaximizedRef.current) togglePreviewMaximized();
+        speakRef.current(previewMaximizedRef.current ? "Preview normalized" : "Already normalized");
+        return;
+      }
+      if (previewRef.current && (previewRef.current?.items.length ?? 0) > 1 && NEXT_PREVIEW_RE.test(trimmed)) {
+        nextPreview();
+        const item = previewRef.current?.items[previewRef.current?.index ?? 0];
+        speakRef.current(item ? `Showing ${item.title}` : "Next");
+        return;
+      }
+      if (previewRef.current && (previewRef.current?.items.length ?? 0) > 1 && PREV_PREVIEW_RE.test(trimmed)) {
+        previousPreview();
+        const item = previewRef.current?.items[previewRef.current?.index ?? 0];
+        speakRef.current(item ? `Showing ${item.title}` : "Previous");
+        return;
+      }
+      const switchCmd = parseSkillSwitch(trimmed, skillsRef.current);
+      if (switchCmd) {
+        setSkill(switchCmd.skill);
+        if (switchCmd.rest) {
+          void sendRef.current(switchCmd.rest, { voice: true, skill: switchCmd.skill });
+        } else {
+          speakRef.current(`Switched to ${switchCmd.skill} skill`);
+        }
+        return;
+      }
       void sendRef.current(text, { voice: true, skill: skillRef.current });
     },
   });
+
+  speakRef.current = voice.speak;
 
   const setVoiceEnabled = useCallback((on: boolean) => {
     setVoiceEnabledState(on);
@@ -268,8 +378,23 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   const sendMessage = useCallback(
     async (text: string, opts: { voice?: boolean; skill?: string } = {}) => {
-      const clean = text.trim();
+      let clean = text.trim();
       if (!clean || busy) return;
+
+      // Handle explicit skill-switching commands in typed input so the UI
+      // highlights the new skill immediately.
+      const switchCmd = parseSkillSwitch(clean, skillsRef.current);
+      if (switchCmd) {
+        setSkill(switchCmd.skill);
+        if (!switchCmd.rest) {
+          setBusy(false);
+          setOrb("idle");
+          return;
+        }
+        clean = switchCmd.rest;
+        opts = { ...opts, skill: switchCmd.skill };
+      }
+
       const fallbackId = activeIdRef.current;
 
       try {
@@ -457,6 +582,9 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       voiceEnabled,
       voiceError: voice.error,
       error,
+      preview,
+      previewMaximized,
+      chatCollapsed,
       refresh,
       login,
       logout,
@@ -472,13 +600,80 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       searchMemory,
       refreshMemory,
       clearError,
+      openPreview,
+      closePreview,
+      setChatCollapsed,
+      togglePreviewMaximized,
+      nextPreview,
+      previousPreview,
     }),
     [loading, user, cfg, settings, conversations, activeId, messages, skill, skills, memory, busy, orb, voice.active, voiceEnabled, error,
-     refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
-     addMemory, removeMemory, searchMemory, refreshMemory, clearError],
+     preview, previewMaximized, chatCollapsed, refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
+     addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview],
   );
 
   return <ApexContext.Provider value={value}>{children}</ApexContext.Provider>;
+}
+
+/* ---------- preview helpers ---------- */
+
+const IMAGE_EXT_RE = /\.(jpg|jpeg|png|gif|webp|svg|bmp)(\?.*)?$/i;
+const PREVIEWABLE_URL_RE = /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|editor)\/download\/[A-Za-z0-9_.\-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/(?:files|editor)\/download\/[A-Za-z0-9_.\-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
+
+function isPreviewImage(url: string): boolean {
+  return IMAGE_EXT_RE.test(url);
+}
+
+function parseSkillSwitch(text: string, skills: Skill[]): { skill: string; rest: string } | null {
+  const prefixRe = /^(?:use|switch\s+to|activate|enable)\s+(?:the\s+)?(?:skill\s+)?/i;
+  const prefixMatch = text.match(prefixRe);
+  if (!prefixMatch) return null;
+  const afterPrefix = text.slice(prefixMatch[0].length);
+  // Try longest skill name first so multi-word names win over single-word prefixes.
+  const sorted = [...skills].sort((a, b) => b.name.length - a.name.length);
+  const lowerAfter = afterPrefix.toLowerCase();
+  for (const skill of sorted) {
+    const name = skill.name.toLowerCase();
+    if (lowerAfter.startsWith(name)) {
+      const rest = afterPrefix.slice(skill.name.length).replace(/^[,.\s]+/, "").trim();
+      return { skill: skill.name, rest };
+    }
+  }
+  return null;
+}
+
+function titleFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url, typeof window !== "undefined" ? window.location.href : "http://localhost:3000");
+    const params = parsed.searchParams.get("path");
+    if (params) {
+      const parts = params.split("/");
+      return decodeURIComponent(parts[parts.length - 1]) || "Preview";
+    }
+    const parts = parsed.pathname.split("/");
+    return decodeURIComponent(parts[parts.length - 1]) || "Preview";
+  } catch {
+    return "Preview";
+  }
+}
+
+function collectPreviewableItems(content: string): { url: string; title: string; kind: "image" | "document" }[] {
+  const seen = new Set<string>();
+  const items: { url: string; title: string; kind: "image" | "document" }[] = [];
+  PREVIEWABLE_URL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PREVIEWABLE_URL_RE.exec(content)) !== null) {
+    const label = m[1];
+    const url = m[2] || m[3] || m[4] || m[5];
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const isImage = isPreviewImage(url);
+    if (isImage || /\/api\/(?:files|editor)\/download\//.test(url) || /\/api\/obsidian\/file\?path=/.test(url)) {
+      const title = (label && label.trim()) || titleFromUrl(url);
+      items.push({ url, title, kind: isImage ? "image" : "document" });
+    }
+  }
+  return items;
 }
 
 /* drop the "gpt-5-codex"-style backend model aliases when a user-set model came

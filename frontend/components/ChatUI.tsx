@@ -220,6 +220,119 @@ function MensajeList({ messages }: { messages: Message[] }) {
   );
 }
 
+function PreviewModal() {
+  const a = useApex();
+  const preview = a.preview;
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") a.closePreview();
+      if (e.key === "ArrowRight") a.nextPreview();
+      if (e.key === "ArrowLeft") a.previousPreview();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [preview, a]);
+  if (!preview || !preview.items.length) return null;
+  const item = preview.items[preview.index];
+  const isImage = item.kind === "image";
+  const isPdf = /\.pdf(\?.*)?$/i.test(item.title) || /\.pdf(\?.*)?$/i.test(item.url);
+  const displayUrl = backendFileHref(item.url) || item.url;
+  const maximized = a.previewMaximized;
+  const hasNav = preview.items.length > 1;
+  return (
+    <div onClick={a.closePreview} style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      background: maximized ? C.bg : "rgba(6,10,20,0.88)",
+      backdropFilter: maximized ? undefined : "blur(14px)",
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        position: "relative",
+        width: maximized ? "100vw" : (isPdf ? "min(900px, 92vw)" : undefined),
+        height: maximized ? "100vh" : undefined,
+        maxWidth: maximized ? "100vw" : "min(900px, 92vw)",
+        maxHeight: maximized ? "100vh" : "min(85vh, 720px)",
+        display: "flex", flexDirection: "column",
+        background: C.bg,
+        border: maximized ? "none" : `1px solid ${C.line}`,
+        borderRadius: maximized ? 0 : 16,
+        boxShadow: maximized ? "none" : "0 24px 80px rgba(0,0,0,0.6)",
+        overflow: "hidden",
+      }}>
+        {/* header */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "10px 14px", borderBottom: `1px solid ${C.line}`,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.text, fontFamily: "var(--font-mono)", letterSpacing: "0.08em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 360 }}>
+              {item.title}
+            </div>
+            {hasNav && (
+              <span style={{ fontSize: 10, color: C.dim, fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}>
+                {preview.index + 1} / {preview.items.length}
+              </span>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {hasNav && (
+              <>
+                <button onClick={a.previousPreview} aria-label="Previous"
+                  style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 16 }}>‹</button>
+                <button onClick={a.nextPreview} aria-label="Next"
+                  style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 16 }}>›</button>
+              </>
+            )}
+            <button onClick={a.togglePreviewMaximized} aria-label={maximized ? "Normalize preview" : "Maximize preview"}
+              style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 13, fontFamily: "var(--font-mono)", letterSpacing: "0.05em" }}>
+              {maximized ? "⊡" : "□"}
+            </button>
+            <a href={displayUrl} download={item.title}
+              style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: C.cyan, textDecoration: "none", letterSpacing: "0.08em" }}>
+              DOWNLOAD
+            </a>
+            <button onClick={a.closePreview} aria-label="Close preview"
+              style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 18, lineHeight: 1 }}>
+              ×
+            </button>
+          </div>
+        </div>
+        {/* body */}
+        <div style={{
+          flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          padding: isImage || isPdf ? 0 : 24,
+        }}>
+          {isImage ? (
+            <img src={displayUrl} alt={item.title} referrerPolicy="no-referrer"
+              style={{ maxWidth: "100%", maxHeight: maximized ? "calc(100vh - 44px)" : "min(70vh, 600px)", objectFit: "contain", display: "block" }} />
+          ) : isPdf ? (
+            <embed src={displayUrl} type="application/pdf"
+              style={{ width: maximized ? "100vw" : "min(900px, 92vw)", height: maximized ? "calc(100vh - 44px)" : "min(75vh, 640px)", border: "none", display: "block" }} />
+          ) : (
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>📄</div>
+              <div style={{ fontSize: 14, color: C.text, marginBottom: 8, fontWeight: 600 }}>{item.title}</div>
+              <div style={{ fontSize: 11, color: C.dim, marginBottom: 18, fontFamily: "var(--font-mono)" }}>
+                Voice preview window
+              </div>
+              <a href={displayUrl} download={item.title}
+                style={{
+                  display: "inline-block", padding: "8px 18px", borderRadius: 8,
+                  background: `${C.cyan}18`, border: `1px solid ${C.line}`,
+                  color: C.cyan, fontSize: 11, fontFamily: "var(--font-mono)",
+                  textDecoration: "none", letterSpacing: "0.08em",
+                }}>
+                DOWNLOAD FILE
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Empty({ label }: { label: string }) {
   return <div style={{ color: C.dim, fontSize: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.1em", textAlign: "center", padding: "18px 8px" }}>{label}</div>;
 }
@@ -228,7 +341,10 @@ export default function ChatUI() {
   const a = useApex();
   const [tab, setTab] = useState<"chat" | "hist" | "settings" | "memory">("chat");
   const [draft, setDraft] = useState("");
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(a.chatCollapsed);
+  useEffect(() => {
+    a.setChatCollapsed(collapsed);
+  }, [collapsed, a.setChatCollapsed]);
   const [histOpen, toggleHist] = useState(false);
   const [memSearch, setMemSearch] = useState("");
   const [memNote, setMemNote] = useState("");
@@ -300,6 +416,7 @@ export default function ChatUI() {
 
   return (
     <>
+      <PreviewModal />
       {/* reopen tab when collapsed */}
       {collapsed ? (
         <button onClick={() => setCollapsed(false)} aria-label="Open assistant"
