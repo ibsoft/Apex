@@ -70,6 +70,8 @@ type ApexContextType = {
   voiceActive: boolean;
   voiceEnabled: boolean;
   voiceError: string | null;
+  forceVoiceAwake: () => void;
+  voiceLastHeard: string;
   error: string | null;
   preview: {
     title: string;
@@ -532,6 +534,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const forceVoiceAwake = useCallback(() => {
+    voice.forceAwake();
+  }, [voice.forceAwake]);
+
   /* ---------- chat ---------- */
 
   const sendMessage = useCallback(
@@ -806,6 +812,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       voiceActive: voice.active,
       voiceEnabled,
       voiceError: voice.error,
+      forceVoiceAwake,
+      voiceLastHeard: voice.lastHeard,
       error,
       preview,
       previewMaximized,
@@ -840,7 +848,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       openImageBrowser,
       searchImages,
     }),
-    [loading, user, cfg, settings, conversations, activeId, messages, skill, skills, memory, busy, orb, voice.active, voiceEnabled, error,
+    [loading, user, cfg, settings, conversations, activeId, messages, skill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
      preview, previewMaximized, chatCollapsed, timers, reminders, refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview,
      setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages],
