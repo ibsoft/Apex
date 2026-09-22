@@ -12,10 +12,11 @@ export function backendFileHref(url: string): string | null {
     const base = BASE.replace(/\/$/, "");
     const prefix = base.endsWith("/api") ? base.slice(0, -4) : base;
 
-    // Signed file-search download tokens.
-    if (/\/api\/files\/download\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)
+    // Signed file-search and editor download tokens.
+    if ((/\/api\/files\/download\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)
+        || /\/api\/editor\/download\/[A-Za-z0-9_.-]+$/.test(parsed.pathname))
         && !parsed.username && !parsed.password && !parsed.search && !parsed.hash) {
-      return parsed.origin ? url : `${prefix}${parsed.pathname}`;
+      return parsed.origin ? `${prefix}${parsed.pathname}` : `${prefix}${parsed.pathname}`;
     }
 
     // Obsidian attachment URLs served by the vault.

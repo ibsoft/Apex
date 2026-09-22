@@ -81,7 +81,7 @@ function InlineImage({ src, alt }: { src: string; alt: string }) {
 
 function renderRichText(text: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const regex = /(!?)\[((?:\\.|[^\]\\])*)\]\((https?:\/\/[^\s)]+|\/api\/files\/download\/[A-Za-z0-9_.-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/files\/download\/[A-Za-z0-9_.-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
+  const regex = /(!?)\[((?:\\.|[^\]\\])*)\]\((https?:\/\/[^\s)]+|\/api\/files\/download\/[A-Za-z0-9_.-]+|\/api\/editor\/download\/[A-Za-z0-9_.-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/files\/download\/[A-Za-z0-9_.-]+)|(\/api\/editor\/download\/[A-Za-z0-9_.-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
@@ -136,6 +136,42 @@ function renderRichText(text: string): React.ReactNode[] {
   return nodes;
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore clipboard errors
+    }
+  }, [text]);
+  return (
+    <button
+      onClick={handleCopy}
+      style={{
+        marginTop: 4,
+        padding: "2px 8px",
+        fontSize: 10,
+        fontFamily: "var(--font-mono)",
+        letterSpacing: "0.05em",
+        color: copied ? C.gold : C.dim,
+        background: "transparent",
+        border: "none",
+        cursor: "pointer",
+        opacity: copied ? 1 : 0.7,
+        transition: "opacity 0.15s",
+      }}
+      onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+      onMouseLeave={(e) => (e.currentTarget.style.opacity = copied ? "1" : "0.7")}
+      aria-label="Copy message"
+    >
+      {copied ? "COPIED" : "COPY"}
+    </button>
+  );
+}
+
 function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === "user";
   return (
@@ -152,6 +188,7 @@ function MessageBubble({ msg }: { msg: Message }) {
       </div>
       {!isUser && <FileDownloads tools={msg.meta?.tools} />}
       <ToolChips tools={msg.meta?.tools} />
+      {msg.content && !msg.streaming && <CopyButton text={msg.content} />}
     </div>
   );
 }

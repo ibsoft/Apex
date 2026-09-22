@@ -105,6 +105,25 @@ cd frontend && npm run build
 A green backend test run and a successful `npm run build` are required before
 finishing any feature.
 
+## EDITOR skill (Word / Excel generation)
+
+The `EDITOR` skill creates downloadable Office documents via two tools defined
+in `backend/tools/editor_tools.py`:
+
+- `editor_create_word` — builds `.docx` files with headings, paragraphs, tables,
+  images, charts (matplotlib), lists and page breaks.
+- `editor_create_excel` — builds `.xlsx` workbooks with multiple sheets,
+  formatting, formulas and `openpyxl` charts.
+
+Both tools receive a JSON `document` argument, save the file under
+`$DATA_DIR/generated/editor/<user_id>/`, and return a signed download URL for
+`/api/editor/download/<token>`. Links expire after `EDITOR_FILE_TTL_SECONDS`
+(default 3600). Generated files are cleaned up on each new document creation.
+
+If you add new element types or chart types, update the skill prompt in
+`backend/skills/definitions/EDITOR.md` and add tests in
+`backend/tests/test_editor_tools.py`.
+
 ## Common extension points
 
 - New search source: add a tool in `core_tools.py` (or a new module) and expose

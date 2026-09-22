@@ -10,3 +10,6 @@ openai-agents>=0.1.0
 langgraph>=0.2.60
 langchain-openai>=0.2.14
 gunicorn>=22.0
+python-docx>=1.1
+openpyxl>=3.1
+matplotlib>=3.9
