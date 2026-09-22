@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useApex, Message } from "./ApexProvider";
 import { api } from "../lib/api";
+import FileDownloads, { backendFileHref } from "./FileDownloads";
 
 const C = {
   cyan: "#00e5ff",
@@ -80,7 +81,7 @@ function InlineImage({ src, alt }: { src: string; alt: string }) {
 
 function renderRichText(text: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const regex = /(!\[([^\]]*)\]\(([^)]+)\))|(https?:\/\/[^\s<>"{}|\\^`[\]]+)/g;
+  const regex = /(!?)\[((?:\\.|[^\]\\])*)\]\((https?:\/\/[^\s)]+|\/api\/files\/download\/[A-Za-z0-9_.-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/files\/download\/[A-Za-z0-9_.-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
@@ -92,28 +93,34 @@ function renderRichText(text: string): React.ReactNode[] {
       );
     }
     const full = match[0];
-    const mdAlt = match[2];
-    const mdUrl = match[3];
-    const plainUrl = match[4];
-    const url = mdUrl || plainUrl;
-    if (mdUrl) {
-      nodes.push(
-        <InlineImage key={`img-${match.index}`} src={mdUrl} alt={mdAlt || "image"} />
-      );
-    } else if (plainUrl && isImageUrl(plainUrl)) {
-      nodes.push(
-        <InlineImage key={`img-${match.index}`} src={plainUrl} alt="image" />
-      );
-    } else if (plainUrl) {
+    const label = match[2]?.replace(/\\([\\\[\]])/g, "$1");
+    const url = match[3] || match[4] || match[5] || match[6];
+    const fileHref = backendFileHref(url);
+    const isBackendFile = fileHref !== null;
+    const isImage = match[1] === "!" || (!match[3] && isImageUrl(url));
+    if (isImage) {
+      nodes.push(<InlineImage key={`img-${match.index}`} src={fileHref || url} alt={label || "image"} />);
+    } else if (isBackendFile) {
       nodes.push(
         <a
           key={`a-${match.index}`}
-          href={plainUrl}
+          href={fileHref}
+          download
+          style={{ color: C.cyan, textDecoration: "underline", overflowWrap: "anywhere" }}
+        >
+          {label || "Download file"}
+        </a>
+      );
+    } else {
+      nodes.push(
+        <a
+          key={`a-${match.index}`}
+          href={url}
           target="_blank"
           rel="noopener noreferrer"
-          style={{ color: C.cyan, textDecoration: "underline" }}
+          style={{ color: C.cyan, textDecoration: "underline", overflowWrap: "anywhere" }}
         >
-          {plainUrl}
+          {label || url}
         </a>
       );
     }
@@ -143,6 +150,7 @@ function MessageBubble({ msg }: { msg: Message }) {
         {msg.content ? renderRichText(msg.content) : (msg.streaming ? "…" : "")}
         {msg.streaming && <span className="apex-blink" style={{ color: C.cyan }}>▊</span>}
       </div>
+      {!isUser && <FileDownloads tools={msg.meta?.tools} />}
       <ToolChips tools={msg.meta?.tools} />
     </div>
   );

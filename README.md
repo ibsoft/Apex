@@ -463,3 +463,46 @@ finishing any feature.
 
 For agent-focused implementation guidance (adding tools, skills, UI nodes, etc.)
 see `AGENTS.md`.
+
+
+## FILE_SEARCH skill
+
+In normal **general** chat, ask “Search Documents for files named logo and list
+them.” APEX calls file search and lists matches with download links; selecting
+**FILE_SEARCH** explicitly also works. The filename and directory come from each request. Named folders resolve from
+the backend OS user's actual home folders and Linux XDG user directory settings. You can also specify an absolute directory.
+The skill searches filename fragments or glob patterns and returns clickable
+download links, full paths, and sizes. Files stay on the backend machine until
+you download them; searching does not read their contents.
+
+Search runs as the backend OS user, without elevation, and skips inaccessible
+paths, symlinks, special files, and `/proc`, `/sys`, `/dev`, and `/run`. Each search
+is bounded to 10 seconds, 100,000 entries, and at most 100 matches; partial results
+are explicitly marked. Narrow the directory when a system-wide search is truncated.
+Downloads require the same signed-in APEX user, expire after one hour, and are
+rejected if the file changed since the search.
+
+By default, the search root is `/`. To restrict it, set `FILE_SEARCH_ROOTS` in
+`backend/.env` to colon-separated directories and restart the backend. APEX users
+share the backend OS account's file permissions, so configure these roots for
+any shared deployment. Select the skill after restarting the backend to load it.
+
+
+### Public URLs for downloads and images
+
+Set `BASE_URL` in `backend/.env` to the public address of the **backend**:
+
+```dotenv
+BASE_URL=https://apex.example.com
+# Or a LAN address, for example: http://192.168.1.50:5001
+```
+
+All APEX-hosted file download and Obsidian attachment/image links use this base.
+It must serve `/api` routes; do not append `/api` to the setting. A reverse-proxy
+prefix such as `https://example.com/apex` is supported. Restart the backend and
+repeat the search to generate new links. Previously saved links retain their old
+address. External web-search image URLs still point to their original sources.
+
+File-search results also appear as **Download filename** links directly beneath
+chat replies. These come from the tool results and remain available when reopening
+the conversation, independently of how the model formats its answer.

@@ -116,6 +116,10 @@ def create_app() -> Flask:
         row = get_db().get_user(uid)
         return row
 
+    from tools.file_search import register_file_routes
+
+    register_file_routes(app, require_user, config)
+
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""
         return get_db().all_settings()
@@ -651,12 +655,15 @@ def create_app() -> Flask:
         def stream_gen():
             yield event_ss(meta_event())
             assistant_parts: list[str] = []
+            tool_events = []
             error_seen = False
             usage = {}
             try:
                 for ev in engine.stream():
                     if ev["type"] == "text_delta":
                         assistant_parts.append(ev["content"])
+                    elif ev["type"] == "tool_result" and ev.get("name") == "file_search":
+                        tool_events.append({"name": "file_search", "output": ev.get("output", ""), "running": False})
                     elif ev["type"] == "error":
                         error_seen = True
                     elif ev["type"] == "done":
@@ -669,10 +676,10 @@ def create_app() -> Flask:
                     pass
 
             assistant_text = "".join(assistant_parts).strip()
-            if assistant_text:
+            if assistant_text or tool_events:
                 db.add_message(
                     conv["id"], "assistant", assistant_text,
-                    {"voice": voice_mode, "error": error_seen, "usage": usage},
+                    {"voice": voice_mode, "error": error_seen, "usage": usage, "tools": tool_events},
                 )
             if error_seen and not assistant_text:
                 db.add_message(conv["id"], "assistant",
