@@ -566,18 +566,46 @@ export default function ChatUI() {
                 <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 8 }}>
                   {/* skills */}
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                    {a.skills.map((s) => (
-                      <button key={s.name} onClick={() => a.setSkill(s.name)} title={s.description}
-                        style={{
-                          padding: "3px 9px", borderRadius: 12, cursor: "pointer",
-                          fontSize: 9, letterSpacing: "0.08em", fontFamily: "var(--font-mono)", textTransform: "uppercase",
-                          background: a.skill === s.name ? `${C.gold}1f` : "transparent",
-                          border: `1px solid ${a.skill === s.name ? C.lineGold : C.line}`,
-                          color: a.skill === s.name ? C.gold : C.dim,
-                        }}>
-                        {s.name}
-                      </button>
-                    ))}
+                    {a.skills.map((s) => {
+                      const isActive = a.skill === s.name;
+                      const isRouted = a.routedSkill === s.name;
+                      return (
+                        <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                          <button onClick={() => a.setSkill(s.name)} title={s.description}
+                            style={{
+                              padding: "3px 9px", borderRadius: 12, cursor: "pointer",
+                              fontSize: 9, letterSpacing: "0.08em", fontFamily: "var(--font-mono)", textTransform: "uppercase",
+                              background: isActive ? `${C.gold}1f` : isRouted ? `${C.cyan}1f` : "transparent",
+                              border: `1px solid ${isActive ? C.lineGold : isRouted ? C.cyan : C.line}`,
+                              color: isActive ? C.gold : isRouted ? C.cyan : C.dim,
+                              boxShadow: isRouted ? `0 0 8px ${C.cyan}44` : undefined,
+                              animation: isRouted ? "apex-pulse 1.2s infinite" : undefined,
+                            }}>
+                            {s.name}
+                          </button>
+                          {!s.builtin && (
+                            <button
+                              onClick={() => a.deleteSkill(s.name)}
+                              title="Delete custom skill"
+                              style={{
+                                padding: "0 4px",
+                                borderRadius: 8,
+                                cursor: "pointer",
+                                fontSize: 10,
+                                lineHeight: 1,
+                                background: "transparent",
+                                border: "none",
+                                color: C.dim,
+                              }}
+                              onMouseEnter={(e) => (e.currentTarget.style.color = "#ff4d4d")}
+                              onMouseLeave={(e) => (e.currentTarget.style.color = C.dim)}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
 
                   {/* voice status */}

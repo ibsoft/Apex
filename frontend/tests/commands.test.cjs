@@ -236,6 +236,8 @@ for (const [alias, skill] of [
 test('all canonical skill names, selection verbs, and custom skills remain supported', () => {
   for (const { name } of skills) {
     assert.deepEqual(parse(`switch to skill ${name}`, 'en'), { type: 'skill', skill: name, rest: '' });
+    assert.deepEqual(parse(`use ${name}`, 'en'), { type: 'skill', skill: name, rest: '' });
+    assert.deepEqual(parse(`activate the skill ${name}`, 'en'), { type: 'skill', skill: name, rest: '' });
   }
   for (const prefix of ['χρησιμοποίησε', 'ενεργοποίησε', 'επίλεξε', 'άλλαξε σε', 'μετάβαση σε']) {
     assert.deepEqual(parse(`${prefix} τη δεξιότητα έρευνα`), { type: 'skill', skill: 'research', rest: '' });
@@ -248,6 +250,18 @@ test('all canonical skill names, selection verbs, and custom skills remain suppo
   assert.deepEqual(parse('ενεργοποίησε τον συντάκτη'), { type: 'skill', skill: 'EDITOR', rest: '' });
   assert.deepEqual(parse('χρησιμοποίησε τη δεξιότητα κώδικα'), { type: 'skill', skill: 'code', rest: '' });
   assert.equal(parseLocalCommand('χρησιμοποίησε έρευνα', 'el', [{ name: 'general' }], now), null);
+});
+
+test('skill switch strips leading "and"/"και" connector from the rest', () => {
+  assert.deepEqual(parse('use obsidian and search for my car plate', 'en'), {
+    type: 'skill', skill: 'obsidian', rest: 'search for my car plate',
+  });
+  assert.deepEqual(parse('switch to skill code and write a function', 'en'), {
+    type: 'skill', skill: 'code', rest: 'write a function',
+  });
+  assert.deepEqual(parse('χρησιμοποίησε οψιδιανό και ψάξε την πινακίδα μου'), {
+    type: 'skill', skill: 'obsidian', rest: 'ψάξε την πινακίδα μου',
+  });
 });
 
 test('whole phrases and skill boundaries avoid hijacking ordinary questions', () => {

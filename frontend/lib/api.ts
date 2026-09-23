@@ -96,6 +96,7 @@ export type ChatEvent =
   | { type: "tool_call"; name: string; id: string; arguments: any }
   | { type: "tool_result"; name: string; output: string }
   | { type: "memory"; action: string; detail: any }
+  | { type: "skills_changed" }
   | { type: "done"; usage?: any }
   | { type: "error"; message: string }
   | { type: "end"; ok: boolean };
@@ -128,7 +129,10 @@ export const api = {
   },
   logout: () => json("/api/logout"),
 
-  skills: () => json<Skill[]>("/api/skills"),
+  skills: {
+    list: () => json<Skill[]>("/api/skills"),
+    delete: (name: string) => json<{ ok: boolean }>(`/api/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  },
 
   conversations: {
     list: () => json<Conversation[]>("/api/conversations"),
@@ -200,6 +204,7 @@ export const api = {
       skill?: string;
       model?: string;
       voice_mode?: boolean;
+      store_messages?: boolean;
     },
     onEvent: (ev: ChatEvent) => void,
   ): Promise<void> {

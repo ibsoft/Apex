@@ -239,7 +239,19 @@ Skills are selected from the chat UI header. Each skill is a system prompt plus
 an allowed tool list. Built-in skills live in `backend/skills/definitions/`; you
 can drop custom `.md` skill files into `DATA_DIR/skills` to override or extend
 them. User skills shadow built-in skills with the same name and are picked up
-automatically on the next request.
+automatically on the next request. In the chat UI, custom skills show a small
+**×** next to their button; clicking it deletes the skill file. Built-in skills
+cannot be deleted.
+
+#### Auto-routing from general mode
+
+When the active skill is **general**, APEX can automatically route each turn to
+the most appropriate specialist skill. The model reads the skill descriptions
+and replies with the best match; the turn then runs with that skill's system
+prompt and tools, and the selected skill is highlighted in the skill bar. The
+conversation itself stays in **general** mode, so the next turn is routed again
+from scratch. Disable this with `AUTO_ROUTE_FROM_GENERAL=false` in
+`backend/.env`.
 
 | Skill | Description | Tools |
 |-------|-------------|-------|
@@ -322,11 +334,11 @@ Greek (`el` / `el-GR`). Accents, case and final sigma are normalized.
 
 #### Skill switching
 
-Switch skill before sending the rest of the message:
+Switch skill before sending the rest of the message. This works for both built-in and custom skills by their exact name:
 
 | English | Greek | Example result |
 |---------|-------|----------------|
-| `use <skill>`, `switch to <skill>`, `activate <skill>`, `enable <skill>` | `χρησιμοποίησε <skill>`, `ενεργοποίησε <skill>`, `επίλεξε <skill>`, `άλλαξε σε <skill>`, `μετάβαση σε <skill>` | `use research, summarize quantum computing` → switches to **research** and sends “summarize quantum computing”. |
+| `use <skill>`, `switch to <skill>`, `activate <skill>`, `enable <skill>` | `χρησιμοποίησε <skill>`, `ενεργοποίησε <skill>`, `επίλεξε <skill>`, `άλλαξε σε <skill>`, `μετάβαση σε <skill>` | `use research, summarize quantum computing` → switches to **research** and sends “summarize quantum computing”. `use google-places, find cafes near me` → switches to the custom **google-places** skill. |
 
 Greek aliases for built-in skills:
 
@@ -616,6 +628,7 @@ Key environment variables (see `backend/.env.example` for the full list):
 | `OPENAI_BASE_URL` | OpenAI-compatible base URL |
 | `DEFAULT_MODEL` | Default chat model |
 | `AGENT_ENGINE` | `responses` (default), `agents_sdk`, `langgraph` |
+| `AUTO_ROUTE_FROM_GENERAL` | Auto-select specialist skill from general mode (`true`) |
 | `MEMORY_ENABLED` | Enable vector memory (`true`) |
 | `DATA_DIR` | SQLite, ChromaDB and user skill overrides |
 | `WAKE_WORD` | Voice wake word (`apex`) |

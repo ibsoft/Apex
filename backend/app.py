@@ -64,7 +64,7 @@ from db import get_db
 from memory.store import get_memory
 from models.embedders import EmbeddingManager
 from models.providers import ProviderError, ProviderManager
-from skills.manager import get_skill_manager
+from skills.manager import get_skill_manager, route_skill
 from tools.memory_tools import memory_prompt_block
 
 
@@ -455,6 +455,20 @@ def create_app() -> Flask:
             ]
         )
 
+    @app.delete("/api/skills/<name>")
+    def delete_skill(name: str):
+        user = require_user()
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        skill = get_skill_manager().get(name)
+        if skill is None:
+            return jsonify({"error": "skill not found"}), 404
+        if skill.builtin:
+            return jsonify({"error": "cannot delete built-in skill"}), 403
+        if get_skill_manager().delete(name):
+            return jsonify({"ok": True})
+        return jsonify({"error": "could not delete skill"}), 500
+
     # ---- settings --------------------------------------------------------------
     @app.get("/api/settings")
     def get_settings():
@@ -661,18 +675,26 @@ def create_app() -> Flask:
         rt = runtime()
         uid = user["id"]
         db = get_db()
+        store_messages = bool(data.get("store_messages", True))
 
         # resolve conversation
         conv_id = data.get("conversation_id") or ""
         conv = db.get_conversation(conv_id) if conv_id else None
         if conv and conv["user_id"] != uid:
             return jsonify({"error": "not allowed"}), 403
-        if conv is None:
-            title = user_text[:48] + ("…" if len(user_text) > 48 else "")
-            conv = db.create_conversation(uid, title=title)
+        if store_messages:
+            if conv is None:
+                title = user_text[:48] + ("…" if len(user_text) > 48 else "")
+                conv = db.create_conversation(uid, title=title)
+        else:
+            # Ephemeral turns (e.g. autonomous nudges) use the requested
+            # conversation for context but never create or modify history.
+            if conv is None:
+                conv = {"id": str(uuid.uuid4()), "user_id": uid, "skill": ""}
 
         skill_name = data.get("skill") or conv["skill"] or "general"
-        db.update_conversation(conv["id"], skill=skill_name)
+        if store_messages:
+            db.update_conversation(conv["id"], skill=skill_name)
 
         engine_name = (rt.get("engine") or config.AGENT_ENGINE).lower()
         provider_name = (rt.get("provider") or config.PROVIDER_DEFAULT).lower()
@@ -681,7 +703,8 @@ def create_app() -> Flask:
         voice_mode = bool(data.get("voice_mode", False))
 
         # persist user message
-        db.add_message(conv["id"], "user", user_text, {"voice": voice_mode})
+        if store_messages:
+            db.add_message(conv["id"], "user", user_text, {"voice": voice_mode})
 
         bearer = bearer_for_api(uid)
         mem = memory_or_none()
@@ -722,6 +745,17 @@ def create_app() -> Flask:
             provider = provider_mgr.build(provider_name, model)
         except ProviderError as exc:
             return jsonify({"error": str(exc)}), 502
+
+        # Auto-route from the general skill to the best specialist skill.
+        # The conversation stays in general mode; routing is per-turn.
+        routed_skill = None
+        if skill_name == "general" and config.AUTO_ROUTE_FROM_GENERAL:
+            all_skills = get_skill_manager().all()
+            routed = route_skill(user_text, all_skills, provider, fallback="general")
+            if routed != "general":
+                routed_skill = routed
+                skill_name = routed
+                skill_obj = get_skill_manager().select(skill_name)
 
         # history for agent (exclude the just-added user message until ready)
         history = []
@@ -789,6 +823,12 @@ def create_app() -> Flask:
                         assistant_parts.append(ev["content"])
                     elif ev["type"] == "tool_result" and ev.get("name") == "file_search":
                         tool_events.append({"name": "file_search", "output": ev.get("output", ""), "running": False})
+                    elif ev["type"] == "tool_result" and ev.get("name") == "create_skill":
+                        # Notify the UI that the skill list has changed so the new
+                        # skill appears in the panel without a manual refresh.
+                        yield event_ss(ev)
+                        yield event_ss({"type": "skills_changed"})
+                        continue
                     elif ev["type"] == "error":
                         error_seen = True
                     elif ev["type"] == "done":
@@ -801,23 +841,24 @@ def create_app() -> Flask:
                     pass
 
             assistant_text = "".join(assistant_parts).strip()
-            if assistant_text or tool_events:
-                db.add_message(
-                    conv["id"], "assistant", assistant_text,
-                    {"voice": voice_mode, "error": error_seen, "usage": usage, "tools": tool_events},
-                )
-            if error_seen and not assistant_text:
-                db.add_message(conv["id"], "assistant",
-                               "[The assistant hit an error; please retry.]",
-                               {"error": True})
+            if store_messages:
+                if assistant_text or tool_events:
+                    db.add_message(
+                        conv["id"], "assistant", assistant_text,
+                        {"voice": voice_mode, "error": error_seen, "usage": usage, "tools": tool_events},
+                    )
+                if error_seen and not assistant_text:
+                    db.add_message(conv["id"], "assistant",
+                                   "[The assistant hit an error; please retry.]",
+                                   {"error": True})
 
-            if config.MEMORY_SUMMARIZE and mem and (assistant_text or user_text):
-                threading.Thread(
-                    target=background_summarize,
-                    args=(uid, conv["id"], user_text, assistant_text,
-                          provider_mgr, provider_name, rt),
-                    daemon=True,
-                ).start()
+                if config.MEMORY_SUMMARIZE and mem and (assistant_text or user_text):
+                    threading.Thread(
+                        target=background_summarize,
+                        args=(uid, conv["id"], user_text, assistant_text,
+                              provider_mgr, provider_name, rt),
+                        daemon=True,
+                    ).start()
             yield event_ss({"type": "end", "ok": not error_seen})
 
         resp = Response(stream_gen(), mimetype="text/event-stream")

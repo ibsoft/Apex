@@ -62,3 +62,9 @@ body {
   50%      { opacity: 0; }
 }
 .apex-blink { animation: apexBlink 0.9s steps(1) infinite; }
+
+/* Highlight for a skill auto-selected by the model in general mode. */
+@keyframes apex-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}

@@ -187,7 +187,10 @@ function parseSkill(text: string, greek: boolean, skills: Array<{ name: string }
   const normalized = normalize(body);
   for (const { name, skill } of names) {
     if (normalized.startsWith(name) && (!normalized[name.length] || /^[\s,.:;!?—–-]$/.test(normalized[name.length]))) {
-      const rest = originalSlice(body, name.length).replace(/^[\s,.:;!?—–-]+/, "").trim();
+      const rest = originalSlice(body, name.length)
+        .replace(/^[\s,.:;!?—–-]+/, "")
+        .replace(/^(?:and|και)\s+/i, "")
+        .trim();
       return { type: "skill", skill, rest };
     }
   }

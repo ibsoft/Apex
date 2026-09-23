@@ -75,6 +75,9 @@ class Config:
 
     # Agent defaults
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
+    # When the active skill is "general", ask the model to pick the best
+    # specialist skill for the user message and route the turn through it.
+    AUTO_ROUTE_FROM_GENERAL = _bool("AUTO_ROUTE_FROM_GENERAL", True)
     # Model used when the user logged in with a ChatGPT subscription token.
     CHATGPT_MODEL = os.getenv("CHATGPT_MODEL", "gpt-5-codex")
     # Model used by the "code" skill when no runtime/user model is selected.

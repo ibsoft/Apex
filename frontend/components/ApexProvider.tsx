@@ -65,6 +65,7 @@ type ApexContextType = {
   activeId: string | null;
   messages: Message[];
   skill: string;
+  routedSkill: string | null;
   skills: Skill[];
   memory: MemoryEntry[];
   busy: boolean;
@@ -95,6 +96,7 @@ type ApexContextType = {
   deleteConversation: (id: string) => Promise<void>;
   sendMessage: (text: string, opts?: { voice?: boolean; skill?: string }) => Promise<void>;
   setSkill: (name: string) => void;
+  deleteSkill: (name: string) => Promise<void>;
   updateSettings: (patch: Settings) => Promise<void>;
   setVoiceEnabled: (on: boolean) => void;
   addMemory: (text: string, category?: string) => Promise<void>;
@@ -143,6 +145,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [byConv, setByConv] = useState<Record<string, Message[]>>({});
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skill, setSkill] = useState("general");
+  const [routedSkill, setRoutedSkill] = useState<string | null>(null);
   const [memory, setMemory] = useState<MemoryEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [orb, setOrb] = useState<OrbState>("idle");
@@ -214,7 +217,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     }).catch(() => {});
     // Fallback: if the config payload did not include skills, load them directly.
     if (cfgSkills.length === 0) {
-      const direct = await api.skills().catch(() => [] as Skill[]);
+      const direct = await api.skills.list().catch(() => [] as Skill[]);
       if (direct.length) {
         setSkills(direct);
         setSkill((s) => {
@@ -274,6 +277,29 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setMemory([]);
     if (voice) voice.cancelSpeech();
     await refresh();
+  }, []);
+
+  const deleteSkill = useCallback(async (name: string) => {
+    const target = skillsRef.current.find((s) => s.name === name);
+    if (!target || target.builtin) return;
+    try {
+      await api.skills.delete(name);
+    } catch (err: any) {
+      // 404 means the file is already gone; drop it from the UI as well.
+      if (err?.status === 404) {
+        setSkills((prev) => prev.filter((s) => s.name !== name));
+        if (skillRef.current === name) {
+          setSkill("general");
+        }
+        return;
+      }
+      setError(err?.message ?? `Could not delete skill "${name}".`);
+      return;
+    }
+    setSkills((prev) => prev.filter((s) => s.name !== name));
+    if (skillRef.current === name) {
+      setSkill("general");
+    }
   }, []);
 
   /* ---------- conversations ---------- */
@@ -606,6 +632,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         setBusy(true);
         setError(null);
         setOrb("thinking");
+        setRoutedSkill(null);
 
         // Make sure a conversation exists before handling commands that need to
         // post a reply into the chat.
@@ -677,7 +704,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         if (model && stripSystemModel(model)) payload.model = model;
 
         await api.chat(payload, (ev: ChatEvent) => {
-          if (ev.type === "text_delta") {
+          if (ev.type === "meta") {
+            if (ev.skill && ev.skill !== skillRef.current) {
+              setRoutedSkill(ev.skill);
+            }
+          } else if (ev.type === "text_delta") {
             spoken += ev.content ?? "";
             pushAssistant({ streaming: true, content: spoken });
           } else if (ev.type === "tool_call") {
@@ -698,6 +729,16 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             pushAssistant({ streaming: true, content: spoken, meta: { voice: !!opts.voice, tools: streamedTools } });
           } else if (ev.type === "memory") {
             void refreshMemory();
+          } else if (ev.type === "skills_changed") {
+            void api.skills.list().then((list) => {
+              if (list.length) {
+                setSkills(list);
+                setSkill((s) => {
+                  const ok = list.some((k) => k.name === s);
+                  return ok ? s : (list[0]?.name ?? "general");
+                });
+              }
+            }).catch(() => {});
           } else if (ev.type === "error") {
             streamError = ev.message;
             setError(ev.message);
@@ -716,6 +757,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           } else if (ev.type === "end") {
             pushAssistant({ streaming: false, content: spoken });
             void refreshMemory();
+            // Keep the routed-skill highlight visible briefly after the turn.
+            setTimeout(() => setRoutedSkill((current) => (current ? null : current)), 2000);
           }
         });
 
@@ -805,7 +848,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       let full = "";
       let streamError = "";
       await api.chat(
-        { message: systemHint, skill: "general", voice_mode: false },
+        {
+          message: systemHint,
+          skill: "general",
+          voice_mode: false,
+          store_messages: false,
+          conversation_id: activeIdRef.current || undefined,
+        },
         (ev) => {
           if (ev.type === "text_delta") full += ev.content ?? "";
           else if (ev.type === "error") streamError = ev.message || "Autonomous response failed";
@@ -830,22 +879,15 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       && !autonomousDeliveryRef.current.busy && autonomousDeliveryRef.current.orb === "idle";
     if (!content || !canPublish()) return;
 
-    let convId = activeIdRef.current;
-    if (!convId) {
-      const conv = await api.conversations.create({ skill: skillRef.current });
-      if (!canPublish()) return;
-      setConversations((list) => [conv, ...list]);
-      // Respect a conversation opened while creation was in flight.
-      convId = activeIdRef.current ?? conv.id;
-      if (!activeIdRef.current) {
-        activeIdRef.current = conv.id;
-        setActiveId(conv.id);
-      }
-    }
-
+    // Autonomous nudges are ephemeral: they use the current conversation for
+    // context but never create new history entries. If no conversation is open
+    // the message is only spoken, not persisted visually.
+    const convId = activeIdRef.current;
     const shouldSpeak = opts.voice && autonomousDeliveryRef.current.voiceEnabled;
-    const message = mkMsg("assistant", content, { meta: { voice: shouldSpeak } });
-    setByConv((current) => ({ ...current, [convId]: [...(current[convId] ?? []), message] }));
+    if (convId) {
+      const message = mkMsg("assistant", content, { meta: { voice: shouldSpeak } });
+      setByConv((current) => ({ ...current, [convId]: [...(current[convId] ?? []), message] }));
+    }
     if (shouldSpeak) speakRef.current(speechText(content));
   }, []);
 
@@ -874,6 +916,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       activeId,
       messages,
       skill,
+      routedSkill,
       skills,
       memory,
       busy,
@@ -899,6 +942,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       deleteConversation,
       sendMessage,
       setSkill,
+      deleteSkill,
       updateSettings,
       setVoiceEnabled,
       addMemory,
@@ -921,8 +965,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       declareOperator,
       silenceAutonomous,
     }),
-    [loading, user, cfg, settings, conversations, activeId, messages, skill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
-     preview, previewMaximized, chatCollapsed, timers, reminders, operator, silencedUntil, refresh, login, logout, newConversation, openConversation, deleteConversation, sendMessage, updateSettings, setVoiceEnabled,
+    [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
+     preview, previewMaximized, chatCollapsed, timers, reminders, operator, silencedUntil, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview,
      setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous],
   );
