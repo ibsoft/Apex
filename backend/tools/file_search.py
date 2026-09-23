@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 import stat
 import time
+import unicodedata
 
 from flask import jsonify, send_file
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -22,6 +23,24 @@ SEARCH_SECONDS = 10
 LINK_SECONDS = 3600
 
 
+HOME_FOLDER_NAMES = {
+    'DESKTOP': ('Desktop', 'Επιφάνεια εργασίας'),
+    'DOCUMENTS': ('Documents', 'Έγγραφα'),
+    'DOWNLOAD': ('Downloads', 'Download', 'Λήψεις', 'Κατεβάσματα'),
+    'PICTURES': ('Pictures', 'Εικόνες', 'Φωτογραφίες'),
+    'MUSIC': ('Music', 'Μουσική'),
+    'VIDEOS': ('Videos', 'Βίντεο'),
+    'TEMPLATES': ('Templates', 'Πρότυπα'),
+    'PUBLICSHARE': ('Public', 'Public share', 'Κοινόχρηστα', 'Δημόσια'),
+}
+
+
+def _folder_keyword(value):
+    """Normalize aliases only; preserve spelling of actual paths and filenames."""
+    folded = unicodedata.normalize('NFD', value.casefold())
+    return ' '.join(''.join(char for char in folded if not unicodedata.combining(char)).split())
+
+
 def resolve_search_root(value):
     """Resolve an absolute path or a named home folder using this machine's settings."""
     text = str(value).strip()
@@ -31,6 +50,20 @@ def resolve_search_root(value):
     if not text or '/' in text or text in ('.', '..'):
         raise ValueError('Use an absolute directory or the name of a folder in your home directory.')
     home = Path.home()
+    # A literal home folder wins over a translated semantic alias.
+    direct = home / text
+    if direct.is_dir():
+        return direct.resolve()
+    try:
+        matches = [child for child in home.iterdir()
+                   if child.name.casefold() == text.casefold() and child.is_dir()]
+    except OSError:
+        matches = []
+    if len(matches) == 1:
+        return matches[0].resolve()
+    keyword = _folder_keyword(text)
+    folder_type = next((kind for kind, names in HOME_FOLDER_NAMES.items()
+                        if keyword in {_folder_keyword(name) for name in names}), None)
     config_dir = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
     try:
         for line in (config_dir / 'user-dirs.dirs').read_text().splitlines():
@@ -43,21 +76,14 @@ def resolve_search_root(value):
                 continue
             target = Path(directory)
             names = {match.group(1).replace('_', ' ').casefold(), target.name.casefold()}
-            if text.casefold() in names:
+            if text.casefold() in names or folder_type == match.group(1):
                 return target.resolve()
     except (OSError, UnicodeError):
         pass
-    # Prefer exact spelling, then case-insensitive matching of actual home folders.
-    direct = home / text
-    if direct.is_dir():
-        return direct.resolve()
-    try:
-        matches = [child for child in home.iterdir()
-                   if child.name.casefold() == text.casefold() and child.is_dir()]
-    except OSError:
-        matches = []
-    if len(matches) == 1:
-        return matches[0].resolve()
+    if folder_type:
+        conventional = home / HOME_FOLDER_NAMES[folder_type][0]
+        if conventional.is_dir():
+            return conventional.resolve()
     raise ValueError('Folder not found or ambiguous; provide its absolute path.')
 
 
@@ -179,7 +205,9 @@ def search_files(args, ctx: ToolContext, config):
 
 def build_file_tools(config):
     return [Tool(name='file_search', description='Find readable local files by filename or glob and return download links. '
-                 'root accepts an absolute path or a folder name resolved from the OS user home and desktop settings. '
+                 'root accepts an absolute path or an English/Greek folder name (Documents/Έγγραφα, Downloads/Λήψεις, '
+                 'Desktop/Επιφάνεια εργασίας, Pictures/Εικόνες, Music/Μουσική, Videos/Βίντεο, Templates/Πρότυπα, '
+                 'Public/Κοινόχρηστα) resolved from the OS user home and desktop settings. '
                  'Otherwise search the configured system roots. Does not read file contents.',
                  parameters={'type': 'object', 'properties': {
                      'query': {'type': 'string', 'description': 'Filename fragment or glob, e.g. invoice or *.pdf.'},

@@ -13,6 +13,7 @@
 */
 
 import { useEffect, useRef, useState } from "react";
+import { isSleepCommand, isWakeOnlyText, isWakeWordFragment, recognitionLanguage, wakePattern } from "./voiceCommands";
 
 export type VoicePhase = "standby" | "awake" | "thinking" | "speaking";
 
@@ -38,8 +39,6 @@ type SpeechRecognitionLike = {
   abort: () => void;
 };
 
-const SLEEP_RE =
-  /^(stop|sleep|good\s*bye|good\s*night|never\s*mind|that'?s\s*all|dismiss|quiet|go\s*to\s*sleep|stand\s*down)\b.*/i;
 const WAKE_BEEP_FREQ = 1180;
 
 const DEBUG_VOICE =
@@ -48,19 +47,6 @@ const DEBUG_VOICE =
   localStorage.getItem("apex:debug:voice") === "1";
 function vlog(...args: any[]) {
   if (DEBUG_VOICE) console.log("[voice]", ...args);
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function wakePattern(wakeWord: string): RegExp {
-  return new RegExp(`\\b${escapeRegExp(wakeWord.trim().toLowerCase())}\\b`, "i");
-}
-
-function isWakeOnlyText(text: string, wakeWord: string): boolean {
-  const normalized = text.toLowerCase().replace(/[.!?,;:]+/g, "").trim();
-  return normalized === wakeWord.trim().toLowerCase();
 }
 
 function SRClassAvailable(): boolean {
@@ -116,15 +102,19 @@ export function useVoiceEngine(opts: {
   const idleAwaitedRef = useRef(false);
   const [lastHeard, setLastHeard] = useState<string>("");
 
-  const recognitionLang = (): string => {
-    const wantsGreek = cfgRef.current.responseLanguage === "el";
-    // Greek is used while collecting the awake command and during the
-    // no-wake-word follow-up window. Otherwise we listen in English so the
-    // wake word is recognised reliably.
-    const inGreekContext =
-      phaseRef.current === "awake" ||
-      (phaseRef.current === "standby" && armedRef.current);
-    return wantsGreek && inGreekContext ? "el-GR" : "en-US";
+  const recognitionLang = (): string => recognitionLanguage(
+    cfgRef.current.responseLanguage,
+    cfgRef.current.wakeWord,
+    phaseRef.current,
+    armedRef.current,
+  );
+
+  const syncRecognitionLanguage = () => {
+    if (recRef.current && recRef.current.lang !== recognitionLang()) {
+      try {
+        recRef.current.abort();
+      } catch {}
+    }
   };
 
   const clearFollowUpLangTimer = () => {
@@ -142,6 +132,18 @@ export function useVoiceEngine(opts: {
     cfgRef.current.onPhase(p);
   };
 
+  const sleepVoice = () => {
+    armedRef.current = false;
+    followUpUntilRef.current = 0;
+    pendingCommand.current = "";
+    if (commandTimer.current) clearTimeout(commandTimer.current);
+    if (idleTimer.current) clearTimeout(idleTimer.current);
+    clearFollowUpLangTimer();
+    vlog("sleep command, disarming");
+    setPhase("standby");
+    syncRecognitionLanguage();
+  };
+
   const finishSpeaking = () => {
     queueRef.current = [];
     setSegmentsLeft(0);
@@ -154,29 +156,21 @@ export function useVoiceEngine(opts: {
       // Briefly ignore the mic after TTS stops so the assistant's own voice
       // (speaker echo) is not re-recognized as a user command.
       postSpeechDeafUntilRef.current = Date.now() + 600;
-      // The recognition session has been running in English while the assistant
-      // was thinking/speaking. If the selected response language is Greek we
-      // need to restart it so the follow-up utterance is recognised in Greek.
-      if (cfgRef.current.responseLanguage === "el") {
-        try {
-          recRef.current?.abort();
-        } catch {}
-      }
-      // When the follow-up window closes, return to English wake-word listening.
+      // A custom English wake word may need a different recognizer language
+      // during its follow-up window.
       clearFollowUpLangTimer();
       followUpLangTimer.current = setTimeout(() => {
         if (!armedRef.current) return;
         armedRef.current = false;
-        vlog("follow-up window closed, returning to English wake-word listening");
-        try {
-          recRef.current?.abort();
-        } catch {}
+        vlog("follow-up window closed, returning to wake-word listening");
+        syncRecognitionLanguage();
       }, fu * 1000);
       vlog("follow-up armed for", fu, "s");
     } else {
       vlog("follow-up disabled (fu=", fu, ")");
     }
     setPhase("standby");
+    syncRecognitionLanguage();
   };
 
   const cancelSpeech = () => {
@@ -303,6 +297,10 @@ export function useVoiceEngine(opts: {
   const fireCommand = (raw: string) => {
     const text = raw.replace(/\s+/g, " ").trim();
     if (!text) return;
+    if (isSleepCommand(text, cfgRef.current.responseLanguage)) {
+      sleepVoice();
+      return;
+    }
     const now = Date.now();
     if (lastFireRef.current.text === text && now - lastFireRef.current.at < 2500) return; // dup frame
     lastFireRef.current = { text, at: now };
@@ -310,7 +308,7 @@ export function useVoiceEngine(opts: {
     vlog("fireCommand:", text);
     setPhase("thinking");
     // End the current question-language session. The onend handler creates a
-    // fresh idle session, which returns to English wake-word detection.
+    // fresh session in the appropriate wake-word language.
     try {
       recRef.current?.abort();
     } catch {}
@@ -323,6 +321,7 @@ export function useVoiceEngine(opts: {
       if (armedRef.current && phaseRef.current === "awake") {
         armedRef.current = false;
         setPhase("standby");
+        syncRecognitionLanguage();
       }
     }, 15000);
   };
@@ -331,12 +330,11 @@ export function useVoiceEngine(opts: {
     const wakeMatch = text.match(re);
     const command = (wakeMatch && wakeMatch.index !== undefined
       ? text.slice(wakeMatch.index + wakeMatch[0].length)
-      : text).replace(/\s+/g, " ").trim();
+      : text).replace(/^[\s,.;:!?··;]+/g, "").replace(/\s+/g, " ").trim();
     if (!command) return;
-    const normalized = command.toLowerCase().replace(/[.!?,;:]+/g, "").trim();
     // Edge may emit fragments of the wake word while it is still listening.
     // Never send those fragments as commands (for example "a" or "ape").
-    if (normalized.length < 2 || ww.startsWith(normalized)) return;
+    if (isWakeWordFragment(command, ww, cfgRef.current.responseLanguage)) return;
     pendingCommand.current = command;
     if (commandTimer.current) clearTimeout(commandTimer.current);
     if (final) {
@@ -386,18 +384,12 @@ export function useVoiceEngine(opts: {
     clearFollowUpLangTimer();
     beep();
     cfgRef.current.onWake?.();
-    // Keep the wake word English, then switch the recognizer to Greek for the
-    // follow-up question when Greek responses are selected.
-    if (cfgRef.current.responseLanguage === "el") {
-      try {
-        recRef.current?.abort();
-      } catch {}
-    }
-    const low = text.toLowerCase();
-    const re = wakePattern(ww);
+    syncRecognitionLanguage();
+    const language = cfgRef.current.responseLanguage;
+    const re = wakePattern(ww, language);
     const m = text.match(re);
-    const rest = m && m.index !== undefined ? text.slice(m.index + m[0].length).trim() : "";
-    if (rest && !isWakeOnlyText(rest, ww) && !re.test(rest.toLowerCase())) {
+    const rest = m && m.index !== undefined ? text.slice(m.index + m[0].length).replace(/^[\s,.;:!?··;]+/g, "").trim() : "";
+    if (rest && !isWakeOnlyText(rest, ww, language) && !re.test(rest)) {
       fireCommand(rest);
       return;
     }
@@ -411,7 +403,8 @@ export function useVoiceEngine(opts: {
     const final = isFinal(e);
     setLastHeard(`${final ? "✓" : "…"} ${text}`);
     const ww = cfgRef.current.wakeWord.toLowerCase();
-    const re = wakePattern(ww);
+    const language = cfgRef.current.responseLanguage;
+    const re = wakePattern(ww, language);
     const low = text.toLowerCase();
     const phase = phaseRef.current;
 
@@ -423,19 +416,9 @@ export function useVoiceEngine(opts: {
     }
 
     if (phase === "awake") {
-      if (isWakeOnlyText(text, ww)) return;
-      if (SLEEP_RE.test(text)) {
-        armedRef.current = false;
-        followUpUntilRef.current = 0;
-        clearFollowUpLangTimer();
-        vlog("sleep command, disarming");
-        setPhase("standby");
-        // Return to English wake-word listening if we were in Greek mode.
-        if (cfgRef.current.responseLanguage === "el") {
-          try {
-            recRef.current?.abort();
-          } catch {}
-        }
+      if (isWakeOnlyText(text, ww, language)) return;
+      if (isSleepCommand(text, language)) {
+        sleepVoice();
         return;
       }
       queueAwakeCommand(text, re, ww, final);
@@ -463,22 +446,12 @@ export function useVoiceEngine(opts: {
     // follow-up window (armed, no wake word)
     if (armedRef.current) {
       vlog("follow-up candidate:", text, "final:", final, "ms left:", followUpUntilRef.current - Date.now());
-      if (isWakeOnlyText(text, ww)) {
+      if (isWakeOnlyText(text, ww, language)) {
         wakeSlow(text, ww);
         return;
       }
-      if (SLEEP_RE.test(text)) {
-        armedRef.current = false;
-        followUpUntilRef.current = 0;
-        clearFollowUpLangTimer();
-        vlog("sleep command, disarming");
-        setPhase("standby");
-        // Return to English wake-word listening if we were in Greek mode.
-        if (cfgRef.current.responseLanguage === "el") {
-          try {
-            recRef.current?.abort();
-          } catch {}
-        }
+      if (isSleepCommand(text, language)) {
+        sleepVoice();
         return;
       }
       if (Date.now() <= followUpUntilRef.current) {
@@ -488,12 +461,7 @@ export function useVoiceEngine(opts: {
       vlog("follow-up window expired");
       armedRef.current = false;
       clearFollowUpLangTimer();
-      // Follow-up window closed; switch back to English wake-word listening.
-      if (cfgRef.current.responseLanguage === "el") {
-        try {
-          recRef.current?.abort();
-        } catch {}
-      }
+      syncRecognitionLanguage();
     }
   };
 
@@ -636,6 +604,12 @@ export function useVoiceEngine(opts: {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
+
+  // Apply language/wake-word setting changes to an already active microphone.
+  useEffect(() => {
+    if (activeRef.current && !stoppingRef.current) syncRecognitionLanguage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [responseLanguage, wakeWord]);
 
   return {
     supported: SRClassAvailable(),
