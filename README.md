@@ -22,6 +22,7 @@ backend/    Flask API — OAuth, agents, tools, skills, ChromaDB memory
   - [ChatGPT subscription via Codex](#chatgpt-subscription--browser-login-through-codex)
 - [Using the assistant](#using-the-assistant)
   - [Skills](#skills)
+  - [Local command keywords](#local-command-keywords)
   - [Agent orb](#agent-orb)
   - [Chat rendering](#chat-rendering)
   - [Voice mode](#voice-mode)
@@ -235,16 +236,180 @@ this project does not provide a public OpenAI OAuth client-registration process.
 ### Skills
 
 Skills are selected from the chat UI header. Each skill is a system prompt plus
-an allowed tool list:
+an allowed tool list. Built-in skills live in `backend/skills/definitions/`; you
+can drop custom `.md` skill files into `DATA_DIR/skills` to override or extend
+them. User skills shadow built-in skills with the same name and are picked up
+automatically on the next request.
 
-- **general** — default assistant; handles weather, time, web search, images,
-  news, memory and calculations.
-- **research** — web research with citations and source checking.
-- **code** — coding help with optional `run_python` execution.
-- **translator** — translation tasks.
-- **obsidian** — full read/write/search access to a local Obsidian vault.
+| Skill | Description | Tools |
+|-------|-------------|-------|
+| **general** | Default assistant for everyday questions and tasks. | `file_search`, `current_time`, `get_weather`, `web_search`, `web_image_search`, `web_news_search`, `web_fetch`, `calculate`, `remember`, `recall` |
+| **code** | Coding assistant that writes, runs and debugs code. | All active tools (uses `CODE_MODEL` when configured) |
+| **research** | Web research with live sources, citations and source checking. | `web_search`, `web_image_search`, `web_news_search`, `web_fetch`, `current_time`, `calculate`, `remember`, `recall` |
+| **translator** | Professional translation and multilingual editing. | None required (empty tool list) |
+| **obsidian** | Full read/write/search access to a local Obsidian vault. | All Obsidian vault tools plus `remember` / `recall` |
+| **shell** | Local systems administrator; runs shell commands directly on the host. | `run_shell` (requires `ENABLE_RUN_SHELL=true`) |
+| **skill_creator** | Designs and creates new Apex skills on demand. | `create_skill` |
+| **FILE_SEARCH** | Finds files on the APEX server by name, extension or directory and returns download links. | `file_search` |
+| **EDITOR** | Researches a topic online and generates downloadable Word or Excel documents. | `editor_create_word`, `editor_create_excel`, `web_search`, `web_fetch`, `web_image_search`, `calculate` |
 
-Drop custom skill files into `DATA_DIR/skills` to override or extend built-ins.
+#### Skill details
+
+**general**
+- Handles weather, current time, web search, image search, news, memory,
+  calculations and local file search.
+- Use for questions like *“What’s the weather?”*, *“Search my Documents for
+  invoices”*, *“Remember my bike lock code is 4821”*.
+
+**code**
+- Plans, implements and tests code. Uses `run_python` when `ENABLE_RUN_PYTHON`
+  is enabled, and searches the web for up-to-date APIs or package versions.
+- Example: *“Write a Python script that fetches NOAA weather data and plots the
+  temperature trend.”*
+
+**research**
+- Performs broad web searches, fetches authoritative pages, cross-checks claims
+  and presents structured summaries with numbered citations.
+- Example: *“Research the latest solid-state battery breakthroughs and cite
+  your sources.”*
+
+**translator**
+- Translates faithfully while preserving tone, register and idiomatic meaning.
+- Example: *“Translate this email into formal Japanese.”*
+
+**obsidian**
+- Creates, reads, updates and deletes notes and folders; follows wiki-links;
+  reads YAML frontmatter and tags; opens daily notes; lists attachments.
+- Configure `OBSIDIAN_VAULT_PATH` and the daily-note settings in `backend/.env`.
+
+**shell**
+- Executes shell commands on the backend host. Requires explicit confirmation
+  for destructive or invasive operations unless already authorized.
+- Enable only on trusted machines with `ENABLE_RUN_SHELL=true`.
+
+**skill_creator**
+- Gathers a name, description, system prompt and tool list, then writes a new
+  skill definition file that appears in the skill bar immediately.
+- Example: *“Create a skill that helps me draft project risk assessments.”*
+
+**FILE_SEARCH**
+- Searches filename fragments or glob patterns on the backend filesystem and
+  returns clickable download links, full paths and sizes.
+- Searches do not read file contents. By default the search root is `/`; restrict
+  it with `FILE_SEARCH_ROOTS` in `backend/.env`.
+- Named folders resolve from the backend OS user's home and XDG directories, or
+  you can provide an absolute path.
+- Downloads require the same signed-in APEX user, expire after one hour, and are
+  rejected if the file changed since the search.
+- Set `BASE_URL` in `backend/.env` to the public backend address so download and
+  image links work from remote clients.
+
+**EDITOR**
+- Researches a topic and produces `.docx` or `.xlsx` files with headings,
+  paragraphs, tables, charts, images and styles.
+- Returns a signed download link that expires after
+  `EDITOR_FILE_TTL_SECONDS` (default 1 hour).
+- Example: *“Create a professional Word report on renewable energy trends with
+  charts and citations.”*
+
+### Local command keywords
+
+APEX parses a small set of local commands from typed or spoken input. These are
+handled directly in the browser (for example, timers and reminders fire locally
+without contacting the model). English commands work in every language; Greek
+commands are enabled only when the **Default response language** is set to
+Greek (`el` / `el-GR`). Accents, case and final sigma are normalized.
+
+#### Skill switching
+
+Switch skill before sending the rest of the message:
+
+| English | Greek | Example result |
+|---------|-------|----------------|
+| `use <skill>`, `switch to <skill>`, `activate <skill>`, `enable <skill>` | `χρησιμοποίησε <skill>`, `ενεργοποίησε <skill>`, `επίλεξε <skill>`, `άλλαξε σε <skill>`, `μετάβαση σε <skill>` | `use research, summarize quantum computing` → switches to **research** and sends “summarize quantum computing”. |
+
+Greek aliases for built-in skills:
+
+| Skill | Greek aliases |
+|-------|---------------|
+| general | γενικά, γενική, γενική βοήθεια, βοήθεια, γενικός βοηθός |
+| code | κώδικας, προγραμματισμός, προγραμματιστής |
+| research | έρευνα, ερευνητής, μελέτη |
+| translator | μεταφραστής, μετάφραση |
+| obsidian | σημειώσεις, οψιδιανός, σημειωματάριο |
+| shell | τερματικό, κέλυφος, κονσόλα |
+| skill_creator | δημιουργός δεξιοτήτων, δημιουργία δεξιοτήτων |
+| FILE_SEARCH | αναζήτηση αρχείων, αρχεία, ψάξε αρχεία |
+| EDITOR | συντάκτης, επεξεργαστής εγγράφων, επεξεργαστής, έγγραφα, word, excel |
+
+#### Timers and reminders
+
+Timers and reminders are handled locally in the browser. They support both
+relative durations and absolute clock times.
+
+**Reminders**
+
+| English forms | Greek forms | Examples |
+|---------------|-------------|----------|
+| `remind me ...`, `add a reminder ...`, `set a reminder ...`, `create a reminder ...`, `reminder ...` | `θύμισέ μου ...`, `θύμησέ μου ...`, `υπενθύμισέ μου ...`, `βάλε (μου) (μια/ένα) υπενθύμιση ...`, `όρισε (μου) (μια/ένα) υπενθύμιση ...`, `πρόσθεσε (μου) (μια/ένα) υπενθύμιση ...`, `δημιούργησε (μου) (μια/ένα) υπενθύμιση ...`, `κάνε (μου) (μια/ένα) υπενθύμιση ...`, `υπενθύμιση ...` | `add a reminder to call John in 10 minutes`, `βάλε μου υπενθύμιση να καλέσω τον Γιάννη σε δέκα λεπτά` |
+
+Time markers: `in` / `at` (English) and `σε` / `στις` / `στη` / `στην` (Greek)
+for relative and absolute times. Task separator: `to` (English) / `να` (Greek).
+
+**Timers**
+
+| English forms | Greek forms | Examples |
+|---------------|-------------|----------|
+| `set a timer ...`, `start timer ...`, `create a countdown ...`, `timer ...`, `countdown ...` | `βάλε (μου) (ένα/μια) χρονόμετρο ...`, `όρισε (μου) (ένα/μια) χρονόμετρο ...`, `ξεκίνα (μου) (ένα/μια) αντίστροφη μέτρηση ...`, `δημιούργησε (μου) (ένα/μια) χρονόμετρο ...`, `κάνε (μου) (ένα/μια) χρονόμετρο ...`, `χρονόμετρο ...`, `αντίστροφη μέτρηση ...` | `set a timer for 5 seconds`, `κάνε μου αντίστροφη μέτρηση για πέντε λεπτά` |
+
+**Cancellation**
+
+| English | Greek |
+|---------|-------|
+| `cancel all timers`, `stop timer`, `clear timers` | `ακύρωσε όλα τα χρονόμετρα`, `σταμάτα το χρονόμετρο`, `διάγραψε τα χρονόμετρα` |
+| `cancel all reminders`, `stop reminders`, `clear reminders` | `ακύρωσε όλες τις υπενθυμίσεις`, `σταμάτα τις υπενθυμίσεις`, `διάγραψε τις υπενθυμίσεις` |
+
+#### Image browser
+
+Open the image browser panel for local or web images:
+
+| English | Greek |
+|---------|-------|
+| `show images`, `browse gallery`, `find photos`, `open image browser` | `δείξε εικόνες`, `άνοιξε τις φωτογραφίες`, `βρες φωτογραφίες` |
+| `show my pictures`, `show local images` | `δείξε τις φωτογραφίες μου`, `δείξε τις τοπικές εικόνες` |
+| `show images of <query>` | `δείξε μου εικόνες με <query>` |
+
+#### Preview controls
+
+When a preview panel is open:
+
+| Action | English | Greek |
+|--------|---------|-------|
+| Close | `close`, `hide`, `dismiss` | `κλείσε`, `κρύψε`, `απόκρυψε` |
+| Maximize | `maximize`, `full screen`, `enlarge` | `μεγιστοποίησε`, `πλήρης οθόνη` |
+| Restore | `restore`, `minimize`, `normalize` | `επανάφερε`, `ελαχιστοποίησε`, `μίκρυνε` |
+| Next | `next`, `forward` | `επόμενο`, `μπροστά` |
+| Previous | `previous`, `back` | `προηγούμενο`, `πίσω` |
+
+#### Autonomy and operator
+
+| Command | English | Greek |
+|---------|---------|-------|
+| Enable autonomous mode | `enable autonomous mode`, `start autonomy` | `ενεργοποίησε την αυτόνομη λειτουργία`, `άνοιξε αυτονομία` |
+| Disable autonomous mode | `disable autonomous mode`, `turn off autonomy` | `απενεργοποίησε την αυτονομία`, `κλείσε την αυτόνομη λειτουργία` |
+| Silence autonomy for 10 min | `be quiet`, `silence`, `stop talking`, `pause autonomy` | `σιωπή`, `ησυχία`, `κάνε ησυχία`, `μη μιλάς`, `σταμάτα να μιλάς`, `παύση αυτονομίας` |
+| Declare operator | `I am your operator`, `call me operator <name>` | `είμαι ο χειριστής σου`, `αποκάλεσέ με χειριστή <name>` |
+
+#### Wake word and sleep
+
+The default wake word is `apex`. When Greek is selected, `Άπεξ` / `Απέξ` is
+also recognized as a wake alias.
+
+Sleep phrases end the voice session:
+
+| English | Greek |
+|---------|-------|
+| `stop`, `sleep`, `goodbye`, `good night`, `never mind`, `that’s all`, `dismiss`, `quiet`, `go to sleep`, `stand down` | `σταμάτα`, `σταμάτησε`, `κοιμήσου`, `πήγαινε για ύπνο`, `καληνύχτα`, `αντίο`, `άστο`, `αυτό ήταν`, `αυτά ήταν`, `τέλος`, `άκυρο`, `μπες σε αναμονή`, `πήγαινε σε αναμονή` |
 
 ### Agent orb
 
@@ -461,6 +626,9 @@ Key environment variables (see `backend/.env.example` for the full list):
 | `OBSIDIAN_VAULT_PATH` | Absolute path to your Obsidian vault |
 | `OBSIDIAN_DAILY_NOTES_FOLDER` | Daily notes folder inside the vault |
 | `OBSIDIAN_DAILY_NOTES_FORMAT` | strftime format for daily note filenames (`%Y-%m-%d`) |
+| `FILE_SEARCH_ROOTS` | Colon-separated directories to restrict file-search to |
+| `BASE_URL` | Public backend address for download / image links |
+| `EDITOR_FILE_TTL_SECONDS` | Generated document link lifetime (default `3600`) |
 
 ## Development
 
@@ -481,46 +649,3 @@ finishing any feature.
 
 For agent-focused implementation guidance (adding tools, skills, UI nodes, etc.)
 see `AGENTS.md`.
-
-
-## FILE_SEARCH skill
-
-In normal **general** chat, ask “Search Documents for files named logo and list
-them.” APEX calls file search and lists matches with download links; selecting
-**FILE_SEARCH** explicitly also works. The filename and directory come from each request. Named folders resolve from
-the backend OS user's actual home folders and Linux XDG user directory settings. You can also specify an absolute directory.
-The skill searches filename fragments or glob patterns and returns clickable
-download links, full paths, and sizes. Files stay on the backend machine until
-you download them; searching does not read their contents.
-
-Search runs as the backend OS user, without elevation, and skips inaccessible
-paths, symlinks, special files, and `/proc`, `/sys`, `/dev`, and `/run`. Each search
-is bounded to 10 seconds, 100,000 entries, and at most 100 matches; partial results
-are explicitly marked. Narrow the directory when a system-wide search is truncated.
-Downloads require the same signed-in APEX user, expire after one hour, and are
-rejected if the file changed since the search.
-
-By default, the search root is `/`. To restrict it, set `FILE_SEARCH_ROOTS` in
-`backend/.env` to colon-separated directories and restart the backend. APEX users
-share the backend OS account's file permissions, so configure these roots for
-any shared deployment. Select the skill after restarting the backend to load it.
-
-
-### Public URLs for downloads and images
-
-Set `BASE_URL` in `backend/.env` to the public address of the **backend**:
-
-```dotenv
-BASE_URL=https://apex.example.com
-# Or a LAN address, for example: http://192.168.1.50:5001
-```
-
-All APEX-hosted file download and Obsidian attachment/image links use this base.
-It must serve `/api` routes; do not append `/api` to the setting. A reverse-proxy
-prefix such as `https://example.com/apex` is supported. Restart the backend and
-repeat the search to generate new links. Previously saved links retain their old
-address. External web-search image URLs still point to their original sources.
-
-File-search results also appear as **Download filename** links directly beneath
-chat replies. These come from the tool results and remain available when reopening
-the conversation, independently of how the model formats its answer.

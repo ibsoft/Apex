@@ -116,7 +116,7 @@ function parseClock(text: string, greek: boolean, now: number): number | null {
 
 function parseTimer(text: string, greek: boolean): LocalCommand | null {
   let body = afterPrefix(text, /^(?:(?:set|start|create)\s+(?:a\s+)?)?(?:timer|countdown)\s+(?:for\s+)?/);
-  if (body === null && greek) body = afterPrefix(text, /^(?:(?:βαλε|ορισε|ξεκινα|ξεκινησε|δημιουργησε)\s+(?:(?:ενα|μια)\s+)?)?(?:χρονομετρο|αντιστροφη\s+μετρηση)\s+(?:για\s+)?/);
+  if (body === null && greek) body = afterPrefix(text, /^(?:(?:βαλε|ορισε|ξεκινα|ξεκινησε|δημιουργησε|κανε)\s+(?:(?:ενα|μια)\s+)?(?:μου\s+)?)?(?:χρονομετρο|αντιστροφη\s+μετρηση)\s+(?:για\s+)?/);
   if (!body) return null;
   const seconds = parseDuration(body, greek);
   if (seconds) return { type: "timer", name: greek ? "Χρονόμετρο" : "Timer", seconds };
@@ -134,7 +134,7 @@ function parseTimer(text: string, greek: boolean): LocalCommand | null {
 
 function parseReminder(text: string, greek: boolean, now: number): LocalCommand | null {
   let body = afterPrefix(text, /^(?:remind\s+me|(?:(?:add|set|create)\s+(?:a\s+)?)?reminder)\s+/);
-  if (body === null && greek) body = afterPrefix(text, /^(?:(?:θυμισε|θυμησε|υπενθυμισε)\s+μου|(?:(?:βαλε|ορισε|προσθεσε|δημιουργησε)\s+(?:μια\s+)?)?υπενθυμιση)\s+/);
+  if (body === null && greek) body = afterPrefix(text, /^(?:(?:θυμισε|θυμησε|υπενθυμισε)\s+μου|(?:(?:βαλε|ορισε|προσθεσε|δημιουργησε|κανε)\s+(?:(?:μια|ενα)\s+)?(?:μου\s+)?)?υπενθυμιση)\s+/);
   if (!body) return null;
   const resolve = (time: string, relative: boolean) => {
     if (!relative) return parseClock(time, greek, now);
@@ -167,15 +167,15 @@ function parseReminder(text: string, greek: boolean, now: number): LocalCommand 
 }
 
 const SKILL_ALIASES: Record<string, string[]> = {
-  general: ["γενικα", "γενικη", "γενική βοήθεια"],
-  code: ["κωδικασ", "κωδικα", "προγραμματισμοσ", "προγραμματισμο"],
-  research: ["ερευνα", "ερευνητησ", "ερευνητη"],
+  general: ["γενικα", "γενικη", "γενική βοήθεια", "βοήθεια", "γενικός βοηθός"],
+  code: ["κωδικασ", "κωδικα", "προγραμματισμοσ", "προγραμματισμο", "προγραμματιστής"],
+  research: ["ερευνα", "ερευνητησ", "ερευνητη", "μελέτη", "μελετη"],
   translator: ["μεταφραστησ", "μεταφραστη", "μεταφραση"],
-  obsidian: ["σημειωσεισ", "οψιδιανοσ", "οψιδιανο"],
-  shell: ["τερματικο", "κελυφοσ"],
+  obsidian: ["σημειωσεισ", "οψιδιανοσ", "οψιδιανο", "σημειωματάριο", "σημειωματαριο"],
+  shell: ["τερματικο", "κελυφοσ", "κονσόλα", "κονσολα"],
   skill_creator: ["δημιουργοσ δεξιοτητων", "δημιουργο δεξιοτητων", "δημιουργια δεξιοτητων"],
-  file_search: ["αναζητηση αρχειων"],
-  editor: ["συντακτησ", "συντακτη", "επεξεργαστησ εγγραφων", "επεξεργαστη εγγραφων", "εγγραφα"],
+  file_search: ["αναζητηση αρχειων", "αρχεία", "αρχεια", "ψάξε αρχεία", "ψαξε αρχεια"],
+  editor: ["συντακτησ", "συντακτη", "επεξεργαστησ εγγραφων", "επεξεργαστη εγγραφων", "εγγραφα", "επεξεργαστής", "επεξεργαστη", "word", "excel"],
 };
 
 function parseSkill(text: string, greek: boolean, skills: Array<{ name: string }>): LocalCommand | null {

@@ -36,6 +36,9 @@ for (const input of [
   'όρισε μια υπενθύμιση σε δέκα λεπτά να Call John',
   'πρόσθεσε υπενθύμιση να Call John σε δέκα λεπτά',
   'ΥΠΕΝΘΥΜΙΣΗ να Call John σε ΔΕΚΑ ΛΕΠΤΑ!',
+  'βάλε μου υπενθύμιση να Call John σε δέκα λεπτά',
+  'κάνε μια υπενθύμιση να Call John σε δέκα λεπτά',
+  'κάνε μου υπενθύμιση να Call John σε δέκα λεπτά',
 ]) {
   test(`relative reminder: ${input}`, () => {
     assert.deepEqual(parse(input), { type: 'reminder', name: 'Call John', fireAt: now + 600000 });
@@ -107,6 +110,9 @@ for (const [input, seconds] of [
   ['χρονόμετρο μισή ώρα', 1800],
   ['χρονόμετρο μιάμιση ώρα', 5400],
   ['χρονόμετρο ενάμισι λεπτό', 90],
+  ['βάλε μου χρονόμετρο για δέκα λεπτά', 600],
+  ['κάνε χρονόμετρο για δέκα λεπτά', 600],
+  ['κάνε μου αντίστροφη μέτρηση για πέντε λεπτά', 300],
 ]) {
   test(`timer duration: ${input}`, () => {
     assert.deepEqual(parse(input), { type: 'timer', name: 'Χρονόμετρο', seconds });
@@ -211,12 +217,16 @@ for (const [text, query, source] of [
 ]) test(`image command: ${text}`, () => assert.deepEqual(parse(text), { type: 'images', query, source }));
 
 for (const [alias, skill] of [
-  ['γενικά', 'general'], ['γενική βοήθεια', 'general'], ['κώδικας', 'code'],
-  ['προγραμματισμός', 'code'], ['έρευνα', 'research'], ['μεταφραστής', 'translator'],
+  ['γενικά', 'general'], ['γενική βοήθεια', 'general'], ['βοήθεια', 'general'],
+  ['κώδικας', 'code'], ['προγραμματισμός', 'code'], ['προγραμματιστής', 'code'],
+  ['έρευνα', 'research'], ['μελέτη', 'research'], ['μεταφραστής', 'translator'],
   ['μετάφραση', 'translator'], ['σημειώσεις', 'obsidian'], ['οψιδιανός', 'obsidian'],
-  ['τερματικό', 'shell'], ['κέλυφος', 'shell'], ['δημιουργός δεξιοτήτων', 'skill_creator'],
+  ['σημειωματάριο', 'obsidian'], ['τερματικό', 'shell'], ['κέλυφος', 'shell'],
+  ['κονσόλα', 'shell'], ['δημιουργός δεξιοτήτων', 'skill_creator'],
   ['δημιουργία δεξιοτήτων', 'skill_creator'], ['αναζήτηση αρχείων', 'FILE_SEARCH'],
+  ['αρχεία', 'FILE_SEARCH'], ['ψάξε αρχεία', 'FILE_SEARCH'],
   ['συντάκτης', 'EDITOR'], ['επεξεργαστής εγγράφων', 'EDITOR'], ['έγγραφα', 'EDITOR'],
+  ['επεξεργαστής', 'EDITOR'], ['word', 'EDITOR'], ['excel', 'EDITOR'],
 ]) {
   test(`Greek skill alias: ${alias}`, () => {
     assert.deepEqual(parse(`χρησιμοποίησε ${alias}, Δοκιμή με Όνομα.`), { type: 'skill', skill, rest: 'Δοκιμή με Όνομα.' });
