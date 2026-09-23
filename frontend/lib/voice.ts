@@ -32,6 +32,8 @@ type SpeechRecognitionLike = {
   lang: string;
   continuous: boolean;
   interimResults: boolean;
+  onstart: ((e: any) => void) | null;
+  onaudiostart: ((e: any) => void) | null;
   onresult: ((e: any) => void) | null;
   onend: (() => void) | null;
   onerror: ((e: any) => void) | null;
@@ -40,6 +42,14 @@ type SpeechRecognitionLike = {
 };
 
 const WAKE_BEEP_FREQ = 1180;
+
+// Auto-recovery knobs: browsers (Chromium especially) can reject a restart
+// issued too soon after an abort, or start a session that silently never
+// produces results. These limits back off retries so the wake word always
+// comes back without requiring the user to toggle the microphone.
+const MAX_START_ATTEMPTS = 4;
+const START_VERIFY_MS = 5000; // a started session must fire onstart within this
+const STALE_RESULTS_MS = 120000; // only case a session is wedged if it is this old
 
 const DEBUG_VOICE =
   typeof window !== "undefined" &&
@@ -81,6 +91,9 @@ export function useVoiceEngine(opts: {
   const phaseRef = useRef<VoicePhase>("standby");
   const armedRef = useRef(false); // next utterance = command
   const stoppingRef = useRef(false);
+  const recStartedRef = useRef(false); // current session fired onstart/onaudiostart
+  const startAttemptsRef = useRef(0); // consecutive failed starts (backoff)
+  const startVerifyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const followUpUntilRef = useRef(0);
   const postSpeechDeafUntilRef = useRef(0); // ignore mic echo after TTS finishes
   const lastFireRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
@@ -307,11 +320,13 @@ export function useVoiceEngine(opts: {
     armedRef.current = false;
     vlog("fireCommand:", text);
     setPhase("thinking");
-    // End the current question-language session. The onend handler creates a
-    // fresh session in the appropriate wake-word language.
+    // End the current question-language session. The onend handler normally
+    // opens a fresh session, but browsers occasionally swallow the onend event
+    // after abort(); schedule a guaranteed restart as a backstop.
     try {
       recRef.current?.abort();
     } catch {}
+    scheduleRestart(400);
     cfgRef.current.onCommand(text);
   };
 
@@ -465,6 +480,50 @@ export function useVoiceEngine(opts: {
     }
   };
 
+  /** Abort and drop the current recognizer without permanently stopping voice. */
+  const teardownRecognition = () => {
+    if (recRef.current) {
+      try {
+        recRef.current.abort();
+      } catch {}
+      recRef.current = null;
+    }
+    if (startVerifyTimer.current) {
+      clearTimeout(startVerifyTimer.current);
+      startVerifyTimer.current = null;
+    }
+    recStartedRef.current = false;
+  };
+
+  /**
+   * Schedule a fresh recognition session. Replaces any pending restart so the
+   * onend handler, the post-command backstop and the health check can never
+   * double-spawn recognizers. A short delay lets the browser release the mic
+   * from the previous session (Chromium rejects eager restarts).
+   */
+  const scheduleRestart = (delayMs = 350) => {
+    if (!activeRef.current || stoppingRef.current) return;
+    if (restartTimer.current) clearTimeout(restartTimer.current);
+    restartTimer.current = setTimeout(() => {
+      restartTimer.current = null;
+      if (!activeRef.current || stoppingRef.current) return;
+      teardownRecognition();
+      startRecognition();
+    }, delayMs);
+  };
+
+  /** A recognizer that never fires onstart is dead; force a fresh session. */
+  const startVerify = (rec: SpeechRecognitionLike) => {
+    if (startVerifyTimer.current) clearTimeout(startVerifyTimer.current);
+    startVerifyTimer.current = setTimeout(() => {
+      startVerifyTimer.current = null;
+      if (!activeRef.current || stoppingRef.current) return;
+      if (recRef.current !== rec || recStartedRef.current) return;
+      vlog("start-verify: recognizer never started, restarting");
+      scheduleRestart(500);
+    }, START_VERIFY_MS);
+  };
+
   const startRecognition = () => {
     const W = window as any;
     const SRClass = W.SpeechRecognition || W.webkitSpeechRecognition;
@@ -473,57 +532,99 @@ export function useVoiceEngine(opts: {
       return;
     }
     setError(null);
+    teardownRecognition();
+    let rec: SpeechRecognitionLike;
     try {
-      recRef.current?.abort();
-    } catch {}
-    const rec: SpeechRecognitionLike = new SRClass();
+      rec = new SRClass();
+    } catch (err) {
+      stoppingRef.current = true;
+      setError(`Could not start voice recognition: ${err instanceof Error ? err.message : String(err)}`);
+      setActive(false);
+      return;
+    }
     rec.lang = recognitionLang();
     // Keep the microphone session alive across the wake word and the command.
     // The newest-result parser below prevents Edge's cumulative results from
     // replaying older speech.
     rec.continuous = true;
     rec.interimResults = true;
+    rec.onstart = () => {
+      recStartedRef.current = true;
+      startAttemptsRef.current = 0;
+      vlog("recognition session started");
+    };
+    rec.onaudiostart = () => {
+      recStartedRef.current = true;
+      startAttemptsRef.current = 0;
+    };
     rec.onresult = (e) => onResult(e);
     rec.onend = () => {
+      // Ignore onend from a session we have already replaced or aborted for
+      // restart; only the current session may restart the engine.
+      if (recRef.current !== rec) return;
+      recRef.current = null;
+      recStartedRef.current = false;
       if (!stoppingRef.current && activeRef.current) {
-        restartTimer.current = setTimeout(() => {
-          if (!stoppingRef.current && activeRef.current) {
-            startRecognition();
-          }
-        }, 300);
+        scheduleRestart(300);
       }
     };
     rec.onerror = (e: any) => {
       const code = e?.error || "unknown";
       if (code === "aborted" || code === "canceled") return;
-      setError(code === "not-allowed"
-        ? "Microphone access was denied. Allow microphone access for this page."
-        : code === "service-not-allowed"
-          ? "This browser does not allow its speech service. Open Apex in Chrome or Edge directly."
-          : `Voice recognition error: ${code}`);
-      if (e?.error === "not-allowed" || e?.error === "service-not-allowed") {
+      if (code === "no-speech") return; // not fatal for a continuous session
+      if (code === "not-allowed" || code === "service-not-allowed") {
         stoppingRef.current = true;
+        setError(code === "not-allowed"
+          ? "Microphone access was denied. Allow microphone access for this page."
+          : "This browser does not allow its speech service. Open Apex in Chrome or Edge directly.");
         setActive(false);
-      } else if (e?.error === "network") {
+        return;
+      }
+      if (code === "network") {
         // Chromium reports a transient network error when its remote speech
         // service drops the recognition session. Restart without showing a
         // stale error beside the microphone control.
         setError(null);
-        restartTimer.current = setTimeout(() => {
-          if (!stoppingRef.current && activeRef.current) {
-            startRecognition();
-          }
-        }, 600);
+        scheduleRestart(600);
+        return;
       }
+      if (startAttemptsRef.current >= MAX_START_ATTEMPTS) {
+        // Persistent audio trouble (e.g. mic in use elsewhere): stop retrying
+        // rather than loop forever; the user can toggle the mic back on.
+        stoppingRef.current = true;
+        setError(`Voice recognition error: ${code}`);
+        setActive(false);
+        return;
+      }
+      startAttemptsRef.current += 1;
+      setError(`Voice recognition error: ${code}`);
+      scheduleRestart(400 * startAttemptsRef.current);
     };
     recRef.current = rec;
     lastResultAtRef.current = Date.now();
+    recStartedRef.current = false;
     try {
       rec.start();
     } catch (err) {
-      setError(`Could not start voice recognition: ${err instanceof Error ? err.message : String(err)}`);
-      setActive(false);
+      // Chromium rejects a start issued right after the previous session
+      // ended. Retry with a growing delay instead of disabling voice.
+      startAttemptsRef.current += 1;
+      const detail = err instanceof Error ? err.message : String(err);
+      if (/(not allowed|permission|denied)/i.test(detail)) {
+        stoppingRef.current = true;
+        setError(`Could not start voice recognition: ${detail}`);
+        setActive(false);
+      } else if (startAttemptsRef.current >= MAX_START_ATTEMPTS) {
+        setError(`Could not start voice recognition: ${detail}`);
+        setActive(false);
+      } else {
+        vlog("start rejected, retrying", startAttemptsRef.current);
+        recRef.current = null;
+        scheduleRestart(400 * startAttemptsRef.current);
+        return;
+      }
     }
+    startVerify(rec);
   };
 
   const stopRecognition = () => {
@@ -532,6 +633,11 @@ export function useVoiceEngine(opts: {
       recRef.current?.abort();
     } catch {}
     recRef.current = null;
+    recStartedRef.current = false;
+    if (startVerifyTimer.current) {
+      clearTimeout(startVerifyTimer.current);
+      startVerifyTimer.current = null;
+    }
     if (restartTimer.current) clearTimeout(restartTimer.current);
     if (idleTimer.current) clearTimeout(idleTimer.current);
     if (commandTimer.current) clearTimeout(commandTimer.current);
@@ -547,34 +653,22 @@ export function useVoiceEngine(opts: {
       if (!activeRef.current || stoppingRef.current) return;
       const now = Date.now();
       const msSinceResult = now - lastResultAtRef.current;
-      // In a quiet room there are no results, so only restart if the session is
-      // either missing or very old. This catches browser sessions that silently
-      // die without firing onend.
-      const staleThreshold = 120000; // 2 minutes
+      // In a quiet room there are no results, so only restart if the session
+      // is either missing or very old. This catches browser sessions that
+      // silently die without firing onend. The start-verify watchdog in
+      // startRecognition handles sessions that never fire onstart at all.
       const hasRec = !!recRef.current;
       const phase = phaseRef.current;
       // Only force-restart while wake-word listening; during thinking/speaking
       // the existing onend handler will restart after the assistant finishes.
       const canRestart = phase === "standby" || phase === "awake";
-      const isStuck = hasRec && msSinceResult > staleThreshold && canRestart;
+      const isStuck = hasRec && recStartedRef.current && msSinceResult > STALE_RESULTS_MS && canRestart;
       if ((!hasRec && canRestart) || isStuck) {
         vlog("health check: recognition", hasRec ? "stuck" : "missing", "restarting");
         setError(null);
-        if (restartTimer.current) clearTimeout(restartTimer.current);
-        stoppingRef.current = true;
-        try {
-          recRef.current?.abort();
-        } catch {}
-        recRef.current = null;
-        // Short delay so the browser releases the previous session.
-        setTimeout(() => {
-          stoppingRef.current = false;
-          if (activeRef.current) {
-            startRecognition();
-          }
-        }, 400);
+        scheduleRestart(isStuck ? 1000 : 200);
       }
-    }, 15000);
+    }, 10000);
   };
 
   /* start/stop with the user toggle */
@@ -604,6 +698,27 @@ export function useVoiceEngine(opts: {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
+
+  // Self-heal: if voice stays enabled but the recognizer died (or a restart
+  // was rejected) without firing the enable path, bring it back automatically
+  // so the wake word keeps working — instead of needing a manual mic toggle.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!enabled || active) return;
+    if (stoppingRef.current) return;
+    const t = setTimeout(() => {
+      if (!enabled || stoppingRef.current) return;
+      if (activeRef.current) return; // recovered on its own
+      vlog("self-heal: voice enabled but recognition inactive, restarting");
+      stoppingRef.current = false;
+      setActive(true);
+      setPhase("standby");
+      startRecognition();
+      startHealthCheck();
+    }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, active]);
 
   // Apply language/wake-word setting changes to an already active microphone.
   useEffect(() => {
