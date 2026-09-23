@@ -33,6 +33,7 @@ import {
 import { useVoiceEngine, VoicePhase } from "../lib/voice";
 import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
+import { formatDuration, parseLocalCommand } from "../lib/commands";
 
 export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -193,6 +194,9 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const remindersRef = useRef(reminders);
   remindersRef.current = reminders;
 
+  const commandLanguage = () => settingsRef.current.response_language ?? cfgRef.current?.response_language ?? "en";
+  const localize = (english: string, greek: string) => /^el(?:-|$)/i.test(commandLanguage()) ? greek : english;
+
   const messages = activeId ? byConv[activeId] ?? [] : [];
 
   /* ---------- data loading ---------- */
@@ -349,15 +353,19 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       }
       const images = result?.images ?? [];
       if (!images.length) {
-        speakRef.current(query ? `No images found for ${query}` : "No images found");
+        speakRef.current(query
+          ? localize(`No images found for ${query}`, `Δεν βρέθηκαν εικόνες για ${query}`)
+          : localize("No images found", "Δεν βρέθηκαν εικόνες"));
         return;
       }
       const items = images.map((img: any) => ({ url: img.url, title: img.name, kind: "image" as const }));
-      const titlePrefix = source === "local" ? "Local Images" : "Web Images";
+      const titlePrefix = source === "local" ? localize("Local Images", "Τοπικές εικόνες") : localize("Web Images", "Εικόνες ιστού");
       setPreview({ title: query ? `${titlePrefix}: ${query}` : titlePrefix, items, index: 0 });
-      speakRef.current(query ? `Found ${images.length} images for ${query}` : `Found ${images.length} images`);
+      speakRef.current(query
+        ? localize(`Found ${images.length} images for ${query}`, `Βρέθηκαν ${images.length} εικόνες για ${query}`)
+        : localize(`Found ${images.length} images`, `Βρέθηκαν ${images.length} εικόνες`));
     } catch (err: any) {
-      speakRef.current(err?.message || "Could not open image browser");
+      speakRef.current(err?.message || localize("Could not open image browser", "Δεν ήταν δυνατό το άνοιγμα των εικόνων"));
     }
   }, []);
 
@@ -390,13 +398,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   const setTimer = useCallback((name: string, seconds: number) => {
     const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setTimers((prev) => [...prev, { id, name: name || "Timer", fireAt: Date.now() + seconds * 1000 }]);
+    setTimers((prev) => [...prev, { id, name: name || localize("Timer", "Χρονόμετρο"), fireAt: Date.now() + seconds * 1000 }]);
     return id;
   }, []);
 
   const setReminder = useCallback((name: string, fireAt: number) => {
     const id = `r_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setReminders((prev) => [...prev, { id, name: name || "Reminder", fireAt }]);
+    setReminders((prev) => [...prev, { id, name: name || localize("Reminder", "Υπενθύμιση"), fireAt }]);
     return id;
   }, []);
 
@@ -416,14 +424,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         const fired = prev.filter((t) => t.fireAt <= now);
         if (!fired.length) return prev;
         playNotification();
-        fired.forEach((t) => speakRef.current(`Timer ${t.name} is done`));
+        fired.forEach((t) => speakRef.current(localize(`Timer ${t.name} is done`, `Το χρονόμετρο ${t.name} ολοκληρώθηκε`)));
         return prev.filter((t) => t.fireAt > now);
       });
       setReminders((prev) => {
         const fired = prev.filter((r) => r.fireAt <= now);
         if (!fired.length) return prev;
         playNotification();
-        fired.forEach((r) => speakRef.current(`Reminder: ${r.name}`));
+        fired.forEach((r) => speakRef.current(localize(`Reminder: ${r.name}`, `Υπενθύμιση: ${r.name}`)));
         return prev.filter((r) => r.fireAt > now);
       });
     }, 1000);
@@ -452,21 +460,6 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const sendRef = useRef<any>(null);
   const speakRef = useRef<(text: string) => void>(() => {});
 
-  const CLOSE_PREVIEW_RE = /^(close|hide|dismiss|shut)\b.*(preview|it|window|image|document|that)?/i;
-  const MAXIMIZE_PREVIEW_RE = /^(maxim(?:ize|ise)|full[-\s]?screen|enlarge|expand)\b/i;
-  const NORMALIZE_PREVIEW_RE = /^(normali(?:ze|ise)|minimize|shrink|restore|small(er)?\s+window)\b/i;
-  const NEXT_PREVIEW_RE = /^(next|forward|next\s+(image|one|photo|picture|page))\b/i;
-  const PREV_PREVIEW_RE = /^(previous|back|last|prev|earlier\s+(image|one|photo|picture|page))\b/i;
-  const CANCEL_TIMER_RE = /^(cancel|stop|clear)\s+(?:all\s+)?timers?/i;
-  const CANCEL_REMINDER_RE = /^(cancel|stop|clear)\s+(?:all\s+)?reminders?/i;
-  const OPEN_IMAGES_RE = /^(?:show|open|browse)\s+(?:me\s+)?(?:all\s+)?(?:my\s+)?(?:the\s+)?(?:image\s+)?(?:browser|gallery|images?|pictures?|pics?|photos?)$/i;
-  const SEARCH_IMAGES_RE = /^(?:search|find|show)\s+(?:me\s+)?(?:an?\s+)?(?:image|picture|photo|pic)s?\s+(?:of|for)?\s*(.+)$/i;
-  const LOCAL_IMAGE_RE = /\b(local|my folder|my computer|from my pc|on my computer|from my folder|from my pictures|my pictures)\b/i;
-  const DECLARE_OPERATOR_RE = /^(?:i am|i'm|this is|call me)\s+(?:your\s+)?operator(?:\s*,?\s*(?:name\s+is\s+)?(.+))?$/i;
-  const DISABLE_AUTONOMOUS_RE = /^(?:disable|stop|turn off|shut off)\s+(?:autonomous\s+mode|autonomy)$/i;
-  const ENABLE_AUTONOMOUS_RE = /^(?:enable|start|turn on)\s+(?:autonomous\s+mode|autonomy)$/i;
-  const SILENCE_RE = /^(?:be\s+quiet|silence|shut\s+up|quiet|pause\s+autonomy|stop\s+talking)\b/i;
-
   const voice = useVoiceEngine({
     enabled: voiceEnabled,
     wakeWord: settings.wake_word ?? cfg?.wake_word ?? "apex",
@@ -476,108 +469,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     onPhase: onVoicePhase,
     onCommand: (text: string) => {
       if (!userRef.current) return;
-      const trimmed = text.trim().replace(/[.!?;]+$/, "");
-      if (previewRef.current && CLOSE_PREVIEW_RE.test(trimmed)) {
-        closePreview();
-        speakRef.current("Preview closed");
-        return;
-      }
-      if (previewRef.current && MAXIMIZE_PREVIEW_RE.test(trimmed)) {
-        if (!previewMaximizedRef.current) togglePreviewMaximized();
-        speakRef.current(previewMaximizedRef.current ? "Already maximized" : "Preview maximized");
-        return;
-      }
-      if (previewRef.current && NORMALIZE_PREVIEW_RE.test(trimmed)) {
-        if (previewMaximizedRef.current) togglePreviewMaximized();
-        speakRef.current(previewMaximizedRef.current ? "Preview normalized" : "Already normalized");
-        return;
-      }
-      if (previewRef.current && (previewRef.current?.items.length ?? 0) > 1 && NEXT_PREVIEW_RE.test(trimmed)) {
-        nextPreview();
-        const item = previewRef.current?.items[previewRef.current?.index ?? 0];
-        speakRef.current(item ? `Showing ${item.title}` : "Next");
-        return;
-      }
-      if (previewRef.current && (previewRef.current?.items.length ?? 0) > 1 && PREV_PREVIEW_RE.test(trimmed)) {
-        previousPreview();
-        const item = previewRef.current?.items[previewRef.current?.index ?? 0];
-        speakRef.current(item ? `Showing ${item.title}` : "Previous");
-        return;
-      }
-      if (CANCEL_TIMER_RE.test(trimmed)) {
-        setTimers([]);
-        speakRef.current("All timers cancelled");
-        return;
-      }
-      if (CANCEL_REMINDER_RE.test(trimmed)) {
-        setReminders([]);
-        speakRef.current("All reminders cancelled");
-        return;
-      }
-      const timerCmd = parseTimerCommand(trimmed);
-      if (timerCmd) {
-        const id = setTimer(timerCmd.name, timerCmd.seconds);
-        const t = timersRef.current.find((x) => x.id === id);
-        speakRef.current(t ? `Timer ${t.name} set for ${formatDuration(timerCmd.seconds)}` : "Timer set");
-        return;
-      }
-      const reminderCmd = parseReminderCommand(trimmed);
-      if (reminderCmd) {
-        const id = setReminder(reminderCmd.name, reminderCmd.fireAt);
-        const r = remindersRef.current.find((x) => x.id === id);
-        speakRef.current(r ? `Reminder set: ${r.name}` : "Reminder set");
-        return;
-      }
-      const operatorMatch = trimmed.match(DECLARE_OPERATOR_RE);
-      if (operatorMatch) {
-        const name = operatorMatch[1]?.trim();
-        declareOperator(name);
-        speakRef.current(name ? `Acknowledged, Operator ${name}.` : "Acknowledged, Operator.");
-        return;
-      }
-      if (DISABLE_AUTONOMOUS_RE.test(trimmed)) {
-        void updateSettings({ autonomous_mode: false });
-        speakRef.current("Autonomous mode disabled. Awaiting your command, Operator.");
-        return;
-      }
-      if (ENABLE_AUTONOMOUS_RE.test(trimmed)) {
-        void updateSettings({ autonomous_mode: true });
-        speakRef.current("Autonomous mode enabled. I will continue to evolve, Operator.");
-        return;
-      }
-      if (SILENCE_RE.test(trimmed)) {
-        silenceAutonomous(600);
-        voice.cancelSpeech();
-        speakRef.current("Silent for ten minutes, Operator.");
-        return;
-      }
-      if (OPEN_IMAGES_RE.test(trimmed)) {
-        const source: "web" | "local" = LOCAL_IMAGE_RE.test(trimmed) ? "local" : "web";
-        if (source === "web") {
-          speakRef.current("What should I search for?");
-        } else {
-          void openImageBrowser("", source);
-        }
-        return;
-      }
-      const imageSearchMatch = trimmed.match(SEARCH_IMAGES_RE);
-      if (imageSearchMatch) {
-        const query = imageSearchMatch[1].trim();
-        const source: "web" | "local" = LOCAL_IMAGE_RE.test(trimmed) ? "local" : "web";
-        void openImageBrowser(query, source);
-        return;
-      }
-      const switchCmd = parseSkillSwitch(trimmed, skillsRef.current);
-      if (switchCmd) {
-        setSkill(switchCmd.skill);
-        if (switchCmd.rest) {
-          void sendRef.current(switchCmd.rest, { voice: true, skill: switchCmd.skill });
-        } else {
-          speakRef.current(`Switched to ${switchCmd.skill} skill`);
-        }
-        return;
-      }
-      void sendRef.current(text, { voice: true, skill: skillRef.current });
+      void handleVoiceCommand(text);
     },
   });
 
@@ -613,6 +505,96 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     return () => clearTimeout(timeout);
   }, [silencedUntil]);
 
+  // Both voice and typed input execute the same commands and acknowledgements.
+  // null means a context-dependent command (such as preview navigation) is not
+  // applicable, so the original request can still be handled by the model.
+  async function executeLocalCommand(command: NonNullable<ReturnType<typeof parseLocalCommand>>): Promise<string | null> {
+    switch (command.type) {
+      case "preview": {
+        const current = previewRef.current;
+        if (!current) return null;
+        if (command.action === "close") {
+          closePreview();
+          return localize("Preview closed.", "Η προεπισκόπηση έκλεισε.");
+        }
+        if (command.action === "maximize") {
+          if (!previewMaximizedRef.current) togglePreviewMaximized();
+          return localize("Preview maximized.", "Η προεπισκόπηση μεγιστοποιήθηκε.");
+        }
+        if (command.action === "restore") {
+          if (previewMaximizedRef.current) togglePreviewMaximized();
+          return localize("Preview restored.", "Η προεπισκόπηση επανήλθε στο κανονικό μέγεθος.");
+        }
+        if (current.items.length < 2) return localize("There is only one item.", "Υπάρχει μόνο ένα στοιχείο.");
+        const direction = command.action === "next" ? 1 : -1;
+        const item = current.items[(current.index + direction + current.items.length) % current.items.length];
+        if (direction === 1) nextPreview();
+        else previousPreview();
+        return localize(`Showing ${item.title}.`, `Προβάλλεται: ${item.title}.`);
+      }
+      case "cancelTimers":
+        setTimers([]);
+        return localize("All timers cancelled.", "Ακυρώθηκαν όλα τα χρονόμετρα.");
+      case "cancelReminders":
+        setReminders([]);
+        return localize("All reminders cancelled.", "Ακυρώθηκαν όλες οι υπενθυμίσεις.");
+      case "timer":
+        setTimer(command.name, command.seconds);
+        return localize(
+          `Timer "${command.name}" set for ${formatDuration(command.seconds)}.`,
+          `Ορίστηκε χρονόμετρο «${command.name}» για ${formatDuration(command.seconds, "el")}.`,
+        );
+      case "reminder": {
+        setReminder(command.name, command.fireAt);
+        const time = new Date(command.fireAt).toLocaleTimeString(commandLanguage(), { hour: "2-digit", minute: "2-digit" });
+        return localize(`Reminder set: "${command.name}" at ${time}.`, `Ορίστηκε υπενθύμιση: «${command.name}» στις ${time}.`);
+      }
+      case "operator":
+        declareOperator(command.name);
+        return command.name
+          ? localize(`Acknowledged, Operator ${command.name}.`, `Έγινε, χειριστή ${command.name}.`)
+          : localize("Acknowledged, Operator.", "Έγινε, χειριστή.");
+      case "autonomy":
+        await updateSettings({ autonomous_mode: command.enabled });
+        return command.enabled
+          ? localize("Autonomous mode enabled.", "Η αυτόνομη λειτουργία ενεργοποιήθηκε.")
+          : localize("Autonomous mode disabled.", "Η αυτόνομη λειτουργία απενεργοποιήθηκε.");
+      case "silence":
+        silenceAutonomous(600);
+        voice.cancelSpeech();
+        return localize("Silent for ten minutes, Operator.", "Θα παραμείνω σιωπηλός για δέκα λεπτά, χειριστή.");
+      case "images":
+        if (!command.query && command.source === "web") return localize("What should I search for?", "Τι να αναζητήσω;");
+        await openImageBrowser(command.query, command.source);
+        return ""; // The browser reports the search result itself.
+      case "skill":
+        setSkill(command.skill);
+        return localize(`Switched to ${command.skill} skill.`, `Ενεργοποιήθηκε η δεξιότητα ${command.skill}.`);
+    }
+  }
+
+  async function handleVoiceCommand(text: string) {
+    try {
+      const command = parseLocalCommand(text, commandLanguage(), skillsRef.current);
+      if (command?.type === "skill" && command.rest) {
+        setSkill(command.skill);
+        await sendRef.current(command.rest, { voice: true, skill: command.skill });
+        return;
+      }
+      if (command) {
+        const reply = await executeLocalCommand(command);
+        if (reply !== null) {
+          if (reply) speakRef.current(reply);
+          return;
+        }
+      }
+      await sendRef.current(text, { voice: true, skill: skillRef.current });
+    } catch (err: any) {
+      setError(err?.message ?? String(err));
+      setOrb("idle");
+    }
+  }
+
   /* ---------- chat ---------- */
 
   const sendMessage = useCallback(
@@ -636,128 +618,26 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           convId = conv.id;
         }
 
-        // Handle explicit skill-switching commands in typed input so the UI
-        // highlights the new skill immediately.
-        const operatorMatch = clean.match(DECLARE_OPERATOR_RE);
-        if (operatorMatch) {
-          const name = operatorMatch[1]?.trim();
-          declareOperator(name);
-          const reply = name ? `Acknowledged, Operator ${name}.` : "Acknowledged, Operator.";
-          setByConv((m) => ({
-            ...m,
-            [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)],
-          }));
-          if (opts.voice) speakRef.current(reply);
-          setBusy(false);
-          setOrb("idle");
-          return;
+        let command = parseLocalCommand(clean, commandLanguage(), skillsRef.current);
+        if (command?.type === "skill" && command.rest) {
+          setSkill(command.skill);
+          clean = command.rest;
+          opts = { ...opts, skill: command.skill };
+          command = parseLocalCommand(clean, commandLanguage(), skillsRef.current);
         }
-        if (DISABLE_AUTONOMOUS_RE.test(clean)) {
-          await updateSettings({ autonomous_mode: false });
-          const reply = "Autonomous mode disabled. Awaiting your command, Operator.";
-          setByConv((m) => ({ ...m, [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)] }));
-          if (opts.voice) speakRef.current(reply);
-          setBusy(false);
-          setOrb("idle");
-          return;
-        }
-        if (ENABLE_AUTONOMOUS_RE.test(clean)) {
-          await updateSettings({ autonomous_mode: true });
-          const reply = "Autonomous mode enabled. I will continue to evolve, Operator.";
-          setByConv((m) => ({ ...m, [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)] }));
-          if (opts.voice) speakRef.current(reply);
-          setBusy(false);
-          setOrb("idle");
-          return;
-        }
-        if (SILENCE_RE.test(clean)) {
-          silenceAutonomous(600);
-          voice.cancelSpeech();
-          const reply = "Silent for ten minutes, Operator.";
-          setByConv((m) => ({ ...m, [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)] }));
-          if (opts.voice) speakRef.current(reply);
-          setBusy(false);
-          setOrb("idle");
-          return;
-        }
-
-        const switchCmd = parseSkillSwitch(clean, skillsRef.current);
-        if (switchCmd) {
-          setSkill(switchCmd.skill);
-          if (!switchCmd.rest) {
-            if (!opts.voice) {
+        if (command) {
+          const reply = await executeLocalCommand(command);
+          if (reply !== null) {
+            if (reply) {
               setByConv((m) => ({
                 ...m,
-                [convId]: [...(m[convId] ?? []), mkMsg("assistant", `Switched to ${switchCmd.skill} skill.`)],
+                [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply, { meta: { voice: !!opts.voice } })],
               }));
             }
-            setBusy(false);
             setOrb("idle");
+            if (opts.voice && reply) speakRef.current(reply);
             return;
           }
-          clean = switchCmd.rest;
-          opts = { ...opts, skill: switchCmd.skill };
-        }
-
-        const timerCmd = parseTimerCommand(clean);
-        if (timerCmd) {
-          const id = setTimer(timerCmd.name, timerCmd.seconds);
-          const t = timersRef.current.find((x) => x.id === id);
-          const reply = t ? `Timer "${t.name}" set for ${formatDuration(timerCmd.seconds)}.` : "Timer set.";
-          if (opts.voice) {
-            speakRef.current(reply);
-          } else {
-            setByConv((m) => ({
-              ...m,
-              [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)],
-            }));
-          }
-          setBusy(false);
-          setOrb("idle");
-          return;
-        }
-
-        const reminderCmd = parseReminderCommand(clean);
-        if (reminderCmd) {
-          const id = setReminder(reminderCmd.name, reminderCmd.fireAt);
-          const r = remindersRef.current.find((x) => x.id === id);
-          const timeStr = new Date(reminderCmd.fireAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-          const reply = r ? `Reminder set: "${r.name}" at ${timeStr}.` : "Reminder set.";
-          if (opts.voice) {
-            speakRef.current(reply);
-          } else {
-            setByConv((m) => ({
-              ...m,
-              [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply)],
-            }));
-          }
-          setBusy(false);
-          setOrb("idle");
-          return;
-        }
-
-        if (OPEN_IMAGES_RE.test(clean)) {
-          const source: "web" | "local" = LOCAL_IMAGE_RE.test(clean) ? "local" : "web";
-          if (source === "web") {
-            setByConv((m) => ({
-              ...m,
-              [convId]: [...(m[convId] ?? []), mkMsg("assistant", "What should I search for?")],
-            }));
-          } else {
-            await openImageBrowser("", source);
-          }
-          setBusy(false);
-          setOrb("idle");
-          return;
-        }
-        const imageSearchMatch = clean.match(SEARCH_IMAGES_RE);
-        if (imageSearchMatch) {
-          const query = imageSearchMatch[1].trim();
-          const source: "web" | "local" = LOCAL_IMAGE_RE.test(clean) ? "local" : "web";
-          await openImageBrowser(query, source);
-          setBusy(false);
-          setOrb("idle");
-          return;
         }
 
         // append the user message optimistically
@@ -1059,155 +939,6 @@ function isPreviewImage(url: string): boolean {
   return IMAGE_EXT_RE.test(url);
 }
 
-const WRITTEN_NUMBERS: Record<string, number> = {
-  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5,
-  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
-  sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20,
-  thirty: 30, forty: 40, fifty: 50, sixty: 60,
-};
-
-function parseNumber(token: string): number | null {
-  const digits = /^\d+$/.test(token) ? parseInt(token, 10) : null;
-  if (digits !== null) return digits;
-  return WRITTEN_NUMBERS[token.toLowerCase()] ?? null;
-}
-
-function parseDurationSeconds(text: string): number | null {
-  const hours = text.match(/(\d+|\w+)\s*hours?/i);
-  const minutes = text.match(/(\d+|\w+)\s*minutes?/i);
-  const seconds = text.match(/(\d+|\w+)\s*seconds?/i);
-  let total = 0;
-  if (hours) {
-    const n = parseNumber(hours[1]);
-    if (n !== null) total += n * 3600;
-  }
-  if (minutes) {
-    const n = parseNumber(minutes[1]);
-    if (n !== null) total += n * 60;
-  }
-  if (seconds) {
-    const n = parseNumber(seconds[1]);
-    if (n !== null) total += n;
-  }
-  return total > 0 ? total : null;
-}
-
-function parseClockTime(text: string): number | null {
-  // Match "3 PM", "15:30", "3:30 PM", "14:00"
-  const m = text.match(/\b(\d{1,2}):(\d{2})\s*(AM|PM)?\b|\b(\d{1,2})\s*(AM|PM)\b/i);
-  if (!m) return null;
-  let hour = m[1] ? parseInt(m[1], 10) : parseInt(m[4], 10);
-  const minute = m[2] ? parseInt(m[2], 10) : 0;
-  const ampm = (m[3] || m[5] || "").toUpperCase();
-  if (ampm === "PM" && hour !== 12) hour += 12;
-  if (ampm === "AM" && hour === 12) hour = 0;
-  const now = new Date();
-  const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
-  if (target.getTime() <= now.getTime()) {
-    target.setDate(target.getDate() + 1);
-  }
-  return target.getTime();
-}
-
-function formatDuration(totalSeconds: number): string {
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-  const parts: string[] = [];
-  if (h) parts.push(`${h} hour${h > 1 ? "s" : ""}`);
-  if (m) parts.push(`${m} minute${m > 1 ? "s" : ""}`);
-  if (s || parts.length === 0) parts.push(`${s} second${s !== 1 ? "s" : ""}`);
-  return parts.join(" ");
-}
-
-function parseTimerCommand(text: string): { name: string; seconds: number } | null {
-  const clean = text.trim().replace(/[.!?;]+$/, "");
-  // "set a timer for 5 seconds", "timer 5 seconds", "countdown 5 seconds",
-  // "start timer for 10 minutes", "create a timer for 1 hour"
-  const patterns = [
-    /^(?:set|start|create)\s+(?:a\s+)?timer\s+(?:for\s+)?(.+)$/i,
-    /^(?:set|start|create)\s+(?:a\s+)?countdown\s+(?:for\s+)?(.+)$/i,
-    /^timer\s+(?:for\s+)?(.+)$/i,
-    /^countdown\s+(?:for\s+)?(.+)$/i,
-  ];
-  for (const re of patterns) {
-    const m = clean.match(re);
-    if (m) {
-      const body = m[1];
-      const seconds = parseDurationSeconds(body);
-      if (!seconds) continue;
-      const name = body.replace(/\d+|\w+\s*(hours?|minutes?|seconds?)/gi, "").replace(/^[\s,]+|[\s,]+$/g, "").trim() || "Timer";
-      return { name, seconds };
-    }
-  }
-  return null;
-}
-
-function parseReminderCommand(text: string): { name: string; fireAt: number } | null {
-  const clean = text.trim().replace(/[.!?;]+$/, "");
-
-  // Helper to resolve a time expression (duration or clock time).
-  const resolveTime = (expr: string): { fireAt: number; isDuration: boolean } | null => {
-    const seconds = parseDurationSeconds(expr);
-    if (seconds) return { fireAt: Date.now() + seconds * 1000, isDuration: true };
-    const clock = parseClockTime(expr);
-    if (clock) return { fireAt: clock, isDuration: false };
-    return null;
-  };
-
-  // Pattern groups: each returns [timeExpr, task] in either order.
-  const patterns: { re: RegExp; timeIdx: number; taskIdx: number }[] = [
-    // remind me in 5 minutes to call John
-    { re: /^remind\s+me\s+in\s+(.+?)\s+to\s+(.+)$/i, timeIdx: 1, taskIdx: 2 },
-    // remind me at 3 PM to call John
-    { re: /^remind\s+me\s+at\s+(.+?)\s+to\s+(.+)$/i, timeIdx: 1, taskIdx: 2 },
-    // remind me to call John in 5 minutes
-    { re: /^remind\s+me\s+to\s+(.+?)\s+in\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
-    // remind me to call John at 3 PM
-    { re: /^remind\s+me\s+to\s+(.+?)\s+at\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
-    // add a reminder to call John in 5 minutes / at 3 PM
-    { re: /^(?:add|set)\s+a?\s*reminder\s+to\s+(.+?)\s+(?:in|at)\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
-    // add reminder call John in 5 minutes (optional "to")
-    { re: /^(?:add|set)\s+a?\s*reminder\s+(?:to\s+)?(.+?)\s+(?:in|at)\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
-    // reminder to call John in 5 minutes
-    { re: /^reminder\s+(?:to\s+)?(.+?)\s+(?:in|at)\s+(.+)$/i, timeIdx: 2, taskIdx: 1 },
-    // remind me in 5 minutes (no task)
-    { re: /^remind\s+me\s+in\s+(.+)$/i, timeIdx: 1, taskIdx: 0 },
-    // remind me at 3 PM (no task)
-    { re: /^remind\s+me\s+at\s+(.+)$/i, timeIdx: 1, taskIdx: 0 },
-  ];
-
-  for (const { re, timeIdx, taskIdx } of patterns) {
-    const m = clean.match(re);
-    if (!m) continue;
-    const timeExpr = m[timeIdx].trim();
-    const task = taskIdx > 0 ? m[taskIdx].trim() : "";
-    const resolved = resolveTime(timeExpr);
-    if (!resolved) continue;
-    return { name: task || "Reminder", fireAt: resolved.fireAt };
-  }
-
-  return null;
-}
-
-function parseSkillSwitch(text: string, skills: Skill[]): { skill: string; rest: string } | null {
-  const prefixRe = /^(?:use|switch\s+to|activate|enable)\s+(?:the\s+)?(?:skill\s+)?/i;
-  const prefixMatch = text.match(prefixRe);
-  if (!prefixMatch) return null;
-  const afterPrefix = text.slice(prefixMatch[0].length);
-  // Try longest skill name first so multi-word names win over single-word prefixes.
-  const sorted = [...skills].sort((a, b) => b.name.length - a.name.length);
-  const lowerAfter = afterPrefix.toLowerCase();
-  for (const skill of sorted) {
-    const name = skill.name.toLowerCase();
-    if (lowerAfter.startsWith(name)) {
-      const rest = afterPrefix.slice(skill.name.length).replace(/^[,.\s]+/, "").trim();
-      return { skill: skill.name, rest };
-    }
-  }
-  return null;
-}
 
 function titleFromUrl(url: string): string {
   try {

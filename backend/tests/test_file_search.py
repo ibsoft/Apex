@@ -142,6 +142,66 @@ class FileSearchTests(unittest.TestCase):
         self.assertEqual(result['roots'], [str(folder)])
         self.assertEqual(len(result['files']), 1)
 
+    def test_greek_folder_aliases_follow_xdg_settings_and_preserve_filenames(self):
+        cases = {
+            'DESKTOP': ['Επιφάνεια εργασίας', 'ΕΠΙΦΑΝΕΙΑ ΕΡΓΑΣΙΑΣ'],
+            'DOCUMENTS': ['Έγγραφα', 'ΕΓΓΡΑΦΑ', 'εγγραφα'],
+            'DOWNLOAD': ['Λήψεις', 'ΛΗΨΕΙΣ', 'ληψεις', 'Κατεβάσματα'],
+            'PICTURES': ['Εικόνες', 'εικονες', 'Φωτογραφίες'],
+            'MUSIC': ['Μουσική', 'ΜΟΥΣΙΚΗ'],
+            'VIDEOS': ['Βίντεο', 'βιντεο'],
+            'TEMPLATES': ['Πρότυπα', 'προτυπα'],
+            'PUBLICSHARE': ['Κοινόχρηστα', 'Δημόσια'],
+        }
+        config_dir = self.root / 'config'
+        config_dir.mkdir()
+        settings = []
+        for kind in cases:
+            folder = self.root / f'Configured {kind}'
+            folder.mkdir()
+            (folder / 'Αναφορά [Τελική] 2027.txt').write_text('Ακριβές όνομα')
+            settings.append(f'XDG_{kind}_DIR="$HOME/{folder.name}"\n')
+        (config_dir / 'user-dirs.dirs').write_text(''.join(settings))
+        with patch('tools.file_search.Path.home', return_value=self.root), patch.dict(os.environ, {'XDG_CONFIG_HOME': str(config_dir)}):
+            for kind, aliases in cases.items():
+                for alias in aliases:
+                    with self.subTest(alias=alias):
+                        result = self.search(query='Αναφορά', root=alias)
+                        self.assertEqual(result['roots'], [str(self.root / f'Configured {kind}')])
+                        self.assertEqual([item['name'] for item in result['files']], ['Αναφορά [Τελική] 2027.txt'])
+
+    def test_greek_folder_aliases_use_existing_conventional_folders_without_xdg(self):
+        cases = [('Έγγραφα', 'Documents'), ('Λήψεις', 'Downloads'),
+                 ('Επιφάνεια εργασίας', 'Desktop'), ('Εικόνες', 'Pictures'),
+                 ('Μουσική', 'Music'), ('Βίντεο', 'Videos'),
+                 ('Πρότυπα', 'Templates'), ('Κοινόχρηστα', 'Public')]
+        for _, name in cases:
+            (self.root / name).mkdir()
+            (self.root / name / 'found.txt').write_text(name)
+        with patch('tools.file_search.Path.home', return_value=self.root), patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'missing-config')}):
+            for alias, name in cases:
+                with self.subTest(alias=alias):
+                    result = self.search(query='found.txt', root=alias)
+                    self.assertEqual(result['roots'], [str(self.root / name)])
+                    self.assertEqual(len(result['files']), 1)
+
+    def test_literal_greek_folder_and_absolute_path_win_over_alias(self):
+        literal = self.root / 'Έγγραφα'
+        literal.mkdir()
+        (literal / 'literal.txt').write_text('literal')
+        translated = self.root / 'Documents'
+        translated.mkdir()
+        (translated / 'other.txt').write_text('other')
+        config_dir = self.root / 'config'
+        config_dir.mkdir()
+        (config_dir / 'user-dirs.dirs').write_text('XDG_DOCUMENTS_DIR="$HOME/Documents"\n')
+        with patch('tools.file_search.Path.home', return_value=self.root), patch.dict(os.environ, {'XDG_CONFIG_HOME': str(config_dir)}):
+            for root in ['Έγγραφα', str(literal)]:
+                with self.subTest(root=root):
+                    result = self.search(query='literal', root=root)
+                    self.assertEqual(result['roots'], [str(literal)])
+                    self.assertEqual([item['name'] for item in result['files']], ['literal.txt'])
+
     def test_unknown_named_folder_does_not_search_working_directory(self):
         with patch('tools.file_search.Path.home', return_value=self.root), patch.dict(os.environ, {'XDG_CONFIG_HOME': str(self.root / 'config')}):
             self.assertIn('error', self.search(query='anything', root='absent-folder'))
