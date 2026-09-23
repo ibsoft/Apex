@@ -54,7 +54,6 @@ Then `npm run build` for a production build, or deploy to Vercel in one click.
 | `ApexOrb` | The golden ring frame, waveform and orbit dots (pure SVG) |
 | `ApexCore3D` | The cyan particle core (`react-three-fiber` + bloom) |
 | `ApexHeroOrb` | Stacks the SVG ring + the particle core, scaled to fit |
-| `ReasoningWeb` | The agent constellation — circuit traces, orbit rings, 18-node roster |
 | `OrbStatusBar` | The equalizer + STANDBY cluster along the bottom |
 | `ShaderBackground` | Animated WebGL "plasma waves" backdrop (MIT component from 21st.dev — see CREDITS) |
 | `ApexWorld` | Composes the above; owns the tap-state cycle and the agent overview cards |
@@ -65,7 +64,6 @@ Then `npm run build` for a production build, or deploy to Vercel in one click.
 
 - **Social links** → edit `TILES` in `components/ApexOverviewPanel.tsx`.
 - **Weather** → auto-detects the **visitor's** city on Vercel (geo headers); edit `FALLBACK` in `app/api/weather/route.ts` to change the off-Vercel / localhost default.
-- **Agents & copy** → the `ROSTER` and `INFO` maps in `components/ApexWorld.tsx`.
 - **Backdrop** → the shader in `components/ShaderBackground.jsx`; its opacity/tint are set where `<ShaderBackground>` is used in `ApexWorld.tsx`.
 
 ## Accessibility
