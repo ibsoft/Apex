@@ -189,6 +189,17 @@ class Config:
     # 0 = held until the user logs out or the server restarts (memory only).
     VAPT_SUDO_TTL_MINUTES = _int("VAPT_SUDO_TTL_MINUTES", 0)
 
+    # --- CODE skill (developer projects / git / GitHub) ---------------------
+    # Root folder where each coding project lives:
+    #   $CODE_PROJECTS/<project>  (a git repository)
+    CODE_PROJECTS = Path(os.getenv("CODE_PROJECTS", str(Path.home() / "Development" / "Projects")))
+    # Default branch used by code_start / code_push.
+    CODE_BRANCH = os.getenv("CODE_BRANCH", "main")
+    # Per-user GitHub PAT storage (chmod 600). Inside $ROOT/.apex (gitignored).
+    CODE_GITHUB_DIR = Path(
+        os.getenv("CODE_GITHUB_DIR", str(Path(BASE_DIR).parent / ".apex" / "github_tokens"))
+    )
+
     # --- Autonomous mode ----------------------------------------------------
     # When enabled, APEX may initiate interaction, propose actions and run
     # lightweight self-improvement checks while the user is idle.

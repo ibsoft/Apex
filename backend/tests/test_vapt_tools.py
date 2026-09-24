@@ -381,8 +381,7 @@ class VaptToolsTests(unittest.TestCase):
         manager = SkillManager(Path(__file__).resolve().parents[1] / "skills" / "definitions")
         skill = manager.get("VAPT")
         self.assertIsNotNone(skill)
-        for name in ("vapt_project_init", "vapt_run", "vapt_script", "vapt_read", "vapt_report"):
-            self.assertIn(name, skill.tools)
+        self.assertEqual(skill.tools, [])  # ALL -> all active tools
 
 
 if __name__ == "__main__":

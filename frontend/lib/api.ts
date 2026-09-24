@@ -98,6 +98,7 @@ export type ChatEvent =
   | { type: "memory"; action: string; detail: any }
   | { type: "skills_changed" }
   | { type: "sudo_password"; reason?: string }
+  | { type: "github_token"; reason?: string }
   | { type: "done"; usage?: any }
   | { type: "error"; message: string }
   | { type: "end"; ok: boolean };
@@ -144,6 +145,17 @@ export const api = {
     clear: () => json<{ ok: boolean }>("/api/vapt/password", { method: "DELETE" }),
     status: () =>
       json<{ enabled: boolean; projects_root: string; password: string; saved: boolean }>("/api/vapt/status"),
+  },
+
+  code: {
+    githubToken: (token: string) =>
+      json<{ ok: boolean; login: string }>("/api/code/github-token", {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      }),
+    clearGithubToken: () => json<{ ok: boolean }>("/api/code/github-token", { method: "DELETE" }),
+    githubStatus: () =>
+      json<{ token: string; login: string }>("/api/code/github/status"),
   },
 
   conversations: {
