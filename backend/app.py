@@ -686,6 +686,13 @@ def create_app() -> Flask:
             if conv is None:
                 title = user_text[:48] + ("…" if len(user_text) > 48 else "")
                 conv = db.create_conversation(uid, title=title)
+            elif not db.list_messages(conv["id"]) and (conv.get("title") or "") in ("", "New conversation"):
+                # The UI pre-creates threads via POST /api/conversations with no
+                # title, so a fresh install would show "New conversation" for
+                # every thread. Name an empty thread after its first post.
+                title = user_text[:48] + ("…" if len(user_text) > 48 else "")
+                db.update_conversation(conv["id"], title=title)
+                conv["title"] = title
         else:
             # Ephemeral turns (e.g. autonomous nudges) use the requested
             # conversation for context but never create or modify history.

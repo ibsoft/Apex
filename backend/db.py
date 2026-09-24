@@ -182,14 +182,25 @@ class Database:
 
     # ---- messages ---------------------------------------------------------
     def add_message(self, conv_id: str, role: str, content: str, meta: dict | None = None) -> int:
+        serialized = self._dumps(meta)
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 "INSERT INTO messages (conversation_id, role, content, meta, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (conv_id, role, content, json.dumps(meta or {}), time.time()),
+                (conv_id, role, content, serialized, time.time()),
             )
         self.update_conversation(conv_id)
         return cur.lastrowid
+
+    @staticmethod
+    def _dumps(meta: dict | None) -> str:
+        """Serialize message meta without ever dropping the message: provider
+        usage payloads occasionally contain objects json can't encode, which
+        would otherwise raise mid-stream and lose the saved turn."""
+        try:
+            return json.dumps(meta or {})
+        except (TypeError, ValueError):
+            return json.dumps(meta or {}, default=str)
 
     def list_messages(self, conv_id: str) -> list[dict]:
         with self._lock, self._connect() as conn:
