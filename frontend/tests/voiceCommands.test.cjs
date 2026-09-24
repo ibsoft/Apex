@@ -10,7 +10,10 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
-const { wakePattern, isWakeOnlyText, isWakeWordFragment, isSleepCommand, recognitionLanguage } = moduleExports;
+const {
+  wakePattern, isWakeOnlyText, isWakeWordFragment, isSleepCommand, recognitionLanguage,
+  accumulateResults, commandText, emptyResultSnapshot, sliceAfterLastWake,
+} = moduleExports;
 
 test('Greek default wake aliases preserve command text and recognize Unicode boundaries', () => {
   for (const alias of ['Apex', 'Άπεξ', 'Απέξ', 'απεξ', 'ΑΠΕΞ', 'Άπεξ']) {
@@ -87,4 +90,109 @@ test('custom Latin wake words retain English standby and Greek command/follow-up
   assert.equal(recognitionLanguage('el', 'Athena', 'speaking', false), 'en-US');
   assert.equal(recognitionLanguage('el', 'Athena', 'awake', true), 'el-GR');
   assert.equal(recognitionLanguage('el', 'Athena', 'standby', true), 'el-GR');
+});
+
+test('endpointing merges a finalized chunk plus a trailing interim (pause-safe)', () => {
+  // Model the real `SpeechRecognition` shape: results[...][0].transcript.
+  const res = (isFinal, transcript) => ({ isFinal, 0: { transcript } });
+  let snap = emptyResultSnapshot(0);
+  snap = accumulateResults([res(true, 'book me a flight')], snap);
+  assert.equal(commandText(snap), 'book me a flight');
+  // User pauses; Chrome finalized the first chunk and appends a NEW result.
+  snap = accumulateResults([
+    res(true, 'book me a flight'),
+    res(false, 'to Athens'),
+  ], snap);
+  assert.equal(commandText(snap), 'book me a flight to Athens');
+  // Same session, more appended chunks.
+  snap = accumulateResults([
+    res(true, 'book me a flight'),
+    res(true, 'to Athens'),
+    res(false, 'tonight at 7'),
+  ], snap);
+  assert.equal(commandText(snap), 'book me a flight to Athens tonight at 7');
+});
+
+test('accumulateResults reads the first alternative of each result (Chrome shape)', () => {
+  // Regression: SpeechRecognitionResult nests the transcript at results[i][0],
+  // not results[i].transcript. Reading the wrong field silently drops speech.
+  const snap = emptyResultSnapshot(0);
+  const out = accumulateResults([
+    { isFinal: true, 0: { transcript: 'wake word working' } },
+    { isFinal: false, 0: { transcript: 'but full sentence here' } },
+  ], snap);
+  assert.equal(commandText(out), 'wake word working but full sentence here');
+  // Alternatives beyond the first are ignored, matching the listener.
+  const withMulti = accumulateResults([
+    { isFinal: true, 0: { transcript: 'chosen best' }, 1: { transcript: 'second best' } },
+  ], emptyResultSnapshot(0));
+  assert.equal(commandText(withMulti), 'chosen best');
+});
+
+test('endpointing tolerates flat result objects as a fallback', () => {
+  let snap = emptyResultSnapshot(0);
+  snap = accumulateResults([{ isFinal: true, transcript: 'flat text works' }], snap);
+  assert.equal(commandText(snap), 'flat text works');
+});
+
+test('endpointing overlays an extended interim without duplicating text', () => {
+  const res = (isFinal, transcript) => ({ isFinal, 0: { transcript } });
+  let snap = emptyResultSnapshot(0);
+  snap = accumulateResults([res(false, 'what time')], snap);
+  assert.equal(commandText(snap), 'what time');
+  // Chrome extends the SAME last index while still interim.
+  snap = accumulateResults([res(false, 'what time is it')], snap);
+  assert.equal(commandText(snap), 'what time is it');
+  snap = accumulateResults([res(true, 'what time is it')], snap);
+  assert.equal(commandText(snap), 'what time is it');
+  // New interim after the final: no duplication of the committed part.
+  snap = accumulateResults([
+    res(true, 'what time is it'),
+    res(false, 'in Boston'),
+  ], snap);
+  assert.equal(commandText(snap), 'what time is it in Boston');
+});
+
+test('endpointing excludes results before the collection snapshot (wake noise / TTS echo)', () => {
+  const res = (isFinal, transcript) => ({ isFinal, 0: { transcript } });
+  const snap = emptyResultSnapshot(2);
+  const out = accumulateResults([
+    res(true, 'ignored earlier chatter'),
+    res(true, 'also ignored'),
+    res(false, 'set a timer'),
+  ], snap);
+  assert.equal(commandText(out), 'set a timer');
+});
+
+test('sliceAfterLastWake removes the wake word and leading punctuation', () => {
+  assert.equal(sliceAfterLastWake('apex what time is it', 'apex', 'en'), 'what time is it');
+  assert.equal(sliceAfterLastWake('Apex, open the app', 'apex', 'en'), 'open the app');
+  assert.equal(sliceAfterLastWake('apex', 'apex', 'en'), '');
+  assert.equal(sliceAfterLastWake('   apex ,  hello world', 'apex', 'en'), 'hello world');
+  // Multiple wake occurrences slice at the LAST one.
+  assert.equal(sliceAfterLastWake('apex stop apex soon', 'apex', 'en'), 'soon');
+  // Greek wake aliases and Greek punctuation.
+  assert.equal(sliceAfterLastWake('Άπεξ βάλε χρονόμετρο', 'apex', 'el'), 'βάλε χρονόμετρο');
+  assert.equal(sliceAfterLastWake('Απεξ, τι ώρα είναι;', 'apex', 'el'), 'τι ώρα είναι;');
+  assert.equal(sliceAfterLastWake('πες απεξ κάτι', 'Απεξ', 'el').length > 0, true);
+  assert.equal(sliceAfterLastWake('apex', 'apex', 'el'), '');
+});
+
+test('Greek endpointing merges chunks across a pause and keeps accented text', () => {
+  const res = (isFinal, transcript) => ({ isFinal, 0: { transcript } });
+  let snap = emptyResultSnapshot(0);
+  snap = accumulateResults([res(true, 'Άπεξ βάλε')], snap);
+  snap = accumulateResults([
+    res(true, 'Άπεξ βάλε'),
+    res(false, 'υπενθύμιση'),
+  ], snap);
+  const sliced = sliceAfterLastWake(commandText(snap), 'apex', 'el');
+  assert.equal(sliced, 'βάλε υπενθύμιση');
+});
+
+test('endpointing keeps a finalized chunk that arrived before the current interim', () => {
+  const res = (isFinal, transcript) => ({ isFinal, 0: { transcript } });
+  let snap = emptyResultSnapshot(0);
+  snap = accumulateResults([res(true, 'x'), res(false, 'stop the music')], snap);
+  assert.equal(commandText(snap), 'x stop the music');
 });
