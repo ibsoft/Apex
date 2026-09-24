@@ -151,6 +151,13 @@ class Config:
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     MEMORY_RECALL_DEFAULT = _int("MEMORY_RECALL_DEFAULT", 5)
     MEMORY_SUMMARIZE = _bool("MEMORY_SUMMARIZE", True)
+    # Summarize a conversation into long-term memory when the user leaves it
+    # (new thread / switching conversations), so Apex can recall it when asked.
+    MEMORY_CONVERSATION_SUMMARIZE = _bool("MEMORY_CONVERSATION_SUMMARIZE", True)
+    # Minimum user messages before a first-time thread summary is worth creating.
+    MEMORY_CONVERSATION_MIN_MESSAGES = _int("MEMORY_CONVERSATION_MIN_MESSAGES", 4)
+    # Messages per summarizer window; larger threads are summarized in rolling chunks.
+    MEMORY_CONVERSATION_SUMMARIZE_WINDOW = _int("MEMORY_CONVERSATION_SUMMARIZE_WINDOW", 60)
 
     # --- Obsidian (local Markdown vault) -----------------------------------
     # Path to the folder containing your Obsidian .md notes, e.g. /home/user/Obsidian
