@@ -68,6 +68,45 @@ from skills.manager import get_skill_manager, route_skill
 from tools.memory_tools import memory_prompt_block
 
 
+# One running summarizer thread per (user, conversation) to keep the
+# leave-conversation endpoint single-flight and idempotent.
+_summary_locks: dict[tuple[str, str], threading.Thread] = {}
+_summary_locks_guard = threading.Lock()
+
+
+def run_conversation_summary(uid: str, conv_id: str):
+    """Daemon: write a conversation summary into memory; always clears its slot."""
+    try:
+        rt = get_db().all_settings()  # same source as create_app().runtime()
+        provider_name = (rt.get("provider") or config.PROVIDER_DEFAULT).lower()
+        mem = get_memory()
+        if mem is None:
+            return
+        from memory.summarizer import summarize_conversation
+
+        summarize_conversation(
+            user_id=uid,
+            conversation_id=conv_id,
+            db=get_db(),
+            memory=mem,
+            provider_mgr=ProviderManager(
+                bearer=bearer_for_api(uid),
+                use_oauth_access=is_subscription_access(uid),
+                runtime=rt,
+            ),
+            provider_name=provider_name,
+            rt=rt,
+            response_language=rt.get("response_language") or config.RESPONSE_LANGUAGE,
+            min_messages=config.MEMORY_CONVERSATION_MIN_MESSAGES,
+            window=config.MEMORY_CONVERSATION_SUMMARIZE_WINDOW,
+        )
+    except Exception:
+        pass
+    finally:
+        with _summary_locks_guard:
+            _summary_locks.pop((uid, conv_id), None)
+
+
 # --------------------------------------------------------------------------- #
 # App factory
 # --------------------------------------------------------------------------- #
@@ -569,6 +608,31 @@ def create_app() -> Flask:
         ]
         return jsonify({"conversation": conv, "messages": msgs})
 
+    @app.post("/api/conversations/<conv_id>/summarize")
+    def summarize_convo(conv_id: str):
+        user = require_user()
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        conv = get_db().get_conversation(conv_id)
+        if not conv or conv["user_id"] != user["id"]:
+            return jsonify({"error": "not found"}), 404
+        mem = get_memory()
+        if mem is None or not config.MEMORY_CONVERSATION_SUMMARIZE:
+            return jsonify({"error": "unavailable"}), 400
+        key = (user["id"], conv_id)
+        with _summary_locks_guard:
+            running = _summary_locks.get(key)
+            if running is not None and running.is_alive():
+                return jsonify({"ok": True, "status": "already_running"}), 202
+            worker = threading.Thread(
+                target=run_conversation_summary,
+                args=(user["id"], conv_id),
+                daemon=True,
+            )
+            _summary_locks[key] = worker
+            worker.start()
+        return jsonify({"ok": True, "status": "started"}), 202
+
     @app.delete("/api/conversations/<conv_id>")
     def delete_convo(conv_id: str):
         user = require_user()
@@ -578,6 +642,12 @@ def create_app() -> Flask:
         if not conv or conv["user_id"] != user["id"]:
             return jsonify({"error": "not found"}), 404
         get_db().delete_conversation(conv_id)
+        mem = get_memory()
+        if mem is not None:
+            try:
+                mem.forget_conversation(user["id"], conv_id)
+            except Exception:
+                pass
         return jsonify({"ok": True})
 
     # ---- memory ----------------------------------------------------------------

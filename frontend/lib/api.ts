@@ -167,6 +167,8 @@ export const api = {
         `/api/conversations/${id}/messages`,
       ),
     remove: (id: string) => json(`/api/conversations/${id}`, { method: "DELETE" }),
+    summarize: (id: string) =>
+      json<{ ok: boolean; status: string }>(`/api/conversations/${id}/summarize`, { method: "POST" }),
   },
 
   settings: {

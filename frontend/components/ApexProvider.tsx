@@ -326,7 +326,15 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   /* ---------- conversations ---------- */
 
+  // Fire-and-forget: ask the backend to summarize the thread we're leaving so
+  // Apex can recall it from memory later. Never blocks the switch.
+  const summarizeLeftConversation = (id: string | null) => {
+    if (!id) return;
+    void api.conversations.summarize(id).catch(() => {});
+  };
+
   const newConversation = useCallback(async () => {
+    summarizeLeftConversation(activeIdRef.current);
     const conv = await api.conversations.create({ skill: skillRef.current });
     setConversations((l) => [conv, ...l]);
     setActiveId(conv.id);
@@ -336,6 +344,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const openConversation = useCallback(
     async (id: string) => {
       if (id === activeIdRef.current) return;
+      summarizeLeftConversation(activeIdRef.current);
       setActiveId(id);
       if (byConvRef.current[id] === undefined) {
         const { messages: msgs } = await api.conversations.messages(id).catch(() => ({ messages: [] }));

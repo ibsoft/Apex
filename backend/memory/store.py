@@ -166,6 +166,65 @@ class MemoryStore:
             )
         return sorted(out, key=lambda m: m["meta"].get("created_at", 0), reverse=True)
 
+    # ---- conversation summaries -------------------------------------------
+    SUMMARY_CATEGORY = "conversation"
+
+    def replace_conversation_summary(
+        self, user_id: str, conv_id: str, text: str, meta: dict | None = None
+    ) -> str:
+        """Upsert a thread's summary, keeping at most one entry per conversation."""
+        text = text.strip()
+        if not text:
+            return ""
+        coll = self._coll(user_id)
+        stale = coll.get(
+            where={"$and": [{"category": self.SUMMARY_CATEGORY}, {"conversation_id": conv_id}]},
+        )
+        stale_ids = stale.get("ids") or []
+        if stale_ids:
+            coll.delete(ids=stale_ids)
+        mem_id = uuid.uuid4().hex
+        data = {
+            "category": self.SUMMARY_CATEGORY,
+            "conversation_id": conv_id,
+            "created_at": time.time(),
+        }
+        if meta:
+            data.update(meta)
+        coll.add(ids=[mem_id], documents=[text], metadatas=[data])
+        return mem_id
+
+    def conversation_summary(self, user_id: str, conv_id: str) -> dict | None:
+        """Return the stored summary (id/text/meta) for a thread, or None."""
+        coll = self._coll(user_id)
+        res = coll.get(
+            where={"$and": [{"category": self.SUMMARY_CATEGORY}, {"conversation_id": conv_id}]},
+        )
+        ids = res.get("ids") or []
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
+        if not ids:
+            return None
+        return {
+            "id": ids[0],
+            "text": str(docs[0] or "") if docs else "",
+            "meta": (metas[0] or {}) if metas else {},
+        }
+
+    def forget_conversation(self, user_id: str, conv_id: str) -> int:
+        """Delete a thread's summary, e.g. when the conversation is removed."""
+        try:
+            coll = self._coll(user_id)
+            stale = coll.get(
+                where={"$and": [{"category": self.SUMMARY_CATEGORY}, {"conversation_id": conv_id}]},
+            )
+            ids = stale.get("ids") or []
+            if ids:
+                coll.delete(ids=ids)
+            return len(ids)
+        except Exception:
+            return 0
+
     def forget(self, user_id: str, mem_ids: list[str]) -> int:
         existing = self._coll(user_id).get()["ids"]
         delete = [i for i in mem_ids if i in existing]
