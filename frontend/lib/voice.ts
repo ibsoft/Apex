@@ -5,6 +5,10 @@
    - SpeechRecognition runs continuously and auto-restarts on end.
    - Hearing the wake word (default "apex") arms the next utterance as a
      command; text after the wake word in the SAME utterance is also used.
+   - A command is sent only after a stable quiet period (ENDPOINT_SILENCE_MS)
+     with no new recognition results. All finalized chunks of one sentence are
+     merged with the live interim, so pausing mid-sentence (or a browser that
+     finalizes chunks at each pause) never cuts the command, English or Greek.
    - Replies are spoken aloud with the Web Speech synthesis API. During a
      reply the mic stays live: saying the wake word cuts the speech off and
      starts a new command (barge-in).
@@ -13,7 +17,18 @@
 */
 
 import { useEffect, useRef, useState } from "react";
-import { isSleepCommand, isWakeOnlyText, isWakeWordFragment, recognitionLanguage, wakePattern } from "./voiceCommands";
+import {
+  accumulateResults,
+  commandText,
+  emptyResultSnapshot,
+  isSleepCommand,
+  isWakeOnlyText,
+  isWakeWordFragment,
+  recognitionLanguage,
+  sliceAfterLastWake,
+  wakePattern,
+  type ResultSnapshot,
+} from "./voiceCommands";
 
 export type VoicePhase = "standby" | "awake" | "thinking" | "speaking";
 
@@ -50,6 +65,11 @@ const WAKE_BEEP_FREQ = 1180;
 const MAX_START_ATTEMPTS = 4;
 const START_VERIFY_MS = 5000; // a started session must fire onstart within this
 const STALE_RESULTS_MS = 120000; // only case a session is wedged if it is this old
+// A command is sent only after this much quiet following the LAST result update
+// (interim results keep flowing while the user is still talking). This is the
+// real "user stopped talking" signal instead of a browser isFinal flag, so a
+// mid-sentence pause never cuts the transcript.
+const ENDPOINT_SILENCE_MS = 1600;
 
 const DEBUG_VOICE =
   typeof window !== "undefined" &&
@@ -98,6 +118,9 @@ export function useVoiceEngine(opts: {
   const postSpeechDeafUntilRef = useRef(0); // ignore mic echo after TTS finishes
   const lastFireRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
   const lastResultAtRef = useRef<number>(0);
+  const lastResultLenRef = useRef(0); // results length seen by the last onresult
+  const accRef = useRef<ResultSnapshot>(emptyResultSnapshot(0)); // utterance collector
+  const needsWakeSliceRef = useRef(false); // awake-collection mode vs follow-up mode
   const healthTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [active, setActive] = useState(false);
@@ -112,7 +135,6 @@ export function useVoiceEngine(opts: {
   const commandTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const followUpLangTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCommand = useRef("");
-  const idleAwaitedRef = useRef(false);
   const [lastHeard, setLastHeard] = useState<string>("");
 
   const recognitionLang = (): string => recognitionLanguage(
@@ -149,6 +171,8 @@ export function useVoiceEngine(opts: {
     armedRef.current = false;
     followUpUntilRef.current = 0;
     pendingCommand.current = "";
+    needsWakeSliceRef.current = false;
+    accRef.current = emptyResultSnapshot(lastResultLenRef.current);
     if (commandTimer.current) clearTimeout(commandTimer.current);
     if (idleTimer.current) clearTimeout(idleTimer.current);
     clearFollowUpLangTimer();
@@ -169,6 +193,12 @@ export function useVoiceEngine(opts: {
       // Briefly ignore the mic after TTS stops so the assistant's own voice
       // (speaker echo) is not re-recognized as a user command.
       postSpeechDeafUntilRef.current = Date.now() + 600;
+      // Follow-up commands are not preceded by a wake word, so no slicing.
+      needsWakeSliceRef.current = false;
+      // Start fresh: exclude the assistant's reply that was captured while
+      // the recognizer stayed live for barge-in.
+      accRef.current = emptyResultSnapshot(lastResultLenRef.current);
+      pendingCommand.current = "";
       // A custom English wake word may need a different recognizer language
       // during its follow-up window.
       clearFollowUpLangTimer();
@@ -201,7 +231,7 @@ export function useVoiceEngine(opts: {
     cancelSpeech();
     // Build a fake transcript that is just the wake word so wakeSlow enters the
     // armed awake state and beeps.
-    wakeSlow(cfgRef.current.wakeWord, cfgRef.current.wakeWord);
+    wakeSlow({ results: [{ isFinal: true, 0: { transcript: cfgRef.current.wakeWord } }] }, cfgRef.current.wakeWord);
   };
 
   const speak = (text: string) => {
@@ -318,6 +348,10 @@ export function useVoiceEngine(opts: {
     if (lastFireRef.current.text === text && now - lastFireRef.current.at < 2500) return; // dup frame
     lastFireRef.current = { text, at: now };
     armedRef.current = false;
+    needsWakeSliceRef.current = false;
+    accRef.current = emptyResultSnapshot(lastResultLenRef.current);
+    if (commandTimer.current) clearTimeout(commandTimer.current);
+    commandTimer.current = null;
     vlog("fireCommand:", text);
     setPhase("thinking");
     // End the current question-language session. The onend handler normally
@@ -341,58 +375,55 @@ export function useVoiceEngine(opts: {
     }, 15000);
   };
 
-  const queueAwakeCommand = (text: string, re: RegExp, ww: string, final: boolean) => {
-    const wakeMatch = text.match(re);
-    const command = (wakeMatch && wakeMatch.index !== undefined
-      ? text.slice(wakeMatch.index + wakeMatch[0].length)
-      : text).replace(/^[\s,.;:!?··;]+/g, "").replace(/\s+/g, " ").trim();
-    if (!command) return;
-    // Edge may emit fragments of the wake word while it is still listening.
-    // Never send those fragments as commands (for example "a" or "ape").
-    if (isWakeWordFragment(command, ww, cfgRef.current.responseLanguage)) return;
-    pendingCommand.current = command;
-    if (commandTimer.current) clearTimeout(commandTimer.current);
-    if (final) {
+  /* Collect one chunk of a spoken command. Every onresult while we are in a
+     collecting state runs here: it merges finalized chunks + the live interim,
+     re-slices the wake word for awake-mode commands, refreshes the pending
+     text and (re-)arms the quiet-period endpoint. */
+  const collectCommand = (e: any) => {
+    accRef.current = accumulateResults(e.results, accRef.current);
+    let text = commandText(accRef.current);
+    if (needsWakeSliceRef.current) {
+      text = sliceAfterLastWake(text, cfgRef.current.wakeWord, cfgRef.current.responseLanguage);
+    } else if (!text) {
+      // A silently-restarted recognition session has an empty result list;
+      // keep whatever we collected before the restart so it can still fire.
+      text = pendingCommand.current;
+    }
+    setLastHeard(`… ${text}`);
+    if (!text) {
       pendingCommand.current = "";
-      fireCommand(command);
       return;
     }
-    // Some Edge speech-service sessions never mark the second utterance final.
-    // Treat a short period of silence after interim text as the command end.
+    if (isWakeWordFragment(text, cfgRef.current.wakeWord, cfgRef.current.responseLanguage)) {
+      return; // still a partial wake word; wait for a real command
+    }
+    pendingCommand.current = text;
+    if (commandTimer.current) clearTimeout(commandTimer.current);
     commandTimer.current = setTimeout(() => {
-      if (phaseRef.current !== "awake") return;
-      const pending = pendingCommand.current;
-      pendingCommand.current = "";
-      fireCommand(pending);
-    }, 900);
+      commandTimer.current = null;
+      firePendingCommand();
+    }, ENDPOINT_SILENCE_MS);
   };
 
-  const queueFollowUpCommand = (text: string, final: boolean) => {
-    const command = text.replace(/\s+/g, " ").trim();
-    if (!command) return;
-    const normalized = command.toLowerCase().replace(/[.!?,;:]+/g, "").trim();
-    if (normalized.length < 2) return;
-    pendingCommand.current = command;
-    if (commandTimer.current) clearTimeout(commandTimer.current);
-    if (final) {
-      pendingCommand.current = "";
-      fireCommand(command);
+  const firePendingCommand = () => {
+    const text = pendingCommand.current;
+    pendingCommand.current = "";
+    if (!text) return;
+    if (phaseRef.current === "awake") {
+      fireCommand(text);
       return;
     }
-    // Treat a short silence during the follow-up window as the end of the command,
-    // even if the browser never marks the result final.
-    commandTimer.current = setTimeout(() => {
-      if (phaseRef.current !== "standby" || !armedRef.current) return;
-      const pending = pendingCommand.current;
-      pendingCommand.current = "";
-      if (pending && Date.now() <= followUpUntilRef.current) {
-        fireCommand(pending);
-      }
-    }, 900);
+    if (
+      phaseRef.current === "standby" &&
+      armedRef.current &&
+      Date.now() <= followUpUntilRef.current
+    ) {
+      fireCommand(text);
+    }
   };
 
-  const wakeSlow = (text: string, ww: string) => {
-    vlog("wakeSlow:", text);
+  const wakeSlow = (e: any, ww: string) => {
+    vlog("wakeSlow:", utteranceText(e));
     cfgRef.current.onPhase("awake");
     setPhase("awake");
     armedRef.current = true;
@@ -400,20 +431,20 @@ export function useVoiceEngine(opts: {
     beep();
     cfgRef.current.onWake?.();
     syncRecognitionLanguage();
-    const language = cfgRef.current.responseLanguage;
-    const re = wakePattern(ww, language);
-    const m = text.match(re);
-    const rest = m && m.index !== undefined ? text.slice(m.index + m[0].length).replace(/^[\s,.;:!?··;]+/g, "").trim() : "";
-    if (rest && !isWakeOnlyText(rest, ww, language) && !re.test(rest)) {
-      fireCommand(rest);
-      return;
-    }
-    idleAwaitedRef.current = true;
+    // Start collecting from the result that contains the wake word; later
+    // chunks (final or interim) merge in. The wake word itself is removed by
+    // sliceAfterLastWake when the command is assembled.
+    const len = e?.results?.length ?? 0;
+    needsWakeSliceRef.current = true;
+    accRef.current = emptyResultSnapshot(Math.max(0, len - 1));
+    lastResultLenRef.current = len;
+    collectCommand(e);
     sweepIdleAwait();
   };
 
   const onResult = (e: any) => {
     lastResultAtRef.current = Date.now();
+    lastResultLenRef.current = e?.results?.length ?? 0;
     const text = utteranceText(e);
     const final = isFinal(e);
     setLastHeard(`${final ? "✓" : "…"} ${text}`);
@@ -426,17 +457,16 @@ export function useVoiceEngine(opts: {
     // barge-in: wake word cuts off speech / thinking
     if ((phase === "speaking" || phase === "thinking") && re.test(low)) {
       cancelSpeech();
-      wakeSlow(text, ww);
+      wakeSlow(e, ww);
       return;
     }
 
     if (phase === "awake") {
-      if (isWakeOnlyText(text, ww, language)) return;
       if (isSleepCommand(text, language)) {
         sleepVoice();
         return;
       }
-      queueAwakeCommand(text, re, ww, final);
+      collectCommand(e);
       return;
     }
 
@@ -454,7 +484,7 @@ export function useVoiceEngine(opts: {
     // standby: wake word detection
     if (re.test(low)) {
       vlog("wake word detected:", text);
-      wakeSlow(text, ww);
+      wakeSlow(e, ww);
       return;
     }
 
@@ -462,7 +492,7 @@ export function useVoiceEngine(opts: {
     if (armedRef.current) {
       vlog("follow-up candidate:", text, "final:", final, "ms left:", followUpUntilRef.current - Date.now());
       if (isWakeOnlyText(text, ww, language)) {
-        wakeSlow(text, ww);
+        wakeSlow(e, ww);
         return;
       }
       if (isSleepCommand(text, language)) {
@@ -470,7 +500,7 @@ export function useVoiceEngine(opts: {
         return;
       }
       if (Date.now() <= followUpUntilRef.current) {
-        queueFollowUpCommand(text, final);
+        collectCommand(e);
         return;
       }
       vlog("follow-up window expired");
@@ -602,6 +632,8 @@ export function useVoiceEngine(opts: {
     };
     recRef.current = rec;
     lastResultAtRef.current = Date.now();
+    lastResultLenRef.current = 0;
+    accRef.current = emptyResultSnapshot(0);
     recStartedRef.current = false;
     try {
       rec.start();
