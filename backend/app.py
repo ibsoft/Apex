@@ -179,12 +179,14 @@ def create_app() -> Flask:
     from tools.image_browser import register_image_routes
     from tools.vapt_tools import register_vapt_routes
     from tools.code_tools import register_code_routes
+    from tools.preview_tools import register_preview_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
     register_image_routes(app, require_user, config)
     register_vapt_routes(app, require_user, config)
     register_code_routes(app, require_user, config)
+    register_preview_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""
@@ -866,6 +868,13 @@ def create_app() -> Flask:
             user_name=session.get("name") or user.get("name") or "",
             response_language=rt.get("response_language") or config.RESPONSE_LANGUAGE,
         )
+
+        # Frontend sends a compact, non-persisted inventory of open desktop
+        # windows so the model can act on "the second window". It is only ever
+        # added to the model-facing prompt, never to stored history.
+        window_context = str(data.get("window_context") or "").strip()
+        if window_context:
+            system_prompt = system_prompt.rstrip() + "\n\n" + window_context
 
         tools = make_registry(memory=mem)
         ctx = AgentContext(

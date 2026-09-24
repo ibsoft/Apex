@@ -1,7 +1,16 @@
 /** Shared parser for typed and spoken local commands. Greek is opt-in; English
  * remains available in every language. Captures always retain the user's text. */
+import type { WindowArrangement } from "./windows";
+
 export type LocalCommand =
-  | { type: "preview"; action: "close" | "maximize" | "restore" | "next" | "previous" }
+  | {
+      type: "window";
+      action: "open" | "close" | "close_all" | "focus" | "maximize" | "minimize"
+        | "restore" | "arrange" | "next" | "previous" | "list" | "note";
+      target?: number;
+      arrangement?: WindowArrangement;
+      note?: string;
+    }
   | { type: "cancelTimers" }
   | { type: "cancelReminders" }
   | { type: "timer"; name: string; seconds: number }
@@ -222,23 +231,147 @@ function parseImages(text: string, greek: boolean): LocalCommand | null {
   return { type: "images", query, source };
 }
 
+/* ---------- window commands ---------- */
+
+const EN_ORDINALS: Record<string, number> = {
+  first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10,
+};
+const EL_ORDINALS: Record<string, number> = {
+  πρωτο: 1, πρωτη: 1, δευτερο: 2, δευτερη: 2, τριτο: 3, τριτη: 3,
+  τεταρτο: 4, τεταρτη: 4, πεμπτο: 5, πεμπτη: 5, εκτο: 6, εκτη: 6,
+  εβδομο: 7, εβδομη: 7, ογδοο: 8, ογδοη: 8, ενατο: 9, ενατη: 9, δεκατο: 10, δεκατη: 10,
+};
+
+/* Consume a window index written as "#N", "N", an English ordinal/number word
+ * or a Greek ordinal word; return the target and the consumed length so note
+ * text following it can be sliced back to the original casing. */
+function consumeWindowTarget(norm: string, greek: boolean): { index: number; consumed: number } | null {
+  let s = norm;
+  let used = 0;
+  const lead = s.match(/^(?:the\s+|a\s+|το\s+|τη\s+|την\s+|η\s+|ο\s+|στο\s+|στη\s+|στην\s+)/);
+  if (lead) { used += lead[0].length; s = s.slice(lead[0].length); }
+  const leadWin = s.match(/^(?:window\s+|windows\s+|παραθυρο\s+|παραθυρα\s+)/);
+  if (leadWin) { used += leadWin[0].length; s = s.slice(leadWin[0].length); }
+  const numWord = s.match(/^(?:number\s+|αριθμοσ\s+|αριθμο\s+)/);
+  if (numWord) { used += numWord[0].length; s = s.slice(numWord[0].length); }
+  let index: number | null = null;
+  let token = "";
+  const digits = s.match(/^#?(\d{1,2})(?=$|[\s.,:;!?·;#'-])/);
+  if (digits) {
+    index = Number(digits[1]);
+    token = digits[0];
+  } else {
+    const dict: Record<string, number> = { ...EN_ORDINALS, ...EN_NUMBERS, ...(greek ? EL_ORDINALS : {}) };
+    const keys = Object.keys(dict).sort((a, b) => b.length - a.length);
+    for (const key of keys) {
+      if (s.startsWith(key) && (s.length === key.length || /[\s.,:;!?·;#'-]/.test(s[key.length]))) {
+        index = dict[key];
+        token = key;
+        break;
+      }
+    }
+  }
+  if (index === null) return null;
+  used += token.length;
+  return { index, consumed: used };
+}
+
+function arrangementFromWord(word: string | undefined, greek: boolean): WindowArrangement {
+  const w = (word || "").trim().toLowerCase();
+  if (/grid|πλεγμα|τετραγωνα|πλεγματα/.test(w)) return "grid";
+  if (/side\s*[- ]?by\s*[- ]?side|column|στηλεσ|vertical|vertically/.test(w)) return "tile-v";
+  if (/stack|row|γραμμεσ|stacked|horizontal|horizontally/.test(w)) return "tile-h";
+  if (/centre?d?|central|κεντρο/.test(w)) return "center";
+  return "cascade";
+}
+
+function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
+  const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
+  if (!clean) return null;
+  const normalized = normalize(clean);
+
+  // close all windows
+  if (/^(?:close|hide|dismiss|shut)\s+(?:(?:all|every|the)\s+)?windows$/.test(normalized)
+      || (greek && /^(?:κλεισε|κρυψε|αποκρυψε)\s+(?:(?:ολα|ολα\s+τα|τα)\s+)?παραθυρα$/.test(normalized)))
+    return { type: "window", action: "close_all" };
+
+  // arrange windows
+  const arrangeEn = normalized.match(/^arrange\s+(?:(?:the|all)\s+)?windows?(?:\s+(?:in|as|in\s+a)\s+)?([\p{L}\s-]+)?$/u);
+  if (arrangeEn) return { type: "window", action: "arrange", arrangement: arrangementFromWord(arrangeEn[1], greek) };
+  if (greek) {
+    const arrangeEl = normalized.match(/^(?:ταξινομησε|διαταξε|κανονισε|στοιχισε)\s+(?:τα\s+|τισ\s+)?(?:ανοιχτα\s+)?παραθυρα(?:\s+(?:σε|σε\s+στυλ)\s+)?([\p{L}\s-]+)?$/u);
+    if (arrangeEl) return { type: "window", action: "arrange", arrangement: arrangementFromWord(arrangeEl[1], greek) };
+  }
+
+  // list windows
+  if (/^(?:list|show|count|enumerate)(?:\s+me)?\s+(?:the\s+)?(?:open\s+)?windows?$/.test(normalized)
+      || (greek && /^(?:λιστε|δειξε|μετρησε|απαριθμησε)\s+(?:τα\s+|τισ\s+)?(?:ανοιχτα\s+)?παραθυρα$/.test(normalized)))
+    return { type: "window", action: "list" };
+
+  // next / previous window (or image/photo, kept for parity with the old preview)
+  if (/^(?:next|forward)(?:\s+(?:window|image|photo|picture|one|page))?$/.test(normalized)
+      || (greek && /^(?:επομενο|επομενη|μπροστα)(?:\s+(?:παραθυρο|εικονα|φωτογραφια|σελιδα|εγγραφο))?$/.test(normalized)))
+    return { type: "window", action: "next" };
+  if (/^(?:previous|back|last|prev|earlier)(?:\s+(?:window|image|photo|picture|one|page))?$/.test(normalized)
+      || (greek && /^(?:προηγουμενο|προηγουμενη|πισω)(?:\s+(?:παραθυρο|εικονα|φωτογραφια|σελιδα|εγγραφο))?$/.test(normalized)))
+    return { type: "window", action: "previous" };
+
+  // targeted actions: close / focus / maximize / minimize / restore
+  const referent = greek
+    ? "(?:window|preview|image|document|view|that|it|one|παραθυρο|προεπισκοπηση|εικονα|εγγραφο|αυτο|φωτογραφια)"
+    : "(?:window|preview|image|document|view|that|it|one)";
+  const verbs: Array<["close" | "focus" | "maximize" | "minimize" | "restore", string, string]> = [
+    ["close", "close|hide|dismiss|shut", "κλεισε|κρυψε|αποκρυψε"],
+    ["focus", "focus|select|go\\s+to|switch\\s+to|bring\\s+up|bring\\s+forward", "εστιασε|επιλεξε|φερε|δειξε"],
+    ["maximize", "maxim(?:ize|ise)|expand|enlarge|full[-\\s]?screen", "μεγιστοποιησε|μεγεθυνε|επεκτεινε|πληρησ?\\s+οθονη"],
+    ["minimize", "minim(?:ize|ise)|shrink", "ελαχιστοποιησε|μικρυνε|σμικρυνε"],
+    ["restore", "restore|normali(?:ze|ise)|back\\s+to\\s+normal", "επαναφερε|κανονικοποιησε"],
+  ];
+  for (const [action, en, el] of verbs) {
+    const rest = afterPrefix(clean, new RegExp(`^(?:${en}${greek ? `|${el}` : ""})(?:\\s+(?:(?:the|on|to|at)\\s+)?(?:window\\s+)?)?`));
+    if (rest === null) continue;
+    const nRest = normalize(rest);
+    if (!nRest) return { type: "window", action };
+    const bare = nRest.replace(/^(?:the\s+|a\s+|το\s+|τη\s+|την\s+|η\s+|ο\s+)/, "").trim();
+    if (new RegExp(`^(?:${referent})$`).test(bare)) return { type: "window", action };
+    const target = consumeWindowTarget(nRest, greek);
+    if (target) return { type: "window", action, target: target.index };
+  }
+
+  // notes: "add a note to the second window saying remember this"
+  const notePrefix = greek
+    ? /^(?:βαλε|προσθεσε|γραψε)\s+(?:μια\s+|ενα\s+)?(?:σημειωση|σημειωματα|σημειωμα)\s+(?:στο|στην|σε|πανω\s+σε)\s+/
+    : /^(?:add\s+(?:a\s+)?|put\s+(?:a\s+)?|write\s+(?:a\s+)?)?note\s+(?:to|on)\s+/;
+  const noteRest = afterPrefix(clean, notePrefix);
+  if (noteRest !== null) {
+    const nRest = normalize(noteRest);
+    const target = consumeWindowTarget(nRest, greek);
+    let start = 0;
+    if (target) {
+      start = target.consumed;
+      const tail = nRest.slice(start).match(/^\s*(?:window|windows|παραθυρο|παραθυρα)(?=\s|$)/);
+      if (tail) start += tail[0].length;
+      const sep = nRest.slice(start).match(/^(?:\s*(?:saying|to\s+say|να\s+λεει|λεει)\s+|[:,\-\s]+)/);
+      if (sep) start += sep[0].length;
+    } else {
+      const sep = nRest.slice(start).match(/^(?:saying\s+|to\s+say\s+|να\s+λεει\s+|λεει\s+|[:,\-\s]+)/);
+      if (!sep) return null;
+      start += sep[0].length;
+    }
+    const note = originalSlice(noteRest, start).trim();
+    return { type: "window", action: "note", target: target ? target.index : undefined, note };
+  }
+
+  return null;
+}
+
 export function parseLocalCommand(text: string, language: string, skills: Array<{ name: string }>, now = Date.now()): LocalCommand | null {
-  const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
+  const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
   if (!clean) return null;
   const greek = isGreek(language);
   const normalized = normalize(clean);
-  const previewTarget = "(?:\\s+(?:the\\s+)?(?:preview|it|window|image|document|that))?";
-  const greekPreviewTarget = "(?:\\s+(?:(?:τη|την|το)\\s+)?(?:προεπισκοπηση|παραθυρο|εικονα|εγγραφο|αυτο))?";
-  const previewPatterns: Array<["close" | "maximize" | "restore" | "next" | "previous", string, string]> = [
-    ["close", `(?:close|hide|dismiss|shut)${previewTarget}`, `(?:κλεισε|κρυψε|αποκρυψε)${greekPreviewTarget}`],
-    ["maximize", `(?:maxim(?:ize|ise)|full[-\\s]?screen|enlarge|expand)${previewTarget}`, `(?:(?:μεγιστοποιησε|μεγεθυνε|επεκτεινε)${greekPreviewTarget}|πληρησ?\\s+οθονη)`],
-    ["restore", `(?:normali(?:ze|ise)|minimize|shrink|restore|small(?:er)?\\s+window)${previewTarget}`, `(?:επαναφερε|ελαχιστοποιησε|μικρυνε)${greekPreviewTarget}`],
-    ["next", "(?:next|forward)(?:\\s+(?:image|one|photo|picture|page))?", "(?:επομενο|επομενη|μπροστα)(?:\\s+(?:εικονα|φωτογραφια|σελιδα|εγγραφο))?"],
-    ["previous", "(?:previous|back|last|prev|earlier)(?:\\s+(?:image|one|photo|picture|page))?", "(?:προηγουμενο|προηγουμενη|πισω)(?:\\s+(?:εικονα|φωτογραφια|σελιδα|εγγραφο))?"],
-  ];
-  for (const [action, en, el] of previewPatterns) {
-    if (new RegExp(`^(?:${en}${greek ? `|${el}` : ""})$`).test(normalized)) return { type: "preview", action };
-  }
+  const win = parseWindowCommand(clean, greek);
+  if (win) return win;
   if (/^(?:cancel|stop|clear)\s+(?:all\s+)?timers?$/.test(normalized)
       || (greek && /^(?:ακυρωσε|σταματα|σταματησε|διαγραψε|διεγραψε)\s+(?:(?:ολα\s+)?τα\s+|το\s+)?χρονομετρ(?:ο|α)$/.test(normalized))) return { type: "cancelTimers" };
   if (/^(?:cancel|stop|clear)\s+(?:all\s+)?reminders?$/.test(normalized)

@@ -98,12 +98,54 @@ Update the regex or add new token types there if you need richer rendering.
 # backend (from repo root)
 .venv/bin/pytest backend/tests -q
 
-# frontend
+# frontend unit tests + typecheck build
+node --test frontend/tests
 cd frontend && npm run build
 ```
 
-A green backend test run and a successful `npm run build` are required before
-finishing any feature.
+A green backend test run, a green `node --test frontend/tests` run and a
+successful `npm run build` are required before finishing any feature.
+
+## Window manager (desktop media layer)
+
+Voice/text can open up to `MAX_WINDOWS` (10) floating windows holding images,
+PDFs, rendered Word/Excel/text documents or generic download cards, each with
+optional per-window notes.
+
+- State lives only in the frontend session, in `ApexProvider` (`windows`,
+  `focusedWindowId` + refs). Actions: `windowOpen/Close/CloseAll/Focus/
+  ToggleMaximize/ToggleMinimize/Arrange/Next/Previous/SetNote/ToggleNotes/Update`.
+- `frontend/lib/windows.ts` is the single model + helper module:
+  `kindForName`/`kindForItems`, `titleFromUrl`, `layoutRects` (cascade/grid/
+  tile-h/tile-v/center), `collectPreviewableItems` (token, obsidian and raw
+  image/PDF URL extraction from assistant messages) and `windowContextBlock`.
+  Tests: `frontend/tests/windows.test.cjs`.
+- `frontend/components/WindowManager.tsx` renders the layer (drag title bar,
+  bottom-right resize handle, gallery arrows in-image, notes panel, taskbar).
+  It reuses `backendFileHref` from `FileDownloads.tsx` only as the
+  "is this backend-signed?" gate; the render URL is always the original signed
+  URL (never the `/be`-prefixed browser path).
+- `sendMessage` appends a `window_context` string (from `windowContextBlock`)
+  to the payload; `chat()` in `backend/app.py` appends it to the system prompt
+  only as build-time context (never persisted to history).
+- Local commands live in `commands.ts::parseWindowCommand` (EN + Greek): close
+  all/list, arrange `<style>`, next/previous, targeted close/focus/maximize/
+  minimize/restore by number/ordinal, and notes. Executed in
+  `ApexProvider::executeLocalCommand` under `case "window"`.
+
+## Server-side media preview
+
+`backend/tools/preview_tools.py::register_preview_routes` adds a single
+`GET /api/preview/render?url=<signed-url>` route that renders one document into
+HTML (`.docx` via xml-level block iteration, `.xlsx` via openpyxl, text into
+`<pre>`) or streams images/PDFs inline. Only the four known signed URL shapes
+(editor/file_search/image_browser download tokens + obsidian file links) are
+accepted; every other URL returns 400, unsupported kinds 415. The same owner,
+tamper and path-containment checks run as the source tools. Route is registered
+in `app.py` and guarded by `require_user`. Tests:
+`backend/tests/test_preview_tools.py`. Note: python-docx has no
+`Document.blocks`; block iteration happens at the XML level, and doc images are
+embedded as base64 data URIs.
 
 ## EDITOR skill (Word / Excel generation)
 

@@ -34,6 +34,18 @@ import { useVoiceEngine, VoicePhase } from "../lib/voice";
 import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
 import { formatDuration, parseLocalCommand } from "../lib/commands";
+import {
+  AppWindow,
+  MAX_WINDOWS,
+  WindowArrangement,
+  WindowItem,
+  WindowKind,
+  collectPreviewableItems,
+  itemTitle,
+  kindForItems,
+  layoutRects,
+  windowContextBlock,
+} from "../lib/windows";
 
 export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -76,12 +88,8 @@ type ApexContextType = {
   forceVoiceAwake: () => void;
   voiceLastHeard: string;
   error: string | null;
-  preview: {
-    title: string;
-    items: { url: string; title: string; kind: "image" | "document" }[];
-    index: number;
-  } | null;
-  previewMaximized: boolean;
+  windows: AppWindow[];
+  focusedWindowId: string | null;
   chatCollapsed: boolean;
   timers: TimerItem[];
   reminders: ReminderItem[];
@@ -105,12 +113,19 @@ type ApexContextType = {
   searchMemory: (q: string) => Promise<MemoryEntry[]>;
   refreshMemory: () => Promise<void>;
   clearError: () => void;
-  openPreview: (items: { url: string; title: string; kind: "image" | "document" }[], title?: string, startIndex?: number) => void;
-  closePreview: () => void;
+  windowOpen: (items: WindowItem[], opts?: { title?: string; kind?: WindowKind; maximize?: boolean }) => void;
+  windowClose: (id: string) => void;
+  windowCloseAll: () => void;
+  windowFocus: (id: string) => void;
+  windowToggleMaximize: (id: string) => void;
+  windowToggleMinimize: (id: string) => void;
+  windowArrange: (arrangement: WindowArrangement) => void;
+  windowNext: () => void;
+  windowPrevious: () => void;
+  windowSetNote: (id: string, note: string) => void;
+  windowToggleNotes: (id: string) => void;
+  windowUpdate: (id: string, patch: Partial<Pick<AppWindow, "rect" | "maximized" | "minimized">>) => void;
   setChatCollapsed: (collapsed: boolean) => void;
-  togglePreviewMaximized: () => void;
-  nextPreview: () => void;
-  previousPreview: () => void;
   setTimer: (name: string, seconds: number) => string;
   setReminder: (name: string, fireAt: number) => string;
   cancelTimer: (id: string) => void;
@@ -157,12 +172,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [orb, setOrb] = useState<OrbState>("idle");
   const [voiceEnabled, setVoiceEnabledState] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{
-    title: string;
-    items: { url: string; title: string; kind: "image" | "document" }[];
-    index: number;
-  } | null>(null);
-  const [previewMaximized, setPreviewMaximized] = useState(false);
+  const [windows, setWindows] = useState<AppWindow[]>([]);
+  const [focusedWindowId, setFocusedWindowId] = useState<string | null>(null);
   const [chatCollapsed, setChatCollapsedState] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("apex:chat-collapsed") === "1";
@@ -196,10 +207,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   settingsRef.current = settings;
   const userRef = useRef(user);
   userRef.current = user;
-  const previewRef = useRef(preview);
-  previewRef.current = preview;
-  const previewMaximizedRef = useRef(previewMaximized);
-  previewMaximizedRef.current = previewMaximized;
+  const windowsRef = useRef(windows);
+  windowsRef.current = windows;
+  const focusedWindowIdRef = useRef(focusedWindowId);
+  focusedWindowIdRef.current = focusedWindowId;
   const timersRef = useRef(timers);
   timersRef.current = timers;
   const remindersRef = useRef(reminders);
@@ -373,28 +384,120 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     }
   }, [conversations]);
 
-  /* ---------- preview window ---------- */
+  /* ---------- desktop windows ---------- */
 
-  const openPreview = useCallback((items: { url: string; title: string; kind: "image" | "document" }[], title = "Preview", startIndex = 0) => {
+  const findWindow = (id: string) => windowsRef.current.find((w) => w.id === id);
+
+  const signature = (items: WindowItem[]) => items.map((i) => i.url).sort().join("|");
+  const windowOpen = useCallback((items: WindowItem[], opts: { title?: string; kind?: WindowKind; maximize?: boolean } = {}) => {
     if (!items.length) return;
-    setPreview({ title, items, index: Math.max(0, Math.min(startIndex, items.length - 1)) });
+    const list = windowsRef.current;
+    const target = signature(items);
+    const existing = list.find((w) => signature(w.items) === target);
+    if (existing) {
+      setFocusedWindowId(existing.id);
+      if (existing.minimized) {
+        setWindows((prev) => prev.map((w) => (w.id === existing.id ? { ...w, minimized: false } : w)));
+      }
+      return;
+    }
+    if (list.length >= MAX_WINDOWS) {
+      speakRef.current(localize(
+        `Maximum ${MAX_WINDOWS} windows are open. Close one to open another.`,
+        `Έχουν ανοίξει το μέγιστο των ${MAX_WINDOWS} παραθύρων. Κλείστε ένα για να ανοίξετε άλλο.`,
+      ));
+      return;
+    }
+    const rects = layoutRects("cascade", list.length + 1, window.innerWidth, window.innerHeight);
+    const win: AppWindow = {
+      id: `win_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+      items,
+      index: 0,
+      kind: opts.kind ?? kindForItems(items),
+      rect: rects[list.length],
+      maximized: !!opts.maximize,
+      minimized: false,
+      note: "",
+      showNotes: false,
+    };
+    setWindows((prev) => [...prev, win]);
+    setFocusedWindowId(win.id);
   }, []);
 
-  const closePreview = useCallback(() => {
-    setPreview(null);
-    setPreviewMaximized(false);
+  const windowClose = useCallback((id: string) => {
+    const next = windowsRef.current.filter((w) => w.id !== id);
+    setWindows(next);
+    if (focusedWindowIdRef.current === id) {
+      setFocusedWindowId(next.length ? next[next.length - 1].id : null);
+    }
   }, []);
 
-  const togglePreviewMaximized = useCallback(() => {
-    setPreviewMaximized((m) => !m);
+  const windowCloseAll = useCallback(() => {
+    setWindows([]);
+    setFocusedWindowId(null);
   }, []);
 
-  const nextPreview = useCallback(() => {
-    setPreview((p) => (p ? { ...p, index: (p.index + 1) % p.items.length } : p));
+  const windowFocus = useCallback((id: string) => {
+    const target = findWindow(id);
+    if (!target) return;
+    if (target.minimized) {
+      setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, minimized: false } : w)));
+    }
+    setFocusedWindowId(id);
   }, []);
 
-  const previousPreview = useCallback(() => {
-    setPreview((p) => (p ? { ...p, index: (p.index - 1 + p.items.length) % p.items.length } : p));
+  const windowToggleMaximize = useCallback((id: string) => {
+    setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, maximized: !w.maximized } : w)));
+    setFocusedWindowId(id);
+  }, []);
+
+  const windowToggleMinimize = useCallback((id: string) => {
+    setWindows((prev) => {
+      const target = prev.find((w) => w.id === id);
+      if (!target) return prev;
+      const next = prev.map((w) => (w.id === id ? { ...w, minimized: !w.minimized } : w));
+      const focusId = focusedWindowIdRef.current;
+      if (next.find((w) => w.id === id)?.minimized && focusId === id) {
+        const fallback = next.filter((w) => !w.minimized);
+        setFocusedWindowId(fallback.length ? fallback[fallback.length - 1].id : null);
+      }
+      return next;
+    });
+  }, []);
+
+  const windowArrange = useCallback((arrangement: WindowArrangement) => {
+    const list = windowsRef.current;
+    if (!list.length) return;
+    const rects = layoutRects(arrangement, list.length, window.innerWidth, window.innerHeight);
+    setWindows(list.map((w, i) => ({ ...w, rect: rects[i], maximized: false, minimized: false })));
+  }, []);
+
+  const windowNext = useCallback(() => {
+    const id = focusedWindowIdRef.current;
+    if (!id) return;
+    setWindows((prev) => prev.map((w) =>
+      w.id === id && w.items.length > 1 ? { ...w, index: (w.index + 1) % w.items.length } : w,
+    ));
+  }, []);
+
+  const windowPrevious = useCallback(() => {
+    const id = focusedWindowIdRef.current;
+    if (!id) return;
+    setWindows((prev) => prev.map((w) =>
+      w.id === id && w.items.length > 1 ? { ...w, index: (w.index - 1 + w.items.length) % w.items.length } : w,
+    ));
+  }, []);
+
+  const windowSetNote = useCallback((id: string, note: string) => {
+    setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, note } : w)));
+  }, []);
+
+  const windowToggleNotes = useCallback((id: string) => {
+    setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, showNotes: !w.showNotes } : w)));
+  }, []);
+
+  const windowUpdate = useCallback((id: string, patch: Partial<Pick<AppWindow, "rect" | "maximized" | "minimized">>) => {
+    setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }, []);
 
   /* ---------- image browser ---------- */
@@ -415,15 +518,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           : localize("No images found", "Δεν βρέθηκαν εικόνες"));
         return;
       }
-      const items = images.map((img: any) => ({ url: img.url, title: img.name, kind: "image" as const }));
-      const titlePrefix = source === "local" ? localize("Local Images", "Τοπικές εικόνες") : localize("Web Images", "Εικόνες ιστού");
-      setPreview({ title: query ? `${titlePrefix}: ${query}` : titlePrefix, items, index: 0 });
+      windowOpen(images.map((img: any) => ({ url: img.url, title: img.name })), { kind: "image", maximize: false });
       speakRef.current(query
         ? localize(`Found ${images.length} images for ${query}`, `Βρέθηκαν ${images.length} εικόνες για ${query}`)
         : localize(`Found ${images.length} images`, `Βρέθηκαν ${images.length} εικόνες`));
     } catch (err: any) {
       speakRef.current(err?.message || localize("Could not open image browser", "Δεν ήταν δυνατό το άνοιγμα των εικόνων"));
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const searchImages = useCallback(async (query: string, source: "web" | "local" = "web") => {
@@ -495,18 +597,20 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(id);
   }, [playNotification]);
 
-  // Auto-open/update preview for voice assistant messages that contain images
-  // or backend file/document links. Only pop up when the chat panel is
-  // collapsed so the inline chat view is not duplicated.
+  // Auto-open desktop windows for file/image links in assistant replies — for
+  // both voice and typed turns. Only reacts to brand-new messages so opening
+  // an old conversation does not pop windows from history.
+  const autoOpenedMsgRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!chatCollapsed) return;
     const last = messages[messages.length - 1];
-    if (!last || last.role !== "assistant" || last.streaming || !last.meta?.voice || !last.content) return;
+    if (!last || last.role !== "assistant" || last.streaming || !last.content) return;
+    if (autoOpenedMsgRef.current === last.id) return;
     const items = collectPreviewableItems(last.content);
     if (items.length) {
-      setPreview({ title: "Voice Preview", items, index: 0 });
+      autoOpenedMsgRef.current = last.id;
+      windowOpen(items);
     }
-  }, [messages, chatCollapsed]);
+  }, [messages, windowOpen]);
 
   /* ---------- voice + orb ---------- */
 
@@ -563,31 +667,87 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, [silencedUntil]);
 
   // Both voice and typed input execute the same commands and acknowledgements.
-  // null means a context-dependent command (such as preview navigation) is not
+  // null means a context-dependent command (such as window navigation) is not
   // applicable, so the original request can still be handled by the model.
   async function executeLocalCommand(command: NonNullable<ReturnType<typeof parseLocalCommand>>): Promise<string | null> {
     switch (command.type) {
-      case "preview": {
-        const current = previewRef.current;
-        if (!current) return null;
-        if (command.action === "close") {
-          closePreview();
-          return localize("Preview closed.", "Η προεπισκόπηση έκλεισε.");
+      case "window": {
+        const list = windowsRef.current;
+        if (!list.length) return null;
+        const pick = (): AppWindow | null => {
+          if (command.target != null) return list[command.target - 1] ?? null;
+          return list.find((w) => w.id === focusedWindowIdRef.current) ?? list[list.length - 1];
+        };
+        const nameOf = (w: AppWindow) => itemTitle(w.items[w.index] ?? w.items[0]);
+        switch (command.action) {
+          case "close_all":
+            windowCloseAll();
+            return localize("All windows closed.", "Έκλεισαν όλα τα παράθυρα.");
+          case "close": {
+            const w = pick();
+            if (!w) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
+            windowClose(w.id);
+            return localize(`Closed "${nameOf(w)}".`, `Έκλεισε το «${nameOf(w)}».`);
+          }
+          case "focus": {
+            const w = pick();
+            if (!w) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
+            windowFocus(w.id);
+            return localize(`Focused "${nameOf(w)}".`, `Επιλέχθηκε το «${nameOf(w)}».`);
+          }
+          case "maximize": {
+            const w = pick();
+            if (!w) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
+            if (!w.maximized) windowToggleMaximize(w.id);
+            return localize(`Maximized "${nameOf(w)}".`, `Μεγιστοποιήθηκε το «${nameOf(w)}».`);
+          }
+          case "minimize": {
+            const w = pick();
+            if (!w) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
+            if (!w.minimized) windowToggleMinimize(w.id);
+            return localize(`Minimized "${nameOf(w)}".`, `Ελαχιστοποιήθηκε το «${nameOf(w)}».`);
+          }
+          case "restore": {
+            const w = pick();
+            if (!w) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
+            if (w.minimized) windowToggleMinimize(w.id);
+            if (w.maximized) windowToggleMaximize(w.id);
+            windowFocus(w.id);
+            return localize(`Restored "${nameOf(w)}".`, `Επανήλθε το «${nameOf(w)}».`);
+          }
+          case "arrange": {
+            windowArrange(command.arrangement ?? "cascade");
+            const names = localize(
+              `arranged ${list.length} windows in ${command.arrangement ?? "cascade"} style.`,
+              `διάταξα ${list.length} παράθυρα σε στυλ ${(command.arrangement ?? "cascade") === "cascade" ? "καταρράκτη" : command.arrangement}.`,
+            );
+            return names.replace(/^./, (c) => c.toUpperCase());
+          }
+          case "next":
+          case "previous": {
+            const w = pick();
+            if (!w) return null;
+            if (w.items.length < 2) return localize("There is only one item.", "Υπάρχει μόνο ένα στοιχείο.");
+            if (command.action === "next") windowNext();
+            else windowPrevious();
+            return localize(`Showing ${nameOf(w)}.`, `Προβάλλεται: ${nameOf(w)}.`);
+          }
+          case "list":
+            return localize(
+              `Open windows: ${list.map((w, i) => `#${i + 1} ${nameOf(w)}`).join(", ")}.`,
+              `Ανοιχτά παράθυρα: ${list.map((w, i) => `#${i + 1} ${nameOf(w)}`).join(", ")}.`,
+            );
+          case "note": {
+            const w = pick();
+            if (!w) return null;
+            if (!command.note) return localize("What should I write in the note?", "Τι θέλετε να σημειώσω;");
+            windowSetNote(w.id, command.note);
+            windowToggleNotes(w.id);
+            return localize(`Note added to "${nameOf(w)}".`, `Προστέθηκε σημείωση στο «${nameOf(w)}».`);
+          }
+          case "open":
+            return null;
         }
-        if (command.action === "maximize") {
-          if (!previewMaximizedRef.current) togglePreviewMaximized();
-          return localize("Preview maximized.", "Η προεπισκόπηση μεγιστοποιήθηκε.");
-        }
-        if (command.action === "restore") {
-          if (previewMaximizedRef.current) togglePreviewMaximized();
-          return localize("Preview restored.", "Η προεπισκόπηση επανήλθε στο κανονικό μέγεθος.");
-        }
-        if (current.items.length < 2) return localize("There is only one item.", "Υπάρχει μόνο ένα στοιχείο.");
-        const direction = command.action === "next" ? 1 : -1;
-        const item = current.items[(current.index + direction + current.items.length) % current.items.length];
-        if (direction === 1) nextPreview();
-        else previousPreview();
-        return localize(`Showing ${item.title}.`, `Προβάλλεται: ${item.title}.`);
       }
       case "cancelTimers":
         setTimers([]);
@@ -725,11 +885,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         let spoken = "";
         let streamError = "";
         let streamedTools: NonNullable<NonNullable<Message["meta"]>["tools"]> = [];
+        const windowBlock = windowContextBlock(windowsRef.current, focusedWindowIdRef.current);
         const payload: any = {
           message: clean,
           conversation_id: convId,
           skill: opts.skill ?? skillRef.current,
           voice_mode: !!opts.voice,
+          ...(windowBlock ? { window_context: windowBlock } : {}),
         };
         const model = settingsRef.current.model;
         if (model && stripSystemModel(model)) payload.model = model;
@@ -962,8 +1124,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       forceVoiceAwake,
       voiceLastHeard: voice.lastHeard,
       error,
-      preview,
-      previewMaximized,
+      windows,
+      focusedWindowId,
       chatCollapsed,
       timers,
       reminders,
@@ -986,12 +1148,19 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       searchMemory,
       refreshMemory,
       clearError,
-      openPreview,
-      closePreview,
+      windowOpen,
+      windowClose,
+      windowCloseAll,
+      windowFocus,
+      windowToggleMaximize,
+      windowToggleMinimize,
+      windowArrange,
+      windowNext,
+      windowPrevious,
+      windowSetNote,
+      windowToggleNotes,
+      windowUpdate,
       setChatCollapsed,
-      togglePreviewMaximized,
-      nextPreview,
-      previousPreview,
       setTimer,
       setReminder,
       cancelTimer,
@@ -1007,56 +1176,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       closeGithubPrompt,
     }),
     [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
-     preview, previewMaximized, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
-     addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview,
+     windows, focusedWindowId, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
+     addMemory, removeMemory, searchMemory, refreshMemory, clearError, windowOpen, windowClose, windowCloseAll, windowFocus, windowToggleMaximize, windowToggleMinimize, windowArrange, windowNext, windowPrevious,
+     windowSetNote, windowToggleNotes, windowUpdate, setChatCollapsed,
      setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous, setSudoPassword, closeSudoPrompt, setGithubToken, closeGithubPrompt],
   );
 
   return <ApexContext.Provider value={value}>{children}</ApexContext.Provider>;
-}
-
-/* ---------- preview helpers ---------- */
-
-const IMAGE_EXT_RE = /\.(jpg|jpeg|png|gif|webp|svg|bmp)(\?.*)?$/i;
-const PREVIEWABLE_URL_RE = /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|editor)\/download\/[A-Za-z0-9_.\-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/(?:files|editor)\/download\/[A-Za-z0-9_.\-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
-
-function isPreviewImage(url: string): boolean {
-  return IMAGE_EXT_RE.test(url);
-}
-
-
-function titleFromUrl(url: string): string {
-  try {
-    const parsed = new URL(url, typeof window !== "undefined" ? window.location.href : "http://localhost:3000");
-    const params = parsed.searchParams.get("path");
-    if (params) {
-      const parts = params.split("/");
-      return decodeURIComponent(parts[parts.length - 1]) || "Preview";
-    }
-    const parts = parsed.pathname.split("/");
-    return decodeURIComponent(parts[parts.length - 1]) || "Preview";
-  } catch {
-    return "Preview";
-  }
-}
-
-function collectPreviewableItems(content: string): { url: string; title: string; kind: "image" | "document" }[] {
-  const seen = new Set<string>();
-  const items: { url: string; title: string; kind: "image" | "document" }[] = [];
-  PREVIEWABLE_URL_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = PREVIEWABLE_URL_RE.exec(content)) !== null) {
-    const label = m[1];
-    const url = m[2] || m[3] || m[4] || m[5];
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
-    const isImage = isPreviewImage(url);
-    if (isImage || /\/api\/(?:files|editor)\/download\//.test(url) || /\/api\/obsidian\/file\?path=/.test(url)) {
-      const title = (label && label.trim()) || titleFromUrl(url);
-      items.push({ url, title, kind: isImage ? "image" : "document" });
-    }
-  }
-  return items;
 }
 
 /* drop the "gpt-5-codex"-style backend model aliases when a user-set model came
