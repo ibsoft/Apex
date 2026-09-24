@@ -87,6 +87,7 @@ type ApexContextType = {
   reminders: ReminderItem[];
   operator: { name?: string; declaredAt: number } | null;
   silencedUntil: number;
+  sudoPrompt: { reason?: string } | null;
   /* actions */
   refresh: () => Promise<void>;
   login: () => void;
@@ -118,6 +119,8 @@ type ApexContextType = {
   searchImages: (query: string, source?: "web" | "local") => Promise<void>;
   declareOperator: (name?: string) => void;
   silenceAutonomous: (seconds?: number) => void;
+  setSudoPassword: (password: string, save: boolean) => Promise<void>;
+  closeSudoPrompt: () => void;
 };
 
 const ApexContext = createContext<ApexContextType | null>(null);
@@ -173,6 +176,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [silencedUntil, setSilencedUntil] = useState<number>(0);
   const silencedUntilRef = useRef(silencedUntil);
   silencedUntilRef.current = silencedUntil;
+  const [sudoPrompt, setSudoPrompt] = useState<{ reason?: string } | null>(null);
 
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -275,9 +279,17 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setByConv({});
     setActiveId(null);
     setMemory([]);
+    setSudoPrompt(null);
+    void api.vapt.clear().catch(() => {});
     if (voice) voice.cancelSpeech();
     await refresh();
   }, []);
+
+  const setSudoPassword = useCallback(async (password: string, save: boolean) => {
+    await api.vapt.password({ password, save });
+  }, []);
+
+  const closeSudoPrompt = useCallback(() => setSudoPrompt(null), []);
 
   const deleteSkill = useCallback(async (name: string) => {
     const target = skillsRef.current.find((s) => s.name === name);
@@ -739,6 +751,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
                 });
               }
             }).catch(() => {});
+          } else if (ev.type === "sudo_password") {
+            setSudoPrompt({ reason: ev.reason });
           } else if (ev.type === "error") {
             streamError = ev.message;
             setError(ev.message);
@@ -934,6 +948,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       reminders,
       operator,
       silencedUntil,
+      sudoPrompt,
       refresh,
       login,
       logout,
@@ -964,11 +979,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       searchImages,
       declareOperator,
       silenceAutonomous,
+      setSudoPassword,
+      closeSudoPrompt,
     }),
     [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
-     preview, previewMaximized, chatCollapsed, timers, reminders, operator, silencedUntil, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
+     preview, previewMaximized, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview,
-     setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous],
+     setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous, setSudoPassword, closeSudoPrompt],
   );
 
   return <ApexContext.Provider value={value}>{children}</ApexContext.Provider>;
