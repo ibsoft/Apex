@@ -435,8 +435,7 @@ export default function WindowManager() {
       <div style={{
         position: "fixed", left: 0, right: 0, bottom: 0, height: TASKBAR_H, zIndex: 41,
         display: "flex", alignItems: "center", gap: 8, padding: "0 12px",
-        background: "rgba(6,10,20,0.88)", borderTop: `1px solid ${C.line}`,
-        backdropFilter: "blur(18px)", pointerEvents: "auto",
+        background: "rgba(6,10,20,0.35)", borderTop: `1px solid ${C.line}`, pointerEvents: "auto",
       }}>
         <button onClick={() => a.windowCloseAll()} aria-label="Close all windows"
           style={{ fontSize: 9, letterSpacing: "0.12em", fontFamily: "var(--font-mono)", color: C.dim,
