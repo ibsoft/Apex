@@ -55,7 +55,7 @@ class SkillManagerTests(unittest.TestCase):
         mgr = SkillManager()
         shell = mgr.get("shell")
         self.assertIsNotNone(shell)
-        self.assertIn("run_shell", shell.tools)
+        self.assertEqual(shell.tools, [])  # ALL -> all active tools
 
     def test_shell_skill_passes_run_shell_to_agent(self):
         mgr = SkillManager()

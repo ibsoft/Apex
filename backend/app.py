@@ -139,11 +139,13 @@ def create_app() -> Flask:
     from tools.editor_tools import register_editor_routes
     from tools.image_browser import register_image_routes
     from tools.vapt_tools import register_vapt_routes
+    from tools.code_tools import register_code_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
     register_image_routes(app, require_user, config)
     register_vapt_routes(app, require_user, config)
+    register_code_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""
@@ -849,6 +851,12 @@ def create_app() -> Flask:
                         needed, reason = translate_sudo_marker(ev.get("output") or "")
                         if needed:
                             yield event_ss({"type": "sudo_password", "reason": reason})
+                        # CODE skill signals "GitHub token required" so the
+                        # frontend can pop the centered token dialog.
+                        from tools.code_tools import translate_github_marker
+                        needed, reason = translate_github_marker(ev.get("output") or "")
+                        if needed:
+                            yield event_ss({"type": "github_token", "reason": reason})
                     elif ev["type"] == "error":
                         error_seen = True
                     elif ev["type"] == "done":

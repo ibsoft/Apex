@@ -8,6 +8,7 @@ import { useEffect, useRef } from "react";
 import ApexWorld from "./ApexWorld";
 import ChatUI from "./ChatUI";
 import SudoPromptModal from "./SudoPromptModal";
+import GithubTokenModal from "./GithubTokenModal";
 import { useApex } from "./ApexProvider";
 
 const C = {
@@ -130,6 +131,7 @@ export default function AppShell() {
       {a.loading ? <LoadingSplash /> : !a.user ? <LoginOverlay /> : <ChatUI />}
 
       <SudoPromptModal />
+      <GithubTokenModal />
 
       <ErrorToast />
     </div>

@@ -101,6 +101,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.file_search import build_file_tools
     from tools.editor_tools import build_editor_tools
     from tools.vapt_tools import build_vapt_tools
+    from tools.code_tools import build_code_tools
 
     for tool in build_core_tools(registry, config):
         registry.register(tool)
@@ -114,5 +115,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     for tool in build_editor_tools(config):
         registry.register(tool)
     for tool in build_vapt_tools(config):
+        registry.register(tool)
+    for tool in build_code_tools(config):
         registry.register(tool)
     return registry

@@ -121,6 +121,9 @@ type ApexContextType = {
   silenceAutonomous: (seconds?: number) => void;
   setSudoPassword: (password: string, save: boolean) => Promise<void>;
   closeSudoPrompt: () => void;
+  githubPrompt: { reason?: string } | null;
+  setGithubToken: (token: string) => Promise<void>;
+  closeGithubPrompt: () => void;
 };
 
 const ApexContext = createContext<ApexContextType | null>(null);
@@ -177,6 +180,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const silencedUntilRef = useRef(silencedUntil);
   silencedUntilRef.current = silencedUntil;
   const [sudoPrompt, setSudoPrompt] = useState<{ reason?: string } | null>(null);
+  const [githubPrompt, setGithubPrompt] = useState<{ reason?: string } | null>(null);
 
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
@@ -290,6 +294,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const closeSudoPrompt = useCallback(() => setSudoPrompt(null), []);
+
+  const setGithubToken = useCallback(async (token: string) => {
+    await api.code.githubToken(token);
+  }, []);
+
+  const closeGithubPrompt = useCallback(() => setGithubPrompt(null), []);
 
   const deleteSkill = useCallback(async (name: string) => {
     const target = skillsRef.current.find((s) => s.name === name);
@@ -753,6 +763,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             }).catch(() => {});
           } else if (ev.type === "sudo_password") {
             setSudoPrompt({ reason: ev.reason });
+          } else if (ev.type === "github_token") {
+            setGithubPrompt({ reason: ev.reason });
           } else if (ev.type === "error") {
             streamError = ev.message;
             setError(ev.message);
@@ -981,11 +993,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       silenceAutonomous,
       setSudoPassword,
       closeSudoPrompt,
+      githubPrompt,
+      setGithubToken,
+      closeGithubPrompt,
     }),
     [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
-     preview, previewMaximized, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
+     preview, previewMaximized, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, openPreview, closePreview, setChatCollapsed, togglePreviewMaximized, nextPreview, previousPreview,
-     setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous, setSudoPassword, closeSudoPrompt],
+     setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous, setSudoPassword, closeSudoPrompt, setGithubToken, closeGithubPrompt],
   );
 
   return <ApexContext.Provider value={value}>{children}</ApexContext.Provider>;
