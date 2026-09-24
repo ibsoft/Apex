@@ -138,10 +138,12 @@ def create_app() -> Flask:
     from tools.file_search import register_file_routes
     from tools.editor_tools import register_editor_routes
     from tools.image_browser import register_image_routes
+    from tools.vapt_tools import register_vapt_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
     register_image_routes(app, require_user, config)
+    register_vapt_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""
@@ -394,6 +396,10 @@ def create_app() -> Flask:
 
     @app.get("/api/logout")
     def logout():
+        from tools.vapt_tools import sudocred_clear
+        uid = current_user()
+        if uid:
+            sudocred_clear(str(uid))
         session.clear()
         return redirect(request.referrer or config.FRONTEND_URL)
 
@@ -836,6 +842,13 @@ def create_app() -> Flask:
                         yield event_ss(ev)
                         yield event_ss({"type": "skills_changed"})
                         continue
+                    elif ev["type"] == "tool_result":
+                        # VAPT tools signal "sudo credential required" so the
+                        # frontend can pop the centered password dialog.
+                        from tools.vapt_tools import translate_sudo_marker
+                        needed, reason = translate_sudo_marker(ev.get("output") or "")
+                        if needed:
+                            yield event_ss({"type": "sudo_password", "reason": reason})
                     elif ev["type"] == "error":
                         error_seen = True
                     elif ev["type"] == "done":

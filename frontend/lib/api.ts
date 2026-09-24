@@ -97,6 +97,7 @@ export type ChatEvent =
   | { type: "tool_result"; name: string; output: string }
   | { type: "memory"; action: string; detail: any }
   | { type: "skills_changed" }
+  | { type: "sudo_password"; reason?: string }
   | { type: "done"; usage?: any }
   | { type: "error"; message: string }
   | { type: "end"; ok: boolean };
@@ -132,6 +133,17 @@ export const api = {
   skills: {
     list: () => json<Skill[]>("/api/skills"),
     delete: (name: string) => json<{ ok: boolean }>(`/api/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  },
+
+  vapt: {
+    password: (payload: { password: string; save: boolean }) =>
+      json<{ ok: boolean; saved: boolean; ttl_minutes: number }>("/api/vapt/password", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    clear: () => json<{ ok: boolean }>("/api/vapt/password", { method: "DELETE" }),
+    status: () =>
+      json<{ enabled: boolean; projects_root: string; password: string; saved: boolean }>("/api/vapt/status"),
   },
 
   conversations: {

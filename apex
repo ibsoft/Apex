@@ -35,6 +35,15 @@ spinner() {
   local label="$1"
   shift
   local log rc=0 i=0 pid
+  # If the command needs sudo, authenticate in the FOREGROUND first so the
+  # password prompt appears cleanly. sudo caches the credential for a while,
+  # so the backgrounded run below won't touch the tty (a backgrounded sudo
+  # reading /dev/tty is stopped by SIGTTIN and the spinner would freeze).
+  if [[ "$1" == "sudo" && $INTERACTIVE -eq 1 && -t 0 ]]; then
+    # Global sudoers may allow specific commands without a password, in which
+    # case `sudo -v` would still fail; tolerate that and let the real command run.
+    sudo -v 2>/dev/null || true
+  fi
   log="$(mktemp "${TMPDIR:-/tmp}/apex-spin.XXXXXX")"
   if [[ $INTERACTIVE -eq 1 ]]; then
     "$@" >"$log" 2>&1 & pid=$!

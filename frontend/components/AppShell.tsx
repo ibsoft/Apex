@@ -7,6 +7,7 @@
 import { useEffect, useRef } from "react";
 import ApexWorld from "./ApexWorld";
 import ChatUI from "./ChatUI";
+import SudoPromptModal from "./SudoPromptModal";
 import { useApex } from "./ApexProvider";
 
 const C = {
@@ -127,6 +128,8 @@ export default function AppShell() {
       <ApexWorld state={a.orb} onTap={handleTap} />
 
       {a.loading ? <LoadingSplash /> : !a.user ? <LoginOverlay /> : <ChatUI />}
+
+      <SudoPromptModal />
 
       <ErrorToast />
     </div>

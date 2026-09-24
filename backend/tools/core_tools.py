@@ -209,6 +209,20 @@ def build_core_tools(registry, cfg):
         if not cfg.ENABLE_RUN_SHELL:
             return "The run_shell tool is disabled (set ENABLE_RUN_SHELL=true)."
         timeout = getattr(cfg, "RUN_SHELL_TIMEOUT", 60)
+        if args.get("sudo"):
+            from tools.vapt_tools import SUDO_MARKER, _redact_password, _run_shell, sudocred_get
+            cred = sudocred_get(ctx.user_id)
+            if not cred:
+                return f"{SUDO_MARKER}This command needs sudo and no session credential is stored — the password popup will appear."
+            rc, out, err, _dur = _run_shell(command, timeout, True, cfg, ctx.user_id)
+            out = _redact_password(out, cred["password"])
+            err = _redact_password(err, cred["password"])
+            if rc == 98:
+                return (f"{SUDO_MARKER}The sudo credential was rejected or expired — the password popup will appear.\n"
+                        f"stderr:\n{err or 'password required'}")
+            if rc != 0:
+                return f"exit {rc}\nstderr:\n{err}\nstdout:\n{out}"
+            return out or "ok"
         try:
             proc = subprocess.run(
                 command,
@@ -320,10 +334,12 @@ def build_core_tools(registry, cfg):
               "required": ["code"]},
              t_run_python, dangerous=True),
         Tool("run_shell",
-             "Run a local shell command on the host (e.g. ping, nmap, ss, ip, ifconfig, netstat, journalctl). Requires ENABLE_RUN_SHELL=true.",
+             "Run a local shell command on the host (e.g. ping, nmap, ss, ip, ifconfig, netstat, journalctl, apt). Requires ENABLE_RUN_SHELL=true.",
              {"type": "object",
               "properties": {
                   "command": {"type": "string", "description": "Shell command to execute verbatim."},
+                  "sudo": {"type": "boolean", "default": False,
+                           "description": "Run with elevation via sudo -S; if no session credential is stored the sudo password popup appears."},
               },
               "required": ["command"]},
              t_run_shell, dangerous=True),

@@ -170,6 +170,25 @@ class Config:
     # Leave empty to disable local browsing; internet image search still works.
     IMAGES_DIR = os.getenv("IMAGES_DIR", "")
 
+    # --- VAPT skill (authorized vulnerability assessment) -------------------
+    # The VAPT skill runs a privileged command runner on the host. It is OFF
+    # unless explicitly enabled (set VAPT_ENABLED=true in backend/.env).
+    VAPT_ENABLED = _bool("VAPT_ENABLED", False)
+    # Root folder where each assessment target gets its own project directory:
+    #   $VAPT_PROJECTS/<target>/{artifacts,scripts,reports}
+    VAPT_PROJECTS = Path(os.getenv("VAPT_PROJECTS", str(Path.home() / "VAPT")))
+    # Maximum number of commands a scripted batch may run simultaneously.
+    VAPT_MAX_PARALLEL = _int("VAPT_MAX_PARALLEL", 3)
+    # Per-command timeout in seconds for vapt_run / vapt_script.
+    VAPT_CMD_TIMEOUT = _int("VAPT_CMD_TIMEOUT", 300)
+    # Report download links are cleaned up after this many seconds.
+    VAPT_REPORT_TTL_SECONDS = _int("VAPT_REPORT_TTL_SECONDS", 3600)
+    # Unsaved sudo passwords are kept (single-use window) for this many seconds.
+    VAPT_SUDO_SINGLE_USE_SECONDS = _int("VAPT_SUDO_SINGLE_USE_SECONDS", 120)
+    # "Save for this session" sudo password lifetime in minutes.
+    # 0 = held until the user logs out or the server restarts (memory only).
+    VAPT_SUDO_TTL_MINUTES = _int("VAPT_SUDO_TTL_MINUTES", 0)
+
     # --- Autonomous mode ----------------------------------------------------
     # When enabled, APEX may initiate interaction, propose actions and run
     # lightweight self-improvement checks while the user is idle.

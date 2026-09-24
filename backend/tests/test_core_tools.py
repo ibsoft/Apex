@@ -4,11 +4,14 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from config import config
 from skills.manager import SkillManager
 from tools.base import ToolContext
 from tools.core_tools import build_core_tools
+from tools.vapt_tools import SUDO_MARKER, sudocred_clear, sudocred_get, sudocred_set
 
 
 class MockCfg:
@@ -43,6 +46,39 @@ class RunShellTests(unittest.TestCase):
     def test_run_shell_no_command(self):
         out = self.tools["run_shell"].call({"command": ""}, ToolContext())
         self.assertIn("Provide", out)
+
+    def test_run_shell_sudo_requires_credential(self):
+        sudocred_clear("alice")
+        out = self.tools["run_shell"].call(
+            {"command": "id", "sudo": True}, ToolContext(user_id="alice"),
+        )
+        self.assertIn(SUDO_MARKER, out)
+
+    @patch("tools.vapt_tools.subprocess.run")
+    def test_run_shell_sudo_runs_with_credential(self, mock_run):
+        sudocred_set("alice", "s3cret", save=True, config=SimpleNamespace(VAPT_SUDO_TTL_MINUTES=0))
+        mock_run.return_value = SimpleNamespace(returncode=0, stdout="uid=0(root)", stderr="")
+        out = self.tools["run_shell"].call(
+            {"command": "id", "sudo": True}, ToolContext(user_id="alice"),
+        )
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[0], "sudo")
+        self.assertEqual(mock_run.call_args.kwargs["input"], "s3cret\n")
+        self.assertIn("uid=0(root)", out)
+        self.assertNotIn("s3cret", out)
+        sudocred_clear("alice")
+
+    @patch("tools.vapt_tools.subprocess.run")
+    def test_run_shell_sudo_wrong_password_forgets_credential(self, mock_run):
+        sudocred_set("alice", "badpw", save=True, config=SimpleNamespace(VAPT_SUDO_TTL_MINUTES=0))
+        mock_run.return_value = SimpleNamespace(
+            returncode=1, stdout="", stderr="Sorry, try again.\n[sudo] password for alice:"
+        )
+        out = self.tools["run_shell"].call(
+            {"command": "id", "sudo": True}, ToolContext(user_id="alice"),
+        )
+        self.assertIn(SUDO_MARKER, out)
+        self.assertIsNone(sudocred_get("alice"))
 
 
 class CreateSkillTests(unittest.TestCase):

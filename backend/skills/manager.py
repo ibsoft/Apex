@@ -209,6 +209,7 @@ _ROUTER_KEYWORDS: dict[str, list[str]] = {
     "FILE_SEARCH": ["find file", "find files", "search file", "search files", "locate file"],
     "EDITOR": ["word document", "excel file", "create a report", "generate a report", "docx", "xlsx"],
     "shell": ["ping", "nmap", "ss -", "ip addr", "journalctl", "systemctl", "run shell"],
+    "VAPT": ["vapt", "pentest", "penetration test", "pen test", "security assessment", "owasp", "scan target", "vulnerability assessment"],
 }
 
 
