@@ -174,12 +174,47 @@ for (const [text, type] of [
 for (const [action, phrases] of [
   ['close', ['close', 'hide the preview', 'dismiss it', 'κλείσε την προεπισκόπηση', 'κρύψε το παράθυρο']],
   ['maximize', ['maximize', 'full screen', 'enlarge window', 'μεγιστοποίησε το παράθυρο', 'πλήρης οθόνη']],
-  ['restore', ['normalize', 'minimize', 'restore the preview', 'επαναφέρε την προεπισκόπηση', 'μίκρυνε το παράθυρο']],
+  ['minimize', ['minimize', 'μίκρυνε το παράθυρο']],
+  ['restore', ['normalize', 'restore the preview', 'επαναφέρε την προεπισκόπηση']],
   ['next', ['next image', 'forward', 'επόμενη εικόνα', 'επόμενο', 'μπροστά']],
   ['previous', ['previous photo', 'back', 'earlier page', 'προηγούμενη φωτογραφία', 'πίσω']],
 ]) {
-  for (const phrase of phrases) test(`preview: ${phrase}`, () => assert.deepEqual(parse(phrase), { type: 'preview', action }));
+  for (const phrase of phrases) test(`window: ${phrase}`, () => assert.deepEqual(parse(phrase), { type: 'window', action }));
 }
+
+test('window commands target an explicit window by number or ordinal', () => {
+  assert.deepEqual(parse('close window 2', 'en'), { type: 'window', action: 'close', target: 2 });
+  assert.deepEqual(parse('focus the second window', 'en'), { type: 'window', action: 'focus', target: 2 });
+  assert.deepEqual(parse('maximize window number three', 'en'), { type: 'window', action: 'maximize', target: 3 });
+  assert.deepEqual(parse('κλείσε το δεύτερο παράθυρο'), { type: 'window', action: 'close', target: 2 });
+  assert.deepEqual(parse('μεγιστοποίησε το τρίτο παράθυρο'), { type: 'window', action: 'maximize', target: 3 });
+  assert.deepEqual(parse('focus window #4', 'en'), { type: 'window', action: 'focus', target: 4 });
+});
+
+test('window close-all, arrange and list commands parse in both languages', () => {
+  assert.deepEqual(parse('close all windows', 'en'), { type: 'window', action: 'close_all' });
+  assert.deepEqual(parse('κλείσε όλα τα παράθυρα'), { type: 'window', action: 'close_all' });
+  assert.deepEqual(parse('arrange windows', 'en'), { type: 'window', action: 'arrange', arrangement: 'cascade' });
+  assert.deepEqual(parse('arrange the windows in a grid', 'en'), { type: 'window', action: 'arrange', arrangement: 'grid' });
+  assert.deepEqual(parse('arrange windows side by side', 'en'), { type: 'window', action: 'arrange', arrangement: 'tile-v' });
+  assert.deepEqual(parse('arrange windows stacked', 'en'), { type: 'window', action: 'arrange', arrangement: 'tile-h' });
+  assert.deepEqual(parse('ταξινόμησε τα παράθυρα'), { type: 'window', action: 'arrange', arrangement: 'cascade' });
+  assert.deepEqual(parse('διάταξε τα παράθυρα σε στήλες'), { type: 'window', action: 'arrange', arrangement: 'tile-v' });
+  assert.deepEqual(parse('list windows', 'en'), { type: 'window', action: 'list' });
+  assert.deepEqual(parse('δείξε τα ανοιχτά παράθυρα'), { type: 'window', action: 'list' });
+});
+
+test('notes attach to a window and preserve the original note text', () => {
+  assert.deepEqual(parse('add a note to the second window saying Keep this open', 'en'), {
+    type: 'window', action: 'note', target: 2, note: 'Keep this open',
+  });
+  assert.deepEqual(parse('πρόσθεσε σημείωση στο δεύτερο παράθυρο να λέει Μην κλείσεις αύριο'), {
+    type: 'window', action: 'note', target: 2, note: 'Μην κλείσεις αύριο',
+  });
+  assert.deepEqual(parse('put a note on window 3: νερό στα φυτά', 'en'), {
+    type: 'window', action: 'note', target: 3, note: 'νερό στα φυτά',
+  });
+});
 
 test('operator declarations keep the operator name', () => {
   for (const text of ['I am your operator, name is John', "I'm operator John", 'call me operator John']) {
