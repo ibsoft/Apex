@@ -21,9 +21,14 @@ WorkingDirectory=__ROOT__/backend
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/apex/backend.env
 
-# 2 workers x 8 threads handles long SSE chat streams without blocking.
-# --timeout is large because Ollama-on-CPU turns can legitimately take minutes.
-ExecStart=__GUNBIN__ --workers 2 --threads 8 --worker-class gthread \
+# A single worker keeps cross-request, in-memory state coherent. Two workers
+# would each keep their own copy of the live PTY terminal sessions
+# (terminal window + terminal_command), so a session created by one worker is
+# invisible to requests served by the other: the window would open and die, or
+# Apex would claim no terminal is open. Chats stay concurrent because each
+# thread serves its own SSE stream, and --timeout is large because
+# Ollama-on-CPU turns can legitimately take minutes.
+ExecStart=__GUNBIN__ --workers 1 --threads 16 --worker-class gthread \
   --timeout 600 --keep-alive 5 --capture-output \
   --access-logfile - --error-logfile - \
   --bind 127.0.0.1:5001 \

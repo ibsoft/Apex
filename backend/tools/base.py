@@ -21,6 +21,7 @@ class ToolContext:
     emit: Optional[Callable[[dict], None]] = None  # push agent events mid-tool
     model: str = ""
     session: Any = None
+    focused_terminal: str = ""    # session id of the browser-focused terminal window
 
 
 @dataclass
@@ -102,6 +103,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.editor_tools import build_editor_tools
     from tools.vapt_tools import build_vapt_tools
     from tools.code_tools import build_code_tools
+    from tools.terminal_tools import build_terminal_tools
 
     for tool in build_core_tools(registry, config):
         registry.register(tool)
@@ -117,5 +119,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     for tool in build_vapt_tools(config):
         registry.register(tool)
     for tool in build_code_tools(config):
+        registry.register(tool)
+    for tool in build_terminal_tools(config):
         registry.register(tool)
     return registry

@@ -309,6 +309,57 @@ test('whole phrases and skill boundaries avoid hijacking ordinary questions', ()
   ]) assert.equal(parse(text), null, text);
 });
 
+test('terminal commands parse in both languages with optional ordinal targets', () => {
+  assert.deepEqual(parse('open terminal', 'en'), { type: 'terminal', action: 'open' });
+  assert.deepEqual(parse('open a new terminal', 'en'), { type: 'terminal', action: 'open', create: true });
+  assert.deepEqual(parse('start another terminal', 'en'), { type: 'terminal', action: 'open', create: true });
+  assert.deepEqual(parse('open terminal 2', 'en'), { type: 'terminal', action: 'open', target: 2 });
+  assert.deepEqual(parse('open new terminal 3', 'en'), { type: 'terminal', action: 'open', target: 3, create: true });
+  assert.deepEqual(parse('άνοιξε τερματικό'), { type: 'terminal', action: 'open' });
+  assert.deepEqual(parse('άνοιξε νέο τερματικό'), { type: 'terminal', action: 'open', create: true });
+  assert.deepEqual(parse('άνοιξε ένα ακόμα τερματικό'), { type: 'terminal', action: 'open', create: true });
+  assert.deepEqual(parse('ξεκίνα το τερματικό 3'), { type: 'terminal', action: 'open', target: 3 });
+
+  assert.deepEqual(parse('close terminal', 'en'), { type: 'terminal', action: 'close' });
+  assert.deepEqual(parse('close the terminal 2', 'en'), { type: 'terminal', action: 'close', target: 2 });
+  assert.deepEqual(parse('κλείσε τερματικό'), { type: 'terminal', action: 'close' });
+  assert.deepEqual(parse('κλείσε το τερματικό 4'), { type: 'terminal', action: 'close', target: 4 });
+  assert.deepEqual(parse('κλείσε το δεύτερο τερματικό'), { type: 'terminal', action: 'close', target: 2 });
+
+  assert.deepEqual(parse('focus terminal', 'en'), { type: 'terminal', action: 'focus' });
+  assert.deepEqual(parse('focus on terminal 2', 'en'), { type: 'terminal', action: 'focus', target: 2 });
+  assert.deepEqual(parse('switch to the terminal', 'en'), { type: 'terminal', action: 'focus' });
+  assert.deepEqual(parse('εστίασε στο τερματικό'), { type: 'terminal', action: 'focus' });
+  assert.deepEqual(parse('φέρε το τερματικό 2'), { type: 'terminal', action: 'focus', target: 2 });
+});
+
+test('terminal phrasing does not hijack skills, windows or ordinary sentences', () => {
+  assert.deepEqual(parse('χρησιμοποίησε τερματικό'), { type: 'skill', skill: 'shell', rest: '' }); // skill select, not a terminal window
+  for (const text of ['open terminal node', 'close terminal care', 'focus on terminal velocity']) {
+    assert.equal(parse(text, 'en'), null, text);
+  }
+});
+
+test('maximize/minimize/restore target a terminal via the generic window verbs', () => {
+  assert.deepEqual(parse('maximize terminal', 'en'), { type: 'window', action: 'maximize' });
+  assert.deepEqual(parse('normalize terminal', 'en'), { type: 'window', action: 'restore' });
+  assert.deepEqual(parse('μεγιστοποίησε το τερματικό'), { type: 'window', action: 'maximize' });
+  assert.deepEqual(parse('ελαχιστοποίησε το τερματικό'), { type: 'window', action: 'minimize' });
+});
+
+test('bare arrangement words resolve to the matching arrange style', () => {
+  assert.deepEqual(parse('cascade', 'en'), { type: 'window', action: 'arrange', arrangement: 'cascade' });
+  assert.deepEqual(parse('cascade the windows', 'en'), { type: 'window', action: 'arrange', arrangement: 'cascade' });
+  assert.deepEqual(parse('grid', 'en'), { type: 'window', action: 'arrange', arrangement: 'grid' });
+  assert.deepEqual(parse('stack the windows', 'en'), { type: 'window', action: 'arrange', arrangement: 'tile-h' });
+  assert.deepEqual(parse('side by side', 'en'), { type: 'window', action: 'arrange', arrangement: 'tile-v' });
+  assert.deepEqual(parse('center', 'en'), { type: 'window', action: 'arrange', arrangement: 'center' });
+  assert.deepEqual(parse('centre', 'en'), { type: 'window', action: 'arrange', arrangement: 'center' });
+  assert.deepEqual(parse('κασκάντα'), { type: 'window', action: 'arrange', arrangement: 'cascade' });
+  assert.deepEqual(parse('πλέγμα'), { type: 'window', action: 'arrange', arrangement: 'grid' });
+  assert.deepEqual(parse('διπλά διπλά'), { type: 'window', action: 'arrange', arrangement: 'tile-v' });
+});
+
 test('duration acknowledgements use the selected language and singular/plural units', () => {
   assert.equal(formatDuration(0), '0 seconds');
   assert.equal(formatDuration(3661), '1 hour 1 minute 1 second');

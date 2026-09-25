@@ -30,6 +30,24 @@ test('Greek default wake aliases preserve command text and recognize Unicode bou
   assert.equal(wakePattern('apex', 'en').test('Άπεξ'), false);
 });
 
+test('Greek wake detection accepts every el-GR transcription of the "apex" sound', () => {
+  // The Greek recognizer renders the spoken "Apex" several ways; the wake word
+  // must fire on all of them so switching to Greek stays as sensitive as English.
+  for (const spelled of ['έιπεξ', 'ειπεξ', 'ΕΙΠΕΞ', 'άιπεξ', 'αϊπεξ', 'απεχς', 'Έιπεξ βάλε χρονόμετρο']) {
+    assert.equal(wakePattern('apex', 'el').test(spelled), true, spelled);
+    assert.equal(wakePattern('apex', 'en').test(spelled), false, `${spelled} (en)`);
+  }
+  for (const spelled of ['έιπεξ', 'ειπεξ', 'άιπεξ', 'αϊπεξ', 'απεχς']) {
+    assert.equal(isWakeOnlyText(`${spelled}!`, 'apex', 'el'), true, spelled);
+  }
+  assert.equal(sliceAfterLastWake('έιπεξ βάλε χρονόμετρο', 'apex', 'el'), 'βάλε χρονόμετρο');
+  assert.equal(sliceAfterLastWake('αϊπεξ τι ώρα είναι;', 'apex', 'el'), 'τι ώρα είναι;');
+  // Greek wake word spelling "Απεξ" gets the same phonetic coverage.
+  assert.equal(wakePattern('Απεξ', 'el').test('έιπεξ, γεια'), true);
+  // Greek spellings must stay '"other"' for wake words that are not "apex".
+  assert.equal(wakePattern('Athena', 'el').test('έιπεξ'), false);
+});
+
 test('custom wake words remain literal and also support Greek words', () => {
   assert.equal(wakePattern('Athena', 'el').test('Athena, hello'), true);
   assert.equal(wakePattern('Athena', 'el').test('Άπεξ'), false);
@@ -43,11 +61,12 @@ test('custom wake words remain literal and also support Greek words', () => {
 });
 
 test('interim Greek wake fragments are not sent as commands', () => {
-  for (const text of ['α', 'Άπ', 'Απέ', 'Άπεξ', 'a', 'ape', 'apex']) {
+  for (const text of ['α', 'Άπ', 'Απέ', 'Άπεξ', 'a', 'ape', 'apex', 'έι', 'έιπ', 'αΐ', 'αϊπ']) {
     assert.equal(isWakeWordFragment(text, 'apex', 'el'), true, text);
   }
   assert.equal(isWakeWordFragment('βάλε χρονόμετρο', 'apex', 'el'), false);
   assert.equal(isWakeWordFragment('να', 'apex', 'el'), false);
+  assert.equal(isWakeWordFragment('έι', 'apex', 'en'), false); // en keeps its own alphabet
 });
 
 test('English voice sleep vocabulary works in both selected languages', () => {
@@ -77,12 +96,19 @@ test('Greek sleep phrases accept accents and punctuation only when Greek is sele
   }
 });
 
-test('Greek recognition supports complete wake-and-command utterances in standby and barge-in', () => {
+test('Greek recognition switches to el-GR only for the command, keeping the English wake word responsive', () => {
+  // Default English wake word: standby (inactive, thinking, speaking) listens
+  // with en-US so "apex" is heard reliably; the command session is el-GR.
+  assert.equal(recognitionLanguage('el', 'apex', 'standby', false), 'en-US');
+  assert.equal(recognitionLanguage('el', 'apex', 'thinking', false), 'en-US');
+  assert.equal(recognitionLanguage('el', 'apex', 'speaking', false), 'en-US');
+  assert.equal(recognitionLanguage('el', 'apex', 'awake', true), 'el-GR');
+  assert.equal(recognitionLanguage('el', 'apex', 'standby', true), 'el-GR');
+  // Greek-spelled wake words need an el-GR standby recognizer.
   for (const phase of ['standby', 'awake', 'thinking', 'speaking']) {
-    assert.equal(recognitionLanguage('el', 'apex', phase, false), 'el-GR');
     assert.equal(recognitionLanguage('el', 'Αθηνά', phase, false), 'el-GR');
-    assert.equal(recognitionLanguage('en', 'apex', phase, false), 'en-US');
   }
+  assert.equal(recognitionLanguage('en', 'apex', 'standby', false), 'en-US');
 });
 
 test('custom Latin wake words retain English standby and Greek command/follow-up sessions', () => {

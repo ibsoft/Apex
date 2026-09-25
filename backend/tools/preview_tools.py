@@ -5,7 +5,8 @@ without any client-side document library:
 
   - .docx  -> a self-contained HTML document (python-docx)
   - .xlsx  -> a self-contained HTML document (openpyxl)
-  - text-ish files -> a self-contained <pre> HTML document
+  - .pptx  -> a self-contained HTML document (python-pptx)
+  - text-ish files / shell outputs -> a self-contained <pre> HTML document
   - images / pdfs  -> served inline through the renderer so <img>/<iframe>
                       work even for links whose download route is attachment-only
   - anything else   -> 415 (the window shows a "download" card instead)
@@ -27,6 +28,7 @@ from flask import Response, jsonify, request, send_file
 
 DOCX_EXTENSIONS = {".docx", ".docm"}
 XLSX_EXTENSIONS = {".xlsx", ".xlsm"}
+PPTX_EXTENSIONS = {".pptx", ".pptm"}
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".log",
     ".ini", ".cfg", ".conf", ".toml", ".yaml", ".yml", ".sql",
@@ -120,6 +122,34 @@ def _resolve_source(url: str, user_id: str, config):
                 raise _PreviewError("File is unavailable.", 404)
             if _fingerprint(target.stat()) != ticket.get("fingerprint"):
                 raise _PreviewError("File changed. Generate it again.", 409)
+        except _PreviewError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError):
+            raise _PreviewError("File is unavailable.", 404)
+        return target, (ticket.get("filename") or target.name)
+
+    # ---- run_shell on-screen output (text) ----
+    m = re.fullmatch(r"/api/shell/download/([A-Za-z0-9_.\-]+)", path)
+    if m:
+        from tools.shell_out import _fingerprint as shell_fingerprint, signer as shell_signer
+
+        ttl = getattr(config, "SHELL_OUT_TTL_SECONDS", 3600)
+        try:
+            ticket = shell_signer(config).loads(m.group(1), max_age=ttl)
+        except Exception as exc:
+            raise _PreviewError(_ticket_message("link", exc), _ticket_status(exc))
+        if not isinstance(ticket, dict) or ticket.get("user") != user_id:
+            raise _PreviewError("This link belongs to a different user.", 403)
+        try:
+            target = Path(ticket["path"]).resolve()
+            base_dir = (
+                Path(getattr(config, "DATA_DIR", Path(__file__).resolve().parents[1] / "data"))
+                / "generated" / "shell"
+            ).resolve()
+            if not target.is_relative_to(base_dir) or not target.is_file():
+                raise _PreviewError("File is unavailable.", 404)
+            if shell_fingerprint(target.stat()) != ticket.get("fingerprint"):
+                raise _PreviewError("File changed. Run the command again.", 409)
         except _PreviewError:
             raise
         except (OSError, ValueError, KeyError, TypeError):
@@ -220,6 +250,8 @@ def _kind_for(name: str) -> str | None:
         return "docx"
     if ext in XLSX_EXTENSIONS:
         return "xlsx"
+    if ext in PPTX_EXTENSIONS:
+        return "pptx"
     if ext in IMAGE_EXTENSIONS:
         return "image"
     if ext == ".pdf":
@@ -396,6 +428,92 @@ def _xlsx_html(path: Path, name: str) -> str:
     return _page(name, "\n".join(sections))
 
 
+# ---- pptx -> HTML ----------------------------------------------------------
+
+_PPTX_IMAGE_TYPES = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp", "svg": "image/svg+xml",
+}
+
+
+def _pptx_html(path: Path, name: str) -> str:
+    try:
+        from pptx import Presentation  # type: ignore
+    except Exception as exc:
+        raise _PreviewError(f"This server cannot preview PowerPoint files: {exc}", 415)
+
+    try:
+        presentation = Presentation(str(path))
+    except Exception:
+        raise _PreviewError("This PowerPoint file could not be read.", 400)
+
+    def frame_html(shape) -> str:
+        if not shape.has_text_frame:
+            return ""
+        parts: list[str] = []
+        for para in shape.text_frame.paragraphs:
+            runs = "".join(_escape(run.text) for run in para.runs) or _escape(para.text)
+            if not runs.strip():
+                continue
+            if para.level and para.level > 0:
+                parts.append(f"<p style='padding-left:{min(para.level, 5) * 20}px'>• {runs}</p>")
+            else:
+                parts.append(f"<p>{runs}</p>")
+        return "".join(parts)
+
+    def table_html(shape) -> str:
+        if not shape.has_table:
+            return ""
+        rows_html = []
+        for row_index, row in enumerate(shape.table.rows):
+            cells = []
+            for cell in row.cells:
+                tag = "th" if row_index == 0 else "td"
+                cells.append(f"<{tag}>{_escape(cell.text)}</{tag}>")
+            rows_html.append(f"<tr>{''.join(cells)}</tr>")
+        return f"<table>{''.join(rows_html)}</table>"
+
+    def picture_html(shape) -> str:
+        try:
+            image = getattr(shape, "image", None)
+            if image is None:
+                return ""
+            blob = image.blob
+            ctype = image.content_type or ""
+            if ctype.startswith("image/"):
+                return f"<p><img src='data:{ctype};base64,{base64.b64encode(blob).decode('ascii')}' alt=''/></p>"
+        except Exception:
+            return ""
+        return ""
+
+    def shape_html(shape) -> str:
+        chunks = []
+        if hasattr(shape, "shapes"):
+            for child in shape.shapes:
+                chunks.append(shape_html(child))
+            return "".join(chunks)
+        chunks.append(frame_html(shape))
+        chunks.append(table_html(shape))
+        chunks.append(picture_html(shape))
+        return "".join(chunks)
+
+    slides_html = []
+    for index, slide in enumerate(presentation.slides, start=1):
+        if getattr(slide, "slide_layout", None) is not None and getattr(slide.slide_layout, "name", None):
+            tag = _escape(slide.slide_layout.name) or ""
+        else:
+            tag = ""
+        body = "".join(shape_html(shape) for shape in slide.shapes)
+        if tag:
+            tag = f"<span class='meta' style='float:right'>{tag}</span>"
+        slides_html.append(
+            f"<h2>Slide {index}{(' — ' + tag) if tag else ''}</h2>" + (body or "<p><i>(empty slide)</i></p>")
+        )
+
+    inner = "\n".join(slides_html)
+    return _page(name, inner)
+
+
 # ---- text -> HTML ----------------------------------------------------------
 
 _TEXT_MODE_LIMIT = 2 * 1024 * 1024
@@ -439,8 +557,36 @@ def register_preview_routes(app, require_user, config):
             return _html_response(_docx_html(target, name))
         if kind == "xlsx":
             return _html_response(_xlsx_html(target, name))
+        if kind == "pptx":
+            return _html_response(_pptx_html(target, name))
         if kind == "text":
             return _html_response(_text_html(target, name))
         if kind in ("image", "pdf"):
             return _send_inline(target, name)
         return jsonify({"error": "This file type cannot be previewed."}), 415
+
+    @app.get("/api/preview/kind")
+    def preview_kind():
+        """Classify a signed preview token's real file kind.
+
+        Signed editor/files/obsidian tokens hide the filename and extension
+        server-side (no extension in the URL), so the frontend cannot guess
+        whether a Word/Excel/PDF/text file should render as a preview or a
+        download card. This endpoint resolves the token with the same
+        ownership/URL/source checks as the render route and returns just the
+        kind (no content), letting the frontend pick the right window body.
+        """
+        user = require_user()
+        if user is None:
+            return jsonify({"error": "Sign in to preview files."}), 401
+        url = (request.args.get("url") or "").strip()
+        if not url or len(url) > 2048:
+            return jsonify({"error": "Missing or invalid preview url."}), 400
+        try:
+            _, name = _resolve_source(url, str(user["id"]), config)
+        except _PreviewError as exc:
+            return jsonify({"error": exc.message}), exc.status
+        except Exception:
+            return jsonify({"error": "Could not resolve the preview."}), 404
+        kind = _kind_for(name)
+        return jsonify({"kind": kind or "other"})

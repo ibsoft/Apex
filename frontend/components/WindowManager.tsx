@@ -20,12 +20,16 @@ import {
   MAX_WINDOWS,
   WindowArrangement,
   WindowItem,
+  isTerminalWindow,
   itemTitle,
   kindForName,
   layoutRects,
+  terminalSessionId,
+  windowDownload,
 } from "../lib/windows";
 import { useApex } from "./ApexProvider";
-import { backendFileHref, downloadHref } from "./FileDownloads";
+import { backendFileHref } from "./FileDownloads";
+import TerminalWindow from "./TerminalWindow";
 
 const C = {
   cyan: "#00e5ff",
@@ -61,6 +65,20 @@ function KindTag({ kind }: { kind: string }) {
     }}>
       {kind}
     </span>
+  );
+}
+
+/* Title-bar download: every window gets one. Signed backend links hit the
+ * download endpoint; external links open the original in a new tab. */
+function DownloadButton({ item }: { item: WindowItem }) {
+  const link = windowDownload(item);
+  if (!link) return null;
+  return (
+    <a href={link.href} download={link.download} target="_blank" rel="noreferrer" aria-label="Download file"
+      title="Download file"
+      style={{ background: "none", border: "none", color: C.cyan, cursor: "pointer", fontSize: 13, lineHeight: 1, fontFamily: "var(--font-mono)", textDecoration: "none" }}>
+      ⭳
+    </a>
   );
 }
 
@@ -167,7 +185,7 @@ function PdfBody({ item }: { item: WindowItem }) {
 }
 
 function OtherBody({ item }: { item: WindowItem }) {
-  const href = downloadHref(item.url);
+  const link = windowDownload(item);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, alignItems: "center", justifyContent: "center", padding: 22, textAlign: "center" }}>
       <div style={{ fontSize: 44 }}>📄</div>
@@ -175,8 +193,8 @@ function OtherBody({ item }: { item: WindowItem }) {
       <div style={{ fontSize: 10, color: C.dim, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
         NO INLINE PREVIEW — DOWNLOAD INSTEAD
       </div>
-      {href ? (
-        <a href={href} download={item.title}
+      {link ? (
+        <a href={link.href} download={link.download}
           style={{ display: "inline-block", padding: "9px 18px", borderRadius: 9,
             background: `${C.cyan}18`, border: `1px solid ${C.line}`,
             color: C.cyan, fontSize: 10, fontFamily: "var(--font-mono)",
@@ -190,12 +208,28 @@ function OtherBody({ item }: { item: WindowItem }) {
   );
 }
 
-function WindowBody({ w, onNext, onPrevious }: { w: AppWindow; onNext: () => void; onPrevious: () => void }) {
+function WindowBody({ w, focused, onNext, onPrevious }: {
+  w: AppWindow; focused: boolean; onNext: () => void; onPrevious: () => void;
+}) {
+  const a = useApex();
   const item = w.items[w.index] ?? w.items[0];
+  if (isTerminalWindow(w)) {
+    const sessionId = terminalSessionId(item);
+    if (!sessionId) return <OtherBody item={item} />;
+    return (
+      <TerminalWindow
+        key={sessionId}
+        sessionId={sessionId}
+        base={BASE}
+        focused={focused}
+        onClosed={() => a.windowClose(w.id)}
+      />
+    );
+  }
   const kind = w.kind === "image" && w.items.length > 1 ? "image" : w.kind;
   if (kind === "image") return <ImageBody items={w.items} index={w.index} onNext={onNext} onPrevious={onPrevious} />;
   if (kind === "pdf") return <PdfBody item={item} />;
-  if (kind === "docx" || kind === "xlsx" || kind === "text") {
+  if (kind === "docx" || kind === "xlsx" || kind === "pptx" || kind === "text") {
     return <HtmlDocBody item={item} htmlSrc={windowSource(item.url).src} />;
   }
   return <OtherBody item={item} />;
@@ -263,8 +297,13 @@ export default function WindowManager() {
   );
 
   // Global keys: Escape closes the focused window, arrows navigate its gallery.
+  // A focused terminal keeps its own keys (captured at the host element), but
+  // the guard also refuses window-level handling so a terminal can never be
+  // dismissed by an Escape that the terminal did not consume.
   useEffect(() => {
     if (!windows.length) return;
+    const focused = byId(focusedId) ?? windows[windows.length - 1];
+    if (focused && isTerminalWindow(focused)) return;
     const node = document.activeElement as HTMLElement | null;
     if (node && /^(input|textarea|select)$/i.test(node.tagName)) return;
     const onKey = (e: KeyboardEvent) => {
@@ -280,7 +319,6 @@ export default function WindowManager() {
 
   const byId = (id: string | null | undefined) => (id ? windows.find((w) => w.id === id) : undefined);
   const focused = byId(focusedId) ?? windows[windows.length - 1];
-  const visible = windows.filter((w) => !w.minimized);
 
   const focusWindow = (id: string) => { a.windowFocus(id); };
 
@@ -341,7 +379,10 @@ export default function WindowManager() {
     setInteracting(false);
   };
 
-  const order = [...visible];
+  // All windows stay mounted; minimized ones are only hidden (kept out of view
+  // but never unmounted) so live terminals keep their PTY session and previews
+  // keep their stream. Restoring is then instant and lossless.
+  const order = [...windows];
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 40, pointerEvents: "none" }}>
@@ -359,7 +400,8 @@ export default function WindowManager() {
               ...frameBase,
               left: rect.x, top: rect.y, width: rect.w, height: rect.h,
               zIndex: focusedWin ? 60 : 5 + order.indexOf(w),
-              pointerEvents: "auto",
+              visibility: w.minimized ? "hidden" : "visible",
+              pointerEvents: w.minimized ? "none" : "auto",
               cursor: interacting ? "default" : undefined,
               transition: interacting ? "none" : "left .28s cubic-bezier(.22,.9,.3,1), top .28s cubic-bezier(.22,.9,.3,1), width .28s cubic-bezier(.22,.9,.3,1), height .28s cubic-bezier(.22,.9,.3,1)",
               borderColor: focusedWin ? `${C.cyan}55` : C.line,
@@ -388,6 +430,7 @@ export default function WindowManager() {
               )}
               <KindTag kind={w.kind} />
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <DownloadButton item={w.items[w.index] ?? w.items[0]} />
                 <button onClick={() => a.windowToggleNotes(w.id)} aria-label={w.showNotes ? "Hide notes" : "Show notes"}
                   style={{ background: "none", border: "none", color: w.showNotes ? C.gold : C.dim, cursor: "pointer", fontSize: 12, lineHeight: 1, fontFamily: "var(--font-mono)" }}>
                   ✎
@@ -408,7 +451,7 @@ export default function WindowManager() {
             {/* body + optional notes */}
             <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
               <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
-                <WindowBody w={w}
+                <WindowBody w={w} focused={focusedWin}
                   onNext={() => a.windowNext()}
                   onPrevious={() => a.windowPrevious()} />
               </div>

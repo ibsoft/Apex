@@ -27,6 +27,27 @@ def _when() -> str:
     return f"{now.strftime('%A, %B %d %Y')} at {now.strftime('%H:%M:%S')} local time"
 
 
+def _with_screen_link(ctx: ToolContext, cfg, command: str, result: str) -> str:
+    """Save the full command output to a user-bound file and return a link the
+    model must echo in its reply so the window manager opens it on the desktop."""
+    if not ctx.user_id:
+        return "Sign in before showing shell output on screen.\n\n" + result
+    try:
+        from tools.shell_out import save_shell_output
+        url, filename = save_shell_output(cfg, ctx.user_id, command, result)
+    except Exception as exc:
+        return f"Could not capture shell output: {exc}\n\n{result}"
+    if len(result) > 4000:
+        preview = result[:4000] + "\n…"
+    else:
+        preview = result
+    return (
+        f"{preview}\n\n"
+        f"Saved full output for the operator: [{filename}]({url}). "
+        f"Include this link in your reply so it opens on the desktop."
+    )
+
+
 def build_core_tools(registry, cfg):
     """Registry is used only for dependency checks; returns a list of Tools."""
 
@@ -209,6 +230,7 @@ def build_core_tools(registry, cfg):
         if not cfg.ENABLE_RUN_SHELL:
             return "The run_shell tool is disabled (set ENABLE_RUN_SHELL=true)."
         timeout = getattr(cfg, "RUN_SHELL_TIMEOUT", 60)
+        on_screen = bool(args.get("on_screen"))
         if args.get("sudo"):
             from tools.vapt_tools import SUDO_MARKER, _redact_password, _run_shell, sudocred_get
             cred = sudocred_get(ctx.user_id)
@@ -221,25 +243,35 @@ def build_core_tools(registry, cfg):
                 return (f"{SUDO_MARKER}The sudo credential was rejected or expired — the password popup will appear.\n"
                         f"stderr:\n{err or 'password required'}")
             if rc != 0:
-                return f"exit {rc}\nstderr:\n{err}\nstdout:\n{out}"
-            return out or "ok"
-        try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=os.getcwd(),
-                env=os.environ,
-            )
-        except subprocess.TimeoutExpired:
-            return f"shell execution timed out after {timeout}s"
-        out = (proc.stdout or "")[-4000:]
-        err = (proc.stderr or "")[-1200:]
-        if proc.returncode != 0:
-            return f"exit {proc.returncode}\nstderr:\n{err}\nstdout:\n{out}"
-        return out or "ok"
+                result = f"exit {rc}\nstderr:\n{err}\nstdout:\n{out}"
+            else:
+                result = out or "ok"
+        else:
+            try:
+                proc = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=os.getcwd(),
+                    env=os.environ,
+                )
+            except subprocess.TimeoutExpired:
+                return f"shell execution timed out after {timeout}s"
+            out = proc.stdout or ""
+            err = proc.stderr or ""
+            if proc.returncode != 0:
+                result = f"exit {proc.returncode}\nstderr:\n{err}\nstdout:\n{out}"
+            else:
+                result = out or "ok"
+        if on_screen:
+            return _with_screen_link(ctx, cfg, command, result)
+        # Truncate what the model has to read; the on-screen file keeps it whole.
+        output = result[-4000:]
+        if len(result) > 4000:
+            output = f"[output truncated]\n{output}"
+        return output
 
     def t_create_skill(args, ctx: ToolContext):
         name = (args.get("name") or "").strip()
@@ -334,12 +366,14 @@ def build_core_tools(registry, cfg):
               "required": ["code"]},
              t_run_python, dangerous=True),
         Tool("run_shell",
-             "Run a local shell command on the host (e.g. ping, nmap, ss, ip, ifconfig, netstat, journalctl, apt). Requires ENABLE_RUN_SHELL=true.",
+             "Run a local shell command on the host (e.g. ls, ping, nmap, ss, ip, ifconfig, netstat, journalctl, apt). Requires ENABLE_RUN_SHELL=true. Set on_screen=true when the operator wants the output displayed on the main desktop window, then include the returned [name](url) link in your reply unchanged.",
              {"type": "object",
               "properties": {
                   "command": {"type": "string", "description": "Shell command to execute verbatim."},
                   "sudo": {"type": "boolean", "default": False,
                            "description": "Run with elevation via sudo -S; if no session credential is stored the sudo password popup appears."},
+                  "on_screen": {"type": "boolean", "default": False,
+                                "description": "Save the full command output to a file the operator can view and download in a desktop window. Use when asked to show/display the output on the screen. Always echo the returned link in your reply."},
               },
               "required": ["command"]},
              t_run_shell, dangerous=True),

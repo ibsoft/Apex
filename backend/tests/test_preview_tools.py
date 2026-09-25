@@ -143,6 +143,49 @@ class PreviewRenderTests(unittest.TestCase):
         text = self.client.get("/api/preview/render", query_string={"url": url}).get_data(as_text=True)
         self.assertIn("data:image", text)
 
+    # ---- PPTX ---------------------------------------------------------------
+
+    def make_pptx_bytes(self):
+        import io
+
+        from pptx import Presentation
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[1])
+        slide.shapes.title.text = "The Moon"
+        slide.placeholders[1].text_frame.text = "Earth's natural satellite"
+        table = slide.shapes.add_table(2, 2, 0, 0, 200, 80).table
+        table.cell(0, 0).text = "Radius"
+        table.cell(0, 1).text = "1,737 km"
+        table.cell(1, 0).text = "Orbit"
+        table.cell(1, 1).text = "27.3 days"
+        buffer = io.BytesIO()
+        prs.save(buffer)
+        return buffer.getvalue()
+
+    def test_pptx_renders_as_html(self):
+        deck = self.images_dir / "moon_deck.pptx"
+        deck.write_bytes(self.make_pptx_bytes())
+        response = self.client.get(
+            "/api/preview/render",
+            query_string={"url": self.sign_images_link(deck)},
+        )
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn("text/html", response.headers["Content-Type"])
+        self.assertIn("Slide 1", text)
+        self.assertIn("The Moon", text)
+        self.assertIn("1,737 km", text)
+
+    def test_pptx_kind_endpoint(self):
+        deck = self.images_dir / "moon_deck.pptx"
+        deck.write_bytes(self.make_pptx_bytes())
+        kind = self.client.get(
+            "/api/preview/kind",
+            query_string={"url": self.sign_images_link(deck)},
+        ).get_json()
+        self.assertEqual(kind["kind"], "pptx")
+
     # ---- auth / link validation --------------------------------------------
 
     def test_requires_sign_in(self):
