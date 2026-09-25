@@ -512,6 +512,9 @@ function parseFilesCommand(text: string, greek: boolean): LocalCommand | null {
 function parseNotepadCommand(text: string, greek: boolean): LocalCommand | null {
   const clean = text.trim().replace(/^(?:please|can you|could you)\s+/i, "");
   const norm = normalize(clean).replace(/[.!?;]+$/, "");
+  if (/^(?:open|launch|start)\s+(?:a\s+)?(?:new|another)\s+(?:notepad|note\s*pad)(?:\s+window)?$/.test(norm)) {
+    return { type: "notepad", action: "open", create: true };
+  }
   const noun = "(?:notepad|note\\s*pad|editor)";
   const article = "(?:(?:the|my)\\s+)?";
   const actions: Array<["open" | "close" | "focus" | "minimize" | "maximize" | "restore" | "new" | "save" | "download", string, string]> = [

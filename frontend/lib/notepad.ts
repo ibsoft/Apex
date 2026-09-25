@@ -1,5 +1,5 @@
 export type NotepadAction = "open" | "close" | "focus" | "minimize" | "maximize" | "restore" | "new" | "save" | "download" | "export_text" | "write" | "replace" | "clear" | "title" | "recent" | "hide_recent" | "open_document" | "undo" | "redo" | "select_all" | "format" | "read" | "command_output";
-export type NotepadCommand = { type: "notepad"; action: NotepadAction; content?: string };
+export type NotepadCommand = { type: "notepad"; action: NotepadAction; content?: string; create?: boolean };
 
 /** Retry only until the target editor mounts; execute an accepted request once. */
 export function sendNotepadCommand(command: NotepadCommand, windowId: string): Promise<string> {

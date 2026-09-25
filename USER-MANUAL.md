@@ -82,6 +82,7 @@ clear. Do not assume every paraphrase is a direct shortcut.
 | Command | Result |
 |---|---|
 | `open notepad` | Open or focus Notepad. |
+| `open new notepad` | Open a separate, empty Notepad window. |
 | `write to notepad Remember to call Maria.` | Append the supplied text. |
 | `save notepad` | Save the current Notepad document. |
 | `open terminal` | Open or focus a terminal. |
@@ -102,7 +103,9 @@ clear. Do not assume every paraphrase is a direct shortcut.
 
 Open Notepad from **APPS** or use “open notepad.” Launching it from APPS creates
 a fresh window; the direct open command focuses an existing Notepad when one
-is available.
+is available. Say or type **“open new notepad”** (also **“open another notepad”**)
+to create a separate empty window and keep your existing notes open. **“New
+notepad”** without “open” starts a new document in the existing editor.
 
 The left document panel **starts closed**. Click **RECENT DOCUMENTS** to load and
 open it. Search by filename, select a saved document, or choose **NEW DOCUMENT**.
@@ -498,6 +501,7 @@ links expire.
 | Microphone permission is pending/denied | Allow microphone access for the APEX site and check the browser's selected microphone. |
 | Voice recognition is unavailable | Check the browser message, use a supported browser over HTTPS/localhost, or type the command. |
 | APEX mishears a path or command | Type exact paths, filenames, and shell syntax in chat. |
+| Voice stays on processing after opening a terminal | Update and reload the frontend. Completed app commands should return to listening even without a spoken reply; opening a terminal now has an acknowledgment. |
 | APEX listens but does not speak | Check Spoken replies, the selected voice, and system/browser volume. |
 | The wrong app/window changes | Focus the intended window or use a numbered window/terminal command. |
 | I cannot open another window | The limit is 10; close an unused window. |
