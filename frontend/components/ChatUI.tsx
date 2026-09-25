@@ -508,6 +508,15 @@ export default function ChatUI() {
                     {a.voiceEnabled && !a.voiceActive && <span className="apex-blink">PENDING PERMISSION…</span>}
                     {a.voiceError && <span style={{ color: C.gold }}>{a.voiceError}</span>}
                     {a.voiceEnabled && a.voiceActive && <span>{a.orb === "listening" ? "AWAITING COMMAND…" : `SAY "${wake}"…`}</span>}
+                    <span style={{ marginLeft: "auto" }} />
+                    <button onClick={() => a.windowOpen([{ url: "files:", title: "File Manager" }], { kind: "files" })}
+                      style={{
+                        padding: "3px 10px", borderRadius: 12, cursor: "pointer", letterSpacing: "0.1em",
+                        fontFamily: "var(--font-mono)", fontSize: 9.5,
+                        background: "transparent", border: `1px solid ${C.line}`, color: C.dim,
+                      }}>
+                      📁 FILES
+                    </button>
                   </div>
 
                   {/* input */}

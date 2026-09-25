@@ -68,3 +68,16 @@ body {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.55; }
 }
+
+/* File manager scrollbars match the dark cyan terminal theme instead of the
+   browser's light default. */
+.fm-root ::-webkit-scrollbar { width: 10px; height: 10px; }
+.fm-root ::-webkit-scrollbar-track { background: rgba(10, 16, 30, 0.6); }
+.fm-root ::-webkit-scrollbar-thumb {
+  background: rgba(0, 229, 255, 0.22);
+  border: 2px solid rgba(4, 8, 16, 0.9);
+  border-radius: 6px;
+}
+.fm-root ::-webkit-scrollbar-thumb:hover { background: rgba(0, 229, 255, 0.42); }
+.fm-root ::-webkit-scrollbar-corner { background: transparent; }
+.fm-root { scrollbar-width: thin; scrollbar-color: rgba(0, 229, 255, 0.35) rgba(10, 16, 30, 0.6); }

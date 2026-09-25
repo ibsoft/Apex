@@ -20,6 +20,7 @@ import {
   MAX_WINDOWS,
   WindowArrangement,
   WindowItem,
+  isFilesWindow,
   isTerminalWindow,
   itemTitle,
   kindForName,
@@ -30,6 +31,7 @@ import {
 import { useApex } from "./ApexProvider";
 import { backendFileHref } from "./FileDownloads";
 import TerminalWindow from "./TerminalWindow";
+import FileManagerWindow from "./FileManagerWindow";
 
 const C = {
   cyan: "#00e5ff",
@@ -226,6 +228,14 @@ function WindowBody({ w, focused, onNext, onPrevious }: {
       />
     );
   }
+  if (isFilesWindow(w)) {
+    return (
+      <FileManagerWindow
+        key={w.id}
+        focused={focused}
+      />
+    );
+  }
   const kind = w.kind === "image" && w.items.length > 1 ? "image" : w.kind;
   if (kind === "image") return <ImageBody items={w.items} index={w.index} onNext={onNext} onPrevious={onPrevious} />;
   if (kind === "pdf") return <PdfBody item={item} />;
@@ -299,11 +309,12 @@ export default function WindowManager() {
   // Global keys: Escape closes the focused window, arrows navigate its gallery.
   // A focused terminal keeps its own keys (captured at the host element), but
   // the guard also refuses window-level handling so a terminal can never be
-  // dismissed by an Escape that the terminal did not consume.
+  // dismissed by an Escape the terminal did not consume. Files windows own
+  // their shortcuts too (rename/delete/navigate), so they get the same pass.
   useEffect(() => {
     if (!windows.length) return;
     const focused = byId(focusedId) ?? windows[windows.length - 1];
-    if (focused && isTerminalWindow(focused)) return;
+    if (focused && (isTerminalWindow(focused) || isFilesWindow(focused))) return;
     const node = document.activeElement as HTMLElement | null;
     if (node && /^(input|textarea|select)$/i.test(node.tagName)) return;
     const onKey = (e: KeyboardEvent) => {

@@ -11,7 +11,7 @@ const compiled = ts.transpileModule(source, {
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
 const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock, windowDownload,
-  terminalUrl, terminalSessionId, isTerminalWindow, shouldReleaseTerminal } = moduleExports;
+  terminalUrl, terminalSessionId, isTerminalWindow, isFilesWindow, shouldReleaseTerminal } = moduleExports;
 
 test('kindForName classifies files by extension', () => {
   assert.equal(kindForName('photo.png'), 'image');
@@ -127,4 +127,24 @@ test('shouldReleaseTerminal skips the StrictMode phantom cleanup', () => {
   assert.equal(shouldReleaseTerminal(mountedAt), false);
   assert.equal(shouldReleaseTerminal(mountedAt - 100), false);
   assert.equal(shouldReleaseTerminal(mountedAt - 5000), true);
+});
+
+test('file-manager windows are identified by kind or synthetic url, and files: never downloads', () => {
+  const base = { id: 'w1', index: 0, kind: 'files',
+    items: [{ url: 'files:', title: 'File Manager' }],
+    rect: { x: 0, y: 0, w: 600, h: 400 }, maximized: false, minimized: false, note: '', showNotes: false };
+  assert.equal(isFilesWindow(base), true);
+  assert.equal(isFilesWindow({ ...base, kind: 'other' }), true, 'url signals a files window even without the kind');
+  assert.equal(isFilesWindow({ ...base, items: [{ url: 'https://x.com/a.png', title: 'a.png' }], kind: 'image' }), false);
+  assert.equal(windowDownload({ url: 'files:', title: 'File Manager' }), null);
+});
+
+test('file-manager signed download links are treated as backend downloads', () => {
+  assert.deepEqual(windowDownload({ url: '/api/fm/download/t0k', title: 'photo.jpg' }), {
+    href: '/api/fm/download/t0k',
+    download: 'photo.jpg',
+  });
+  const items = collectPreviewableItems('See [Bundle](/api/fm/download/abc123) or [Photo](/api/images/file/def456).');
+  assert.ok(items.some((i) => i.url === '/api/fm/download/abc123' && i.title === 'Bundle'));
+  assert.ok(items.some((i) => i.url === '/api/images/file/def456' && i.title === 'Photo'));
 });

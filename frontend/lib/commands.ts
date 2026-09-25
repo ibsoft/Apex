@@ -12,6 +12,7 @@ export type LocalCommand =
       note?: string;
     }
   | { type: "terminal"; action: "open" | "close" | "focus"; target?: number; create?: boolean }
+  | { type: "files"; action: "open" | "close" | "focus"; create?: boolean }
   | { type: "cancelTimers" }
   | { type: "cancelReminders" }
   | { type: "timer"; name: string; seconds: number }
@@ -430,6 +431,45 @@ function parseTerminalCommand(text: string, greek: boolean): LocalCommand | null
   return null;
 }
 
+/* ---------- file-manager commands ---------- */
+
+/* "open the file manager", "open new file manager", "show files", "close the
+ * files window"; Greek equivalents. Runs before the generic window parse so
+ * "focus file manager" targets the files window instead of being treated as an
+ * unknown referent. "new"/"another" (νέο, άλλο, ακόμα ένα) always opens an
+ * additional window instead of focusing the current one. */
+function parseFilesCommand(text: string, greek: boolean): LocalCommand | null {
+  const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
+  if (!clean) return null;
+  const norm = normalize(clean);
+  const noun = greek
+    ? "(?:διαχειριστησ\\s+αρχειων|φυλλομετρητησ\\s+αρχειων|διαχειριστη\\s+αρχειων|φυλλομετρητη\\s+αρχειων|παραθυρο\\s+αρχειων|αρχεια)"
+    : "(?:file\\s+manager|file\\s+browser|file\\s+explorer|explorer|files?\\s+window|files)";
+  const article = greek ? "(?:(?:το|τον|την|την|η|ο|ενα|μια|τα)\\s+)?" : "(?:(?:the|a|an)\\s+)?";
+  const end = "(?=$|\\s*[.,!?])";
+  const newSlot = greek ? "(?:(?:ενα\\s+ακομα|ακομα\\s+ενα|ενα\\s+νιο|νιο|νεο|καινουργιο|αλλο)\\s+)?" : "(?:(?:a\\s+|an\\s+|another\\s+)?(?:new|another)\\s+)?";
+
+  const openEn = greek ? null : norm.match(new RegExp(`^(?:open|start|launch|browse|show|display)\\s+(?:me\\s+)?${newSlot}${article}${noun}${end}`));
+  const openEl = greek && !openEn ? norm.match(new RegExp(`^(?:ανοιξε|ξεκινα|ξεκινησε|δειξε|εμφανισε|προβαλε)\\s+(?:μου\\s+)?${newSlot}${article}${noun}${end}`)) : null;
+  if (openEn || openEl) {
+    const span = norm.slice(0, (openEn ?? openEl)![0].length);
+    const create = greek
+      ? /(?:ακομα|νεο|νιο|καινουργιο|αλλο)(?=\s|$)/.test(span)
+      : /\b(?:new|another)\b/.test(span);
+    return create ? { type: "files", action: "open", create: true } : { type: "files", action: "open" };
+  }
+
+  const closeEn = greek ? null : norm.match(new RegExp(`^(?:close|hide|dismiss|shut)\\s+(?:(?:the|this)\\s+)?${noun}${end}`));
+  const closeEl = greek && !closeEn ? norm.match(new RegExp(`^(?:κλεισε|κρυψε|αποκρυψε)\\s+(?:(?:το|τη|την|ο|η|τα)\\s+)?${noun}${end}`)) : null;
+  if (closeEn || closeEl) return { type: "files", action: "close" };
+
+  const focusEn = greek ? null : norm.match(new RegExp(`^(?:focus|select|go\\s+to|switch\\s+to)\\s+(?:(?:on|to|at|in|the)\\s+)?${noun}${end}`));
+  const focusEl = greek && !focusEn ? norm.match(new RegExp(`^(?:εστιασε|επιλεξε|μεταβασε|πηγαινε)\\s+(?:(?:στον|στο|στη|στην|σε|το|τη|την|στο)\\s+)?${noun}${end}`)) : null;
+  if (focusEn || focusEl) return { type: "files", action: "focus" };
+
+  return null;
+}
+
 export function parseLocalCommand(text: string, language: string, skills: Array<{ name: string }>, now = Date.now()): LocalCommand | null {
   const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
   if (!clean) return null;
@@ -437,6 +477,8 @@ export function parseLocalCommand(text: string, language: string, skills: Array<
   const normalized = normalize(clean);
   const terminal = parseTerminalCommand(clean, greek);
   if (terminal) return terminal;
+  const files = parseFilesCommand(clean, greek);
+  if (files) return files;
   const win = parseWindowCommand(clean, greek);
   if (win) return win;
   if (/^(?:cancel|stop|clear)\s+(?:all\s+)?timers?$/.test(normalized)
