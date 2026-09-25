@@ -732,7 +732,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     onPhase: onVoicePhase,
     onCommand: (text: string) => {
       if (!userRef.current) return;
-      void handleVoiceCommand(text);
+      return handleVoiceCommand(text);
     },
   });
 
@@ -875,7 +875,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             if (command.create && command.target == null) {
               const error = await openTerminalWindow();
               if (error) return error;
-              return "";
+              return localize("Opened Terminal.", "Άνοιξε το Τερματικό.");
             }
             const existing = nth(command.target);
             if (existing) {
@@ -884,13 +884,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             }
             const error = await openTerminalWindow();
             if (error) return error;
-            return "";
+            return localize("Opened Terminal.", "Άνοιξε το Τερματικό.");
           }
           case "focus": {
             if (!terminals.length) {
               const error = await openTerminalWindow();
               if (error) return error;
-              return "";
+              return localize("Opened Terminal.", "Άνοιξε το Τερματικό.");
             }
             let w: AppWindow;
             if (command.target != null) {
@@ -902,7 +902,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             if (!w) {
               const error = await openTerminalWindow();
               if (error) return error;
-              return "";
+              return localize("Opened Terminal.", "Άνοιξε το Τερματικό.");
             }
             windowFocus(w.id);
             return localize(`Focused ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`, `Επιλέχθηκε ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`);
@@ -997,7 +997,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           if (!output) return "No command output is available in this conversation. Run a command first, or name the command to run and send to Notepad.";
           request = { type: "notepad", action: "write", content: output };
         }
-        let id: string | undefined = pad?.id;
+        let id: string | undefined = command.action === "open" && command.create ? undefined : pad?.id;
         if (!id) {
           if (["close", "minimize", "maximize", "restore"].includes(request.action)) return "Notepad is not open.";
           id = createWindow([{ url: "notepad:" + Date.now(), title: "Notepad", kind: "notepad" }], { kind: "notepad" });

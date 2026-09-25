@@ -667,7 +667,8 @@ see `AGENTS.md`.
 
 ### Notepad
 
-Open **Notepad** from the apps menu or say “open notepad”. It includes rich-text
+Open **Notepad** from the apps menu or say “open notepad”. Say or type
+“open new notepad” to create a separate empty window while keeping existing notes open. It includes rich-text
 formatting, a searchable document library, text/Markdown import as plain text,
 HTML and TXT downloads, and live word and character counts. Paste inserts plain
 text. Use Ctrl/Cmd+S to save; saved documents autosave after edits. New documents

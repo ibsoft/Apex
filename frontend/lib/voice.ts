@@ -17,6 +17,7 @@
 */
 
 import { useEffect, useRef, useState } from "react";
+import { settleVoiceCommand } from "./voiceLifecycle";
 import {
   accumulateResults,
   commandText,
@@ -100,7 +101,7 @@ export function useVoiceEngine(opts: {
   responseLanguage: string;
   onPhase: (p: VoicePhase) => void;
   onWake?: () => void;
-  onCommand: (text: string) => void;
+  onCommand: (text: string) => void | Promise<void>;
 }): VoiceEngine {
   const { enabled, wakeWord, followUpSeconds, voiceName, responseLanguage, onPhase, onWake, onCommand } = opts;
 
@@ -109,6 +110,7 @@ export function useVoiceEngine(opts: {
 
   const recRef = useRef<SpeechRecognitionLike | null>(null);
   const phaseRef = useRef<VoicePhase>("standby");
+  const commandEpoch = useRef(0);
   const armedRef = useRef(false); // next utterance = command
   const stoppingRef = useRef(false);
   const recStartedRef = useRef(false); // current session fired onstart/onaudiostart
@@ -168,6 +170,7 @@ export function useVoiceEngine(opts: {
   };
 
   const sleepVoice = () => {
+    commandEpoch.current += 1;
     armedRef.current = false;
     followUpUntilRef.current = 0;
     pendingCommand.current = "";
@@ -217,6 +220,7 @@ export function useVoiceEngine(opts: {
   };
 
   const cancelSpeech = () => {
+    commandEpoch.current += 1;
     queueRef.current = [];
     setSegmentsLeft(0);
     try {
@@ -361,7 +365,13 @@ export function useVoiceEngine(opts: {
       recRef.current?.abort();
     } catch {}
     scheduleRestart(400);
-    cfgRef.current.onCommand(text);
+    const epoch = ++commandEpoch.current;
+    void settleVoiceCommand(
+      () => cfgRef.current.onCommand(text),
+      () => commandEpoch.current === epoch && phaseRef.current === "thinking" && !stoppingRef.current,
+      finishSpeaking,
+      (error) => setError(error instanceof Error ? error.message : String(error)),
+    );
   };
 
   const sweepIdleAwait = () => {
@@ -423,6 +433,7 @@ export function useVoiceEngine(opts: {
   };
 
   const wakeSlow = (e: any, ww: string) => {
+    commandEpoch.current += 1;
     vlog("wakeSlow:", utteranceText(e));
     cfgRef.current.onPhase("awake");
     setPhase("awake");

@@ -458,6 +458,7 @@ test('duration acknowledgements use the selected language and singular/plural un
 test('Notepad commands work in chat and voice phrasing', () => {
   const cases = [
     ['open notepad', { type: 'notepad', action: 'open' }],
+    ...['Open new notepad', 'open a new notepad', 'open another notepad', 'please open new notepad!'].map(phrase => [phrase, { type: 'notepad', action: 'open', create: true }]),
     ['focus the notepad', { type: 'notepad', action: 'focus' }],
     ['minimize notepad', { type: 'notepad', action: 'minimize' }],
     ['maximize my notepad', { type: 'notepad', action: 'maximize' }],
