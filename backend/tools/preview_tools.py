@@ -182,6 +182,36 @@ def _resolve_source(url: str, user_id: str, config):
             raise _PreviewError("File is unavailable.", 404)
         return target, target.name
 
+    # ---- file-manager archives ----
+    m = re.fullmatch(r"/api/fm/download/([A-Za-z0-9_.\-]+)", path)
+    if m:
+        from tools.filebrowser import FM_FILE_TTL_SECONDS, _fm_signer
+        from tools.file_search import fingerprint as fs_fingerprint
+
+        try:
+            ticket = _fm_signer(config).loads(
+                m.group(1), max_age=getattr(config, "FM_FILE_TTL_SECONDS", FM_FILE_TTL_SECONDS)
+            )
+        except Exception as exc:
+            raise _PreviewError(_ticket_message("link", exc), _ticket_status(exc))
+        if not isinstance(ticket, dict) or ticket.get("user") != user_id:
+            raise _PreviewError("This link belongs to a different user.", 403)
+        try:
+            target = Path(ticket["path"]).resolve()
+            base_dir = (
+                Path(getattr(config, "DATA_DIR", Path(__file__).resolve().parents[1] / "data"))
+                / "generated" / "fm" / str(user_id)
+            ).resolve()
+            if not target.is_relative_to(base_dir) or not target.is_file():
+                raise _PreviewError("File is unavailable.", 404)
+            if fs_fingerprint(target.stat()) != ticket.get("fingerprint"):
+                raise _PreviewError("File changed. Generate the archive again.", 409)
+        except _PreviewError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError):
+            raise _PreviewError("File is unavailable.", 404)
+        return target, (ticket.get("filename") or target.name)
+
     # ---- image browser ----
     m = re.fullmatch(r"/api/images/file/([A-Za-z0-9_.\-]+)", path)
     if m:

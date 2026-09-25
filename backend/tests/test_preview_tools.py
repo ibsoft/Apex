@@ -295,6 +295,41 @@ class PreviewRenderTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    # ---- File-manager archives -----------------------------------------------
+
+    def _fm_download_url(self, relative, filename=None, user="alice"):
+        from tools.filebrowser import _fm_signer
+        from tools.file_search import fingerprint
+
+        target = self.data_dir / "generated" / "fm" / user / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+        target.write_text("fm window content")
+        token = _fm_signer(self.config).dumps(
+            {"user": user, "path": str(target), "filename": filename or target.name,
+             "fingerprint": fingerprint(target.stat())}
+        )
+        return f"/api/fm/download/{token}"
+
+    def test_fm_archive_text_renders_as_html(self):
+        response = self.client.get(
+            "/api/preview/render",
+            query_string={"url": self._fm_download_url("notes/readme.txt", filename="readme.txt")},
+        )
+        self.assertEqual(response.status_code, 200)
+        text = response.get_data(as_text=True)
+        self.assertIn("<pre>", text)
+        self.assertIn("fm window content", text)
+
+    def test_fm_archive_ignores_token_pointing_outside_generated_dir(self):
+        leak = self.images_dir / "secret.txt"
+        leak.write_text("should not render")
+        response = self.client.get(
+            "/api/preview/render",
+            query_string={"url": self._fm_download_url("../secret.txt")},
+        )
+        self.assertEqual(response.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

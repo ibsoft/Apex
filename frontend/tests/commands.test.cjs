@@ -360,6 +360,38 @@ test('bare arrangement words resolve to the matching arrange style', () => {
   assert.deepEqual(parse('διπλά διπλά'), { type: 'window', action: 'arrange', arrangement: 'tile-v' });
 });
 
+test('file-manager phrasing opens, closes and focuses the files window in both languages', () => {
+  assert.deepEqual(parse('open file manager', 'en'), { type: 'files', action: 'open' });
+  assert.deepEqual(parse('open the file manager', 'en'), { type: 'files', action: 'open' });
+  assert.deepEqual(parse('show me the files window', 'en'), { type: 'files', action: 'open' });
+  assert.deepEqual(parse('browse files', 'en'), { type: 'files', action: 'open' });
+  assert.deepEqual(parse('close the files window', 'en'), { type: 'files', action: 'close' });
+  assert.deepEqual(parse('focus the file browser', 'en'), { type: 'files', action: 'focus' });
+  assert.deepEqual(parse('switch to the explorer', 'en'), { type: 'files', action: 'focus' });
+  assert.deepEqual(parse('άνοιξε τον διαχειριστή αρχείων'), { type: 'files', action: 'open' });
+  assert.deepEqual(parse('ξεκίνησε τον φυλλομετρητή αρχείων'), { type: 'files', action: 'open' });
+  assert.deepEqual(parse('δείξε μου τα αρχεία'), { type: 'files', action: 'open' });
+  assert.deepEqual(parse('κλείσε το παράθυρο αρχείων'), { type: 'files', action: 'close' });
+  assert.deepEqual(parse('εστίασε στον διαχειριστή αρχείων'), { type: 'files', action: 'focus' });
+});
+
+test('"new" / "another" phrasing opens an additional file-manager window', () => {
+  assert.deepEqual(parse('open new file manager', 'en'), { type: 'files', action: 'open', create: true });
+  assert.deepEqual(parse('open another file manager', 'en'), { type: 'files', action: 'open', create: true });
+  assert.deepEqual(parse('start a new file browser', 'en'), { type: 'files', action: 'open', create: true });
+  assert.deepEqual(parse('άνοιξε νέο διαχειριστή αρχείων'), { type: 'files', action: 'open', create: true });
+  assert.deepEqual(parse('άνοιξε ένα ακόμα διαχειριστή αρχείων'), { type: 'files', action: 'open', create: true });
+  assert.deepEqual(parse('ξεκίνησε καινούργιο φυλλομετρητή αρχείων'), { type: 'files', action: 'open', create: true });
+  assert.deepEqual(parse('open a file manager', 'en'), { type: 'files', action: 'open' }, 'plain "a" still focuses');
+});
+
+test('file-manager wording does not collide with images, skills or ordinary sentences', () => {
+  assert.deepEqual(parse('show images', 'en'), { type: 'images', query: '', source: 'web' });
+  assert.equal(parse('open file names one by one', 'en'), null);
+  assert.equal(parse('arrange the files nicely', 'en'), null);
+  assert.equal(parse('τι είναι τα αρχεία',), null, 'a question is not a file-manager command');
+});
+
 test('duration acknowledgements use the selected language and singular/plural units', () => {
   assert.equal(formatDuration(0), '0 seconds');
   assert.equal(formatDuration(3661), '1 hour 1 minute 1 second');

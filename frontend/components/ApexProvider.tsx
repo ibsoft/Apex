@@ -43,6 +43,7 @@ import {
   WindowKind,
   collectPreviewableItems,
   itemTitle,
+  isFilesWindow,
   isTerminalWindow,
   kindForItems,
   layoutRects,
@@ -835,6 +836,42 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             if (!w) return localize("No terminal window is open.", "Δεν είναι ανοιχτό παράθυρο τερματικού.");
             windowClose(w.id);
             return localize(`Closed ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`, `Έκλεισε ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`);
+          }
+        }
+        return null;
+      }
+      case "files": {
+        const files = windowsRef.current.filter(isFilesWindow);
+        const fileWord = () => localize("File Manager", "Διαχειριστής Αρχείων");
+        switch (command.action) {
+          case "open": {
+            if (command.create) {
+              // A fresh window: unique url keeps windowOpen from colliding with
+              // the existing "files:" signature (it would focus it otherwise).
+              windowOpen([{ url: `files:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, title: fileWord() }], { kind: "files" });
+              return localize(`Opened a new ${fileWord()} window.`, `Ανοίχτηκε νέο παράθυρο Διαχειριστή Αρχείων.`);
+            }
+            const existing = files[files.length - 1];
+            if (existing) {
+              if (existing.minimized) windowToggleMinimize(existing.id);
+              windowFocus(existing.id);
+              return localize(`Focused ${fileWord()}.`, `Επιλέχθηκε ο ${fileWord()}.`);
+            }
+            windowOpen([{ url: "files:", title: fileWord() }], { kind: "files" });
+            return localize(`Opened ${fileWord()}.`, `Ανοίχτηκε ο ${fileWord()}.`);
+          }
+          case "focus": {
+            const w = files[files.length - 1];
+            if (!w) return localize("The File Manager is not open.", "Ο Διαχειριστής Αρχείων δεν είναι ανοιχτός.");
+            if (w.minimized) windowToggleMinimize(w.id);
+            windowFocus(w.id);
+            return localize(`Focused ${fileWord()}.`, `Επιλέχθηκε ο ${fileWord()}.`);
+          }
+          case "close": {
+            const w = files[files.length - 1];
+            if (!w) return localize("The File Manager is not open.", "Ο Διαχειριστής Αρχείων δεν είναι ανοιχτός.");
+            windowClose(w.id);
+            return localize(`Closed ${fileWord()}.`, `Έκλεισε ο ${fileWord()}.`);
           }
         }
         return null;

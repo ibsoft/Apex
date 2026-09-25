@@ -117,7 +117,7 @@ def create_app() -> Flask:
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=False,
-        MAX_CONTENT_LENGTH=8 * 1024 * 1024,
+        MAX_CONTENT_LENGTH=1024 * 1024 * 1024,
     )
 
     # ---- CORS ---------------------------------------------------------------
@@ -182,6 +182,7 @@ def create_app() -> Flask:
     from tools.shell_out import register_shell_routes
     from tools.preview_tools import register_preview_routes
     from tools.terminal_server import register_terminal_routes
+    from tools.filebrowser import register_filebrowser_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
@@ -191,6 +192,7 @@ def create_app() -> Flask:
     register_shell_routes(app, require_user, config)
     register_preview_routes(app, require_user, config)
     register_terminal_routes(app, require_user, config)
+    register_filebrowser_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""

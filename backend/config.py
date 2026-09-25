@@ -41,6 +41,14 @@ class Config:
     # Colon-separated search roots; OS permissions are always respected.
     FILE_SEARCH_ROOTS = os.getenv("FILE_SEARCH_ROOTS", "/")
 
+    # --- File manager (Explorer window) -------------------------------------
+    # Reuses FILE_SEARCH_ROOTS above. Generated zips/single-file links expire
+    # after FM_FILE_TTL_SECONDS; finished copy/move jobs idle for
+    # FM_JOB_TTL_SECONDS before being dropped; uploads cap at this many files.
+    FM_FILE_TTL_SECONDS = _int("FM_FILE_TTL_SECONDS", 3600)
+    FM_JOB_TTL_SECONDS = _int("FM_JOB_TTL_SECONDS", 3600)
+    FM_UPLOAD_MAX_FILES = _int("FM_UPLOAD_MAX_FILES", 1000)
+
     # --- OpenAI OAuth (Sign in with ChatGPT / OpenAI) ----------------------
     # Register an OAuth app at https://platform.openai.com -> Apps -> OAuth.
     OPENAI_CLIENT_ID = os.getenv("OPENAI_CLIENT_ID", "")

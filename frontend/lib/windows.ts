@@ -6,7 +6,7 @@
 
 export const MAX_WINDOWS = 10;
 
-export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "terminal" | "other";
+export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "terminal" | "files" | "other";
 export type WindowArrangement = "cascade" | "grid" | "tile-h" | "tile-v" | "center";
 
 export type WindowItem = { url: string; title: string; kind?: WindowKind };
@@ -60,7 +60,7 @@ export function kindForItem(item: WindowItem): WindowKind {
 }
 /** True for signed backend preview tokens (no visible extension in the URL). */
 export function isSignedPreviewToken(url: string): boolean {
-  if (/\/api\/(?:files|editor|shell)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
+  if (/\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/images\/file\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/obsidian\/file\?path=/.test(url)) return true;
   return false;
@@ -81,6 +81,11 @@ export function terminalSessionId(item: { url: string } | undefined | null): str
 /** True when a window hosts a live terminal (needs xterm, no download button). */
 export function isTerminalWindow(window: AppWindow): boolean {
   return window.kind === "terminal" || terminalSessionId(window.items[window.index] ?? window.items[0]) !== null;
+}
+
+/** True when a window hosts the file manager (keeps its own keyboard). */
+export function isFilesWindow(window: AppWindow): boolean {
+  return window.kind === "files" || (window.items[window.index] ?? window.items[0])?.url?.startsWith("files:") === true;
 }
 
 /** React StrictMode (Next dev default) double-mounts effects: an unmount within
@@ -222,10 +227,10 @@ export function layoutRects(arrangement: WindowArrangement, total: number, vw: n
 /* ---------- extraction from assistant messages ---------- */
 
 const PREVIEWABLE_URL_RE =
-  /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|editor|shell)\/download\/[A-Za-z0-9_.\-]+|\/api\/images\/file\/[A-Za-z0-9_.\-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/(?:files|editor|shell)\/download\/[A-Za-z0-9_.\-]+)|(\/api\/images\/file\/[A-Za-z0-9_.\-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
+  /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+|\/api\/images\/file\/[A-Za-z0-9_.\-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+)|(\/api\/images\/file\/[A-Za-z0-9_.\-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
 
 function isPreviewableUrl(url: string): boolean {
-  if (/\/api\/(?:files|editor|shell)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
+  if (/\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/images\/file\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/obsidian\/file\?path=/.test(url)) return true;
   if (/\.(jpg|jpeg|png|gif|webp|svg|bmp|pdf)(\?.*)?$/i.test(url)) return true;
