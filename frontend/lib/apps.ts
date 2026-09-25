@@ -58,6 +58,15 @@ function seedBuiltins(): void {
     icon: "📁",
     open: (ctx) => ctx.windowOpenNew([{ url: "files:", title: "File Manager", kind: "files" }], { kind: "files" }),
   });
+  registerApp({
+    id: "notepad",
+    name: "Notepad",
+    icon: "📝",
+    open: (ctx) => ctx.windowOpenNew(
+      [{ url: `notepad:${Date.now()}`, title: "Untitled", kind: "notepad" }],
+      { kind: "notepad" },
+    ),
+  });
 }
 
 seedBuiltins();

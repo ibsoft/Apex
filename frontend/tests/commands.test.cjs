@@ -204,6 +204,34 @@ test('window close-all, arrange and list commands parse in both languages', () =
   assert.deepEqual(parse('δείξε τα ανοιχτά παράθυρα'), { type: 'window', action: 'list' });
 });
 
+test('virtual-desktop commands parse in both languages', () => {
+  assert.deepEqual(parse('go to virtual desktop 1', 'en'), { type: 'desktop', action: 'switch', desktop: 0 });
+  assert.deepEqual(parse('switch to desktop 2', 'en'), { type: 'desktop', action: 'switch', desktop: 1 });
+  assert.deepEqual(parse('desktop 3', 'en'), { type: 'desktop', action: 'switch', desktop: 2 });
+  assert.deepEqual(parse('focus the fourth desktop', 'en'), { type: 'desktop', action: 'switch', desktop: 3 });
+  assert.deepEqual(parse('switch to workspace 2', 'en'), { type: 'desktop', action: 'switch', desktop: 1 });
+  assert.deepEqual(parse('desktop four', 'en'), { type: 'desktop', action: 'switch', desktop: 3 });
+  assert.deepEqual(parse('πήγαινε στην εικονική επιφάνεια εργασίας 2'), { type: 'desktop', action: 'switch', desktop: 1 });
+  assert.deepEqual(parse('μετάβα στην επιφάνεια εργασίας τέταρτη'), { type: 'desktop', action: 'switch', desktop: 3 });
+  assert.deepEqual(parse('εναλλαγή στην επιφάνεια εργασίας 2'), { type: 'desktop', action: 'switch', desktop: 1 });
+  assert.deepEqual(parse('desktop 9', 'en'), { type: 'desktop', action: 'switch', desktop: 3 }, 'clamps to the last desktop');
+
+  assert.deepEqual(parse('next desktop', 'en'), { type: 'desktop', action: 'next', desktop: 0 });
+  assert.deepEqual(parse('go to the previous desktop', 'en'), { type: 'desktop', action: 'previous', desktop: 0 });
+  assert.deepEqual(parse('επόμενη επιφάνεια εργασίας'), { type: 'desktop', action: 'next', desktop: 0 });
+  assert.deepEqual(parse('προηγούμενη εικονική επιφάνεια εργασίας'), { type: 'desktop', action: 'previous', desktop: 0 });
+
+  assert.deepEqual(parse('move window 2 to desktop 1', 'en'), { type: 'desktop', action: 'move', target: 2, desktop: 0 });
+  assert.deepEqual(parse('move the third window to desktop four', 'en'), { type: 'desktop', action: 'move', target: 3, desktop: 3 });
+  assert.deepEqual(parse('μετακίνησε το παράθυρο 2 στην επιφάνεια εργασίας 1'), { type: 'desktop', action: 'move', target: 2, desktop: 0 });
+
+  // window/gallery nav must NOT be swallowed by the desktop parser
+  assert.deepEqual(parse('next image', 'en'), { type: 'window', action: 'next' });
+  assert.deepEqual(parse('επόμενη εικόνα'), { type: 'window', action: 'next' });
+  assert.deepEqual(parse('previous photo', 'en'), { type: 'window', action: 'previous' });
+  assert.deepEqual(parse('προηγούμενη φωτογραφία'), { type: 'window', action: 'previous' });
+});
+
 test('notes attach to a window and preserve the original note text', () => {
   assert.deepEqual(parse('add a note to the second window saying Keep this open', 'en'), {
     type: 'window', action: 'note', target: 2, note: 'Keep this open',
@@ -340,11 +368,37 @@ test('terminal phrasing does not hijack skills, windows or ordinary sentences', 
   }
 });
 
-test('maximize/minimize/restore target a terminal via the generic window verbs', () => {
-  assert.deepEqual(parse('maximize terminal', 'en'), { type: 'window', action: 'maximize' });
-  assert.deepEqual(parse('normalize terminal', 'en'), { type: 'window', action: 'restore' });
-  assert.deepEqual(parse('μεγιστοποίησε το τερματικό'), { type: 'window', action: 'maximize' });
-  assert.deepEqual(parse('ελαχιστοποίησε το τερματικό'), { type: 'window', action: 'minimize' });
+test('maximize/minimize/restore target a terminal directly (and by ordinal)', () => {
+  assert.deepEqual(parse('maximize terminal', 'en'), { type: 'terminal', action: 'maximize' });
+  assert.deepEqual(parse('normalize terminal', 'en'), { type: 'terminal', action: 'restore' });
+  assert.deepEqual(parse('minimize the terminal', 'en'), { type: 'terminal', action: 'minimize' });
+  assert.deepEqual(parse('maximize terminal 2', 'en'), { type: 'terminal', action: 'maximize', target: 2 });
+  assert.deepEqual(parse('μεγιστοποίησε το τερματικό'), { type: 'terminal', action: 'maximize' });
+  assert.deepEqual(parse('ελαχιστοποίησε το τερματικό'), { type: 'terminal', action: 'minimize' });
+  assert.deepEqual(parse('επαναφέρε το δεύτερο τερματικό'), { type: 'terminal', action: 'restore', target: 2 });
+});
+
+test('maximize/minimize/restore the file manager', () => {
+  assert.deepEqual(parse('minimize file manager', 'en'), { type: 'files', action: 'minimize' });
+  assert.deepEqual(parse('maximize the file manager', 'en'), { type: 'files', action: 'maximize' });
+  assert.deepEqual(parse('restore file browser', 'en'), { type: 'files', action: 'restore' });
+  assert.deepEqual(parse('ελαχιστοποίησε τον διαχειριστή αρχείων'), { type: 'files', action: 'minimize' });
+  assert.deepEqual(parse('μεγιστοποίησε τον διαχειριστή αρχείων'), { type: 'files', action: 'maximize' });
+  assert.deepEqual(parse('επαναφέρε τον διαχειριστή αρχείων'), { type: 'files', action: 'restore' });
+});
+
+test('minimize/restore all windows', () => {
+  assert.deepEqual(parse('minimize all windows', 'en'), { type: 'window', action: 'minimize_all' });
+  assert.deepEqual(parse('minimize every window', 'en'), { type: 'window', action: 'minimize_all' });
+  assert.deepEqual(parse('shrink all the windows', 'en'), { type: 'window', action: 'minimize_all' });
+  assert.deepEqual(parse('restore all windows', 'en'), { type: 'window', action: 'restore_all' });
+  assert.deepEqual(parse('restore all', 'en'), { type: 'window', action: 'restore_all' });
+  assert.deepEqual(parse('ελαχιστοποίησε όλα τα παράθυρα'), { type: 'window', action: 'minimize_all' });
+  assert.deepEqual(parse('μίκρυνε τα παράθυρα'), { type: 'window', action: 'minimize_all' });
+  assert.deepEqual(parse('επαναφέρε όλα τα παράθυρα'), { type: 'window', action: 'restore_all' });
+  // targeted/other actions still win over the "all" phrasing
+  assert.deepEqual(parse('minimize window 2', 'en'), { type: 'window', action: 'minimize', target: 2 });
+  assert.deepEqual(parse('maximize the preview', 'en'), { type: 'window', action: 'maximize' });
 });
 
 test('bare arrangement words resolve to the matching arrange style', () => {
@@ -398,4 +452,54 @@ test('duration acknowledgements use the selected language and singular/plural un
   assert.equal(formatDuration(7322), '2 hours 2 minutes 2 seconds');
   assert.equal(formatDuration(3661, 'el'), '1 ώρα 1 λεπτό 1 δευτερόλεπτο');
   assert.equal(formatDuration(7322, 'el-GR'), '2 ώρες 2 λεπτά 2 δευτερόλεπτα');
+});
+
+
+test('Notepad commands work in chat and voice phrasing', () => {
+  const cases = [
+    ['open notepad', { type: 'notepad', action: 'open' }],
+    ['focus the notepad', { type: 'notepad', action: 'focus' }],
+    ['minimize notepad', { type: 'notepad', action: 'minimize' }],
+    ['maximize my notepad', { type: 'notepad', action: 'maximize' }],
+    ['restore notepad', { type: 'notepad', action: 'restore' }],
+    ['save notepad', { type: 'notepad', action: 'save' }],
+    ['download notepad', { type: 'notepad', action: 'download' }],
+    ['new notepad', { type: 'notepad', action: 'new' }],
+    ['close notepad', { type: 'notepad', action: 'close' }],
+    ['write Call Maria at five in notepad', { type: 'notepad', action: 'write', content: 'Call Maria at five' }],
+    ['in the notepad, write Meeting notes', { type: 'notepad', action: 'write', content: 'Meeting notes' }],
+  ];
+  for (const [phrase, expected] of cases) assert.deepEqual(parseLocalCommand(phrase, 'en', []), expected, phrase);
+  assert.deepEqual(parseLocalCommand('γράψε Καλημέρα στο σημειωματάριο', 'el', []), {
+    type: 'notepad', action: 'write', content: 'Καλημέρα',
+  });
+});
+
+
+test('Notepad supports natural editing and compound output commands without losing punctuation', () => {
+  const cases = [
+    ['write to notepad Hello, world!', 'write', 'Hello, world!'],
+    ['open notepad and write Hello.', 'write', 'Hello.'],
+    ['append More notes in notepad', 'write', 'More notes'],
+    ['open notepad and add command output', 'command_output'],
+    ['copy the last terminal output to notepad', 'command_output'],
+    ['show recent documents in notepad', 'recent'],
+    ['hide recent documents', 'hide_recent'],
+    ['replace notepad contents with New text.', 'replace', 'New text.'],
+    ['rename notepad to Meeting Notes', 'title', 'Meeting Notes'],
+    ['open Meeting Notes in notepad', 'open_document', 'Meeting Notes'],
+    ['format notepad bold', 'format', 'bold'],
+    ['undo in notepad', 'undo'],
+    ['export notepad as text', 'export_text'],
+    ['clear notepad', 'clear'],
+  ];
+  for (const [text, action, content] of cases) {
+    const result = parseLocalCommand(text, 'en', []);
+    assert.equal(result?.type, 'notepad', text);
+    assert.equal(result?.action, action, text);
+    assert.equal(result?.content, content, text);
+  }
+  for (const text of ['run uname -a and put the command output in notepad', 'open notepad and write a poem about spring', 'open notepad and write Hello then save']) {
+    assert.equal(parseLocalCommand(text, 'en', []), null, text + ' should reach the agent');
+  }
 });

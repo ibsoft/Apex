@@ -190,6 +190,16 @@ export const api = {
       ),
   },
 
+  notepad: {
+    list: () => json<{ documents: { name: string; modified_at: number; size_bytes: number }[]; directory: string }>("/api/notepad/documents"),
+    get: (name: string) => json<{ name: string; title: string; content: string; modified_at: number }>(`/api/notepad/documents/${encodeURIComponent(name)}`),
+    save: (payload: { name?: string; title: string; content: string }) =>
+      json<{ ok: boolean; name: string; title: string; modified_at: number; download_url: string; directory: string }>("/api/notepad/documents", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+  },
+
   images: {
     webSearch: (query: string, limit?: number) =>
       json<{ images: { name: string; path: string; url: string }[]; query: string; count: number; source: string }>(

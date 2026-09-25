@@ -34,6 +34,8 @@ import {
 import { useVoiceEngine, VoicePhase } from "../lib/voice";
 import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
+import { sendNotepadCommand, notepadContext } from "../lib/notepad";
+import type { NotepadCommand } from "../lib/notepad";
 import { formatDuration, parseLocalCommand } from "../lib/commands";
 import {
   AppWindow,
@@ -44,9 +46,11 @@ import {
   collectPreviewableItems,
   itemTitle,
   isFilesWindow,
+  isNotepadWindow,
   isTerminalWindow,
   kindForItems,
   layoutRects,
+  onDesktop,
   resolvePreviewKinds,
   terminalSessionId,
   terminalUrl,
@@ -96,6 +100,11 @@ type ApexContextType = {
   error: string | null;
   windows: AppWindow[];
   focusedWindowId: string | null;
+  activeDesktop: number;
+  desktopSet: (n: number) => void;
+  desktopNext: () => void;
+  desktopPrev: () => void;
+  windowMoveToDesktop: (id: string, n: number) => void;
   chatCollapsed: boolean;
   timers: TimerItem[];
   reminders: ReminderItem[];
@@ -182,6 +191,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [windows, setWindows] = useState<AppWindow[]>([]);
   const [focusedWindowId, setFocusedWindowId] = useState<string | null>(null);
+  const [activeDesktop, setActiveDesktop] = useState(0);
   const [chatCollapsed, setChatCollapsedState] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("apex:chat-collapsed") === "1";
@@ -219,6 +229,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   windowsRef.current = windows;
   const focusedWindowIdRef = useRef(focusedWindowId);
   focusedWindowIdRef.current = focusedWindowId;
+  const activeDesktopRef = useRef(activeDesktop);
+  activeDesktopRef.current = activeDesktop;
   const timersRef = useRef(timers);
   timersRef.current = timers;
   const remindersRef = useRef(reminders);
@@ -415,11 +427,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       rect: rects[list.length],
       maximized: !!opts.maximize,
       minimized: false,
+      desktop: activeDesktopRef.current,
       note: "",
       showNotes: false,
     };
-    setWindows((prev) => [...prev, win]);
+    windowsRef.current = [...windowsRef.current, win];
+    setWindows(windowsRef.current);
     setFocusedWindowId(win.id);
+    return win.id;
   }, []);
 
   const windowOpen = useCallback((items: WindowItem[], opts: { title?: string; kind?: WindowKind; maximize?: boolean } = {}) => {
@@ -443,14 +458,20 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, [createWindow]);
 
   const windowClose = useCallback((id: string) => {
+    if (!window.dispatchEvent(new CustomEvent("apex:window-before-close", { cancelable: true, detail: { id } }))) return false;
+    const closed = windowsRef.current.find((w) => w.id === id);
     const next = windowsRef.current.filter((w) => w.id !== id);
     setWindows(next);
     if (focusedWindowIdRef.current === id) {
-      setFocusedWindowId(next.length ? next[next.length - 1].id : null);
+      // Focus the last remaining window on the same desktop, not just any window.
+      const fallback = [...next].reverse().find((w) => w.desktop === (closed?.desktop ?? activeDesktopRef.current));
+      setFocusedWindowId(fallback ? fallback.id : null);
     }
+    return true;
   }, []);
 
   const windowCloseAll = useCallback(() => {
+    if (!window.dispatchEvent(new CustomEvent("apex:window-before-close", { cancelable: true, detail: {} }))) return;
     setWindows([]);
     setFocusedWindowId(null);
   }, []);
@@ -458,6 +479,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const windowFocus = useCallback((id: string) => {
     const target = findWindow(id);
     if (!target) return;
+    // Linux-style: activating a window on another desktop switches to it.
+    if (target.desktop !== activeDesktopRef.current) setActiveDesktop(target.desktop);
     if (target.minimized) {
       setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, minimized: false } : w)));
     }
@@ -477,7 +500,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       const next = prev.map((w) => (w.id === id ? { ...w, minimized: !w.minimized } : w));
       const focusId = focusedWindowIdRef.current;
       if (!wasMinimized && focusId === id) {
-        const fallback = next.filter((w) => !w.minimized);
+        const fallback = next.filter((w) => !w.minimized && w.desktop === target.desktop);
         setFocusedWindowId(fallback.length ? fallback[fallback.length - 1].id : null);
       } else if (wasMinimized) {
         setFocusedWindowId(id);
@@ -487,10 +510,39 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const windowArrange = useCallback((arrangement: WindowArrangement) => {
-    const list = windowsRef.current;
+    // Arrange only the windows of the active desktop, like a workspace-aware
+    // window manager; windows on other desktops keep their own layout.
+    const list = onDesktop(windowsRef.current, activeDesktopRef.current);
     if (!list.length) return;
     const rects = layoutRects(arrangement, list.length, window.innerWidth, window.innerHeight);
-    setWindows(list.map((w, i) => ({ ...w, rect: rects[i], maximized: false, minimized: false })));
+    setWindows((prev) => prev.map((w) => {
+      const i = list.findIndex((l) => l.id === w.id);
+      return i < 0 ? w : { ...w, rect: rects[i], maximized: false, minimized: false };
+    }));
+  }, []);
+
+  /* ---------- virtual desktops ---------- */
+
+  const desktopSet = useCallback((n: number) => {
+    const target = Math.max(0, Math.min(3, Math.round(n || 0)));
+    if (target === activeDesktopRef.current) return;
+    setActiveDesktop(target);
+    // Focus the top visible window on the target desktop (Linux behavior).
+    const fallback = [...windowsRef.current].reverse().find((w) => w.desktop === target && !w.minimized);
+    setFocusedWindowId(fallback ? fallback.id : null);
+  }, []);
+
+  const desktopNext = useCallback(() => {
+    desktopSet((activeDesktopRef.current + 1) % 4);
+  }, [desktopSet]);
+
+  const desktopPrev = useCallback(() => {
+    desktopSet((activeDesktopRef.current + 3) % 4);
+  }, [desktopSet]);
+
+  const windowMoveToDesktop = useCallback((id: string, n: number) => {
+    const desktop = Math.max(0, Math.min(3, Math.round(n || 0)));
+    setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, desktop } : w)));
   }, []);
 
   const windowNext = useCallback(() => {
@@ -733,6 +785,17 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           case "close_all":
             windowCloseAll();
             return localize("All windows closed.", "Έκλεισαν όλα τα παράθυρα.");
+          case "minimize_all":
+            setWindows((prev) => prev.map((w) => ({ ...w, minimized: true })));
+            setFocusedWindowId(null);
+            return localize("All windows minimized.", "Ελαχιστοποιήθηκαν όλα τα παράθυρα.");
+          case "restore_all":
+            setWindows((prev) => prev.map((w) => ({ ...w, minimized: false })));
+            {
+              const top = [...windowsRef.current].reverse().find((w) => w.desktop === activeDesktopRef.current);
+              setFocusedWindowId(top ? top.id : null);
+            }
+            return localize("All windows restored.", "Επαναφέρθηκαν όλα τα παράθυρα.");
           case "close": {
             const w = pick();
             if (!w) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
@@ -766,10 +829,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             return localize(`Restored "${nameOf(w)}".`, `Επανήλθε το «${nameOf(w)}».`);
           }
           case "arrange": {
+            const arranged = onDesktop(windowsRef.current, activeDesktopRef.current).length;
             windowArrange(command.arrangement ?? "cascade");
             const names = localize(
-              `arranged ${list.length} windows in ${command.arrangement ?? "cascade"} style.`,
-              `διάταξα ${list.length} παράθυρα σε στυλ ${(command.arrangement ?? "cascade") === "cascade" ? "καταρράκτη" : command.arrangement}.`,
+              `arranged ${arranged} windows in ${command.arrangement ?? "cascade"} style.`,
+              `διάταξα ${arranged} παράθυρα σε στυλ ${(command.arrangement ?? "cascade") === "cascade" ? "καταρράκτη" : command.arrangement}.`,
             );
             return names.replace(/^./, (c) => c.toUpperCase());
           }
@@ -849,6 +913,23 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             windowClose(w.id);
             return localize(`Closed ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`, `Έκλεισε ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`);
           }
+          case "minimize":
+          case "maximize":
+          case "restore": {
+            const w = nth(command.target);
+            if (!w) return localize("No terminal window is open.", "Δεν είναι ανοιχτό παράθυρο τερματικού.");
+            const which = `${termWord()}${command.target != null ? ` ${command.target}` : ""}`;
+            if (command.action === "minimize" && !w.minimized) windowToggleMinimize(w.id);
+            else if (command.action === "maximize" && !w.maximized) windowToggleMaximize(w.id);
+            else {
+              if (w.minimized) windowToggleMinimize(w.id);
+              if (w.maximized) windowToggleMaximize(w.id);
+              windowFocus(w.id);
+            }
+            if (command.action === "minimize") return localize(`Minimized ${which}.`, `Ελαχιστοποιήθηκε ${which}.`);
+            if (command.action === "maximize") return localize(`Maximized ${which}.`, `Μεγιστοποιήθηκε ${which}.`);
+            return localize(`Restored ${which}.`, `Επαναφέρθηκε ${which}.`);
+          }
         }
         return null;
       }
@@ -884,6 +965,97 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             if (!w) return localize("The File Manager is not open.", "Ο Διαχειριστής Αρχείων δεν είναι ανοιχτός.");
             windowClose(w.id);
             return localize(`Closed ${fileWord()}.`, `Έκλεισε ο ${fileWord()}.`);
+          }
+          case "minimize":
+          case "maximize":
+          case "restore": {
+            const w = files[files.length - 1];
+            if (!w) return localize("The File Manager is not open.", "Ο Διαχειριστής Αρχείων δεν είναι ανοιχτός.");
+            if (command.action === "minimize" && !w.minimized) windowToggleMinimize(w.id);
+            else if (command.action === "maximize" && !w.maximized) windowToggleMaximize(w.id);
+            else {
+              if (w.minimized) windowToggleMinimize(w.id);
+              if (w.maximized) windowToggleMaximize(w.id);
+              windowFocus(w.id);
+            }
+            if (command.action === "minimize") return localize(`Minimized ${fileWord()}.`, `Ελαχιστοποιήθηκε ο ${fileWord()}.`);
+            if (command.action === "maximize") return localize(`Maximized ${fileWord()}.`, `Μεγιστοποιήθηκε ο ${fileWord()}.`);
+            return localize(`Restored ${fileWord()}.`, `Επαναφέρθηκε ο ${fileWord()}.`);
+          }
+        }
+        return null;
+      }
+      case "notepad": {
+        const pads = windowsRef.current.filter(isNotepadWindow);
+        const pad = pads.find((item) => item.id === focusedWindowIdRef.current)
+          ?? [...pads].reverse().find((item) => item.desktop === activeDesktopRef.current) ?? pads[pads.length - 1];
+        let request: NotepadCommand = command;
+        if (command.action === "command_output") {
+          const messages = byConvRef.current[activeIdRef.current ?? ""] ?? [];
+          const outputs = messages.flatMap((message) => message.meta?.tools ?? []).filter((tool) => !tool.running && tool.output && /terminal_command|run_command|shell|exec|vapt_run|code_run/.test(tool.name));
+          const output = outputs[outputs.length - 1]?.output;
+          if (!output) return "No command output is available in this conversation. Run a command first, or name the command to run and send to Notepad.";
+          request = { type: "notepad", action: "write", content: output };
+        }
+        let id: string | undefined = pad?.id;
+        if (!id) {
+          if (["close", "minimize", "maximize", "restore"].includes(request.action)) return "Notepad is not open.";
+          id = createWindow([{ url: "notepad:" + Date.now(), title: "Notepad", kind: "notepad" }], { kind: "notepad" });
+          if (!id) return "Could not open Notepad: close another window first.";
+        }
+        switch (request.action) {
+          case "open": case "focus": windowFocus(id); return "Opened Notepad.";
+          case "close": return windowClose(id) ? "Closed Notepad." : "Notepad remains open; closing was canceled or a save is in progress.";
+          case "minimize": if (!pad?.minimized) windowToggleMinimize(id); return "Minimized Notepad.";
+          case "maximize": if (!pad?.maximized) windowToggleMaximize(id); windowFocus(id); return "Maximized Notepad.";
+          case "restore":
+            if (pad?.minimized) windowToggleMinimize(id);
+            if (pad?.maximized) windowToggleMaximize(id);
+            windowFocus(id); return "Restored Notepad.";
+          default:
+            windowFocus(id);
+            return await sendNotepadCommand(request, id);
+        }
+      }
+      case "desktop": {
+        const nameOf = (w: AppWindow) => itemTitle(w.items[w.index] ?? w.items[0]);
+        switch (command.action) {
+          case "switch":
+            desktopSet(command.desktop);
+            return localize(
+              `Switched to virtual desktop ${command.desktop + 1}.`,
+              `Μετάβαση στην εικονική επιφάνεια εργασίας ${command.desktop + 1}.`,
+            );
+          case "next": {
+            const target = (activeDesktopRef.current + 1) % 4;
+            desktopSet(target);
+            return localize(
+              `Moved to virtual desktop ${target + 1}.`,
+              `Μετακίνηση στην εικονική επιφάνεια εργασίας ${target + 1}.`,
+            );
+          }
+          case "previous": {
+            const target = (activeDesktopRef.current + 3) % 4;
+            desktopSet(target);
+            return localize(
+              `Moved to virtual desktop ${target + 1}.`,
+              `Μετακίνηση στην εικονική επιφάνεια εργασίας ${target + 1}.`,
+            );
+          }
+          case "move": {
+            const list = windowsRef.current;
+            if (!list.length) return localize("No windows are open.", "Δεν είναι ανοιχτό κανένα παράθυρο.");
+            const w = command.target != null
+              ? list[command.target - 1] ?? null
+              : list.find((x) => x.id === focusedWindowIdRef.current) ?? list[list.length - 1];
+            if (!w) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
+            const movedFocused = w.id === focusedWindowIdRef.current;
+            windowMoveToDesktop(w.id, command.desktop);
+            if (movedFocused) windowFocus(w.id);
+            return localize(
+              `Moved "${nameOf(w)}" to virtual desktop ${command.desktop + 1}.`,
+              `Μετακινήθηκε το «${nameOf(w)}» στην εικονική επιφάνεια εργασίας ${command.desktop + 1}.`,
+            );
           }
         }
         return null;
@@ -955,7 +1127,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   const sendMessage = useCallback(
     async (text: string, opts: { voice?: boolean; skill?: string } = {}) => {
-      let clean = text.trim().replace(/[.!?;]+$/, "");
+      let clean = text.trim();
       if (!clean || busy) return;
 
       try {
@@ -1024,7 +1196,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         let spoken = "";
         let streamError = "";
         let streamedTools: NonNullable<NonNullable<Message["meta"]>["tools"]> = [];
-        const windowBlock = windowContextBlock(windowsRef.current, focusedWindowIdRef.current);
+        const windowBlock = windowContextBlock(windowsRef.current, focusedWindowIdRef.current, activeDesktopRef.current) + notepadContext();
         // Tell the backend which terminal window is focused so terminal_command
         // can default to it ("run this on the focused terminal").
         const focusedWin = windowsRef.current.find((w) => w.id === focusedWindowIdRef.current);
@@ -1040,6 +1212,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         const model = settingsRef.current.model;
         if (model && stripSystemModel(model)) payload.model = model;
 
+        let notepadWork = Promise.resolve();
+        const notepadResults: string[] = [];
         await api.chat(payload, (ev: ChatEvent) => {
           if (ev.type === "meta") {
             if (ev.skill && ev.skill !== skillRef.current) {
@@ -1059,6 +1233,18 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
               },
             });
           } else if (ev.type === "tool_result") {
+            if (ev.name === "notepad_control") {
+              try {
+                const result = JSON.parse(ev.output);
+                if (result.notepad_command) {
+                  const command = result.notepad_command as NotepadCommand;
+                  notepadWork = notepadWork.then(async () => {
+                    const reply = await executeLocalCommand({ ...command, type: "notepad" });
+                    if (reply) notepadResults.push(reply);
+                  });
+                }
+              } catch { /* A normal tool error has no browser command. */ }
+            }
             const pendingIndex = streamedTools.findIndex((t) => t.name === ev.name && t.running);
             streamedTools = pendingIndex >= 0
               ? streamedTools.map((t, i) => i === pendingIndex ? { ...t, output: ev.output, running: false } : t)
@@ -1102,6 +1288,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             setTimeout(() => setRoutedSkill((current) => (current ? null : current)), 2000);
           }
         });
+        await notepadWork;
+        if (notepadResults.length) {
+          spoken += "\n\n" + notepadResults.join("\n");
+          pushAssistant({ streaming: false, content: spoken });
+        }
+
 
         pushAssistant({ streaming: false, content: spoken || streamError });
         setByConv((m) => {
@@ -1270,6 +1462,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       error,
       windows,
       focusedWindowId,
+      activeDesktop,
+      desktopSet,
+      desktopNext,
+      desktopPrev,
+      windowMoveToDesktop,
       chatCollapsed,
       timers,
       reminders,
@@ -1322,7 +1519,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       closeGithubPrompt,
     }),
     [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
-     windows, focusedWindowId, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
+     windows, focusedWindowId, activeDesktop, desktopSet, desktopNext, desktopPrev, windowMoveToDesktop, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, windowOpen, windowClose, windowCloseAll, windowFocus, windowToggleMaximize, windowToggleMinimize, windowArrange, windowNext, windowPrevious,
      windowSetNote, windowToggleNotes, windowUpdate, setChatCollapsed,
      setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous, setSudoPassword, closeSudoPrompt, setGithubToken, closeGithubPrompt],

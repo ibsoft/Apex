@@ -17,14 +17,17 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { BASE } from "../lib/api";
 import {
   AppWindow,
+  DESKTOPS,
   MAX_WINDOWS,
   WindowArrangement,
   WindowItem,
   isFilesWindow,
+  isNotepadWindow,
   isTerminalWindow,
   itemTitle,
   kindForName,
   layoutRects,
+  onDesktop,
   terminalSessionId,
   windowDownload,
 } from "../lib/windows";
@@ -32,6 +35,7 @@ import { useApex } from "./ApexProvider";
 import { backendFileHref } from "./FileDownloads";
 import TerminalWindow from "./TerminalWindow";
 import FileManagerWindow from "./FileManagerWindow";
+import NotepadWindow from "./NotepadWindow";
 
 const C = {
   cyan: "#00e5ff",
@@ -236,6 +240,9 @@ function WindowBody({ w, focused, onNext, onPrevious }: {
       />
     );
   }
+  if (isNotepadWindow(w)) {
+    return <NotepadWindow key={w.id} windowId={w.id} focused={focused} />;
+  }
   const kind = w.kind === "image" && w.items.length > 1 ? "image" : w.kind;
   if (kind === "image") return <ImageBody items={w.items} index={w.index} onNext={onNext} onPrevious={onPrevious} />;
   if (kind === "pdf") return <PdfBody item={item} />;
@@ -306,30 +313,53 @@ export default function WindowManager() {
     [],
   );
 
-  // Global keys: Escape closes the focused window, arrows navigate its gallery.
+  // Global keys: Ctrl+Alt+1..4 switch virtual desktops, Ctrl+Alt arrows step
+  // between them. Escape closes the focused window, arrows navigate its gallery.
   // A focused terminal keeps its own keys (captured at the host element), but
   // the guard also refuses window-level handling so a terminal can never be
   // dismissed by an Escape the terminal did not consume. Files windows own
   // their shortcuts too (rename/delete/navigate), so they get the same pass.
   useEffect(() => {
+    const onDesktopKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || !e.altKey) return;
+      const num = Number(e.key) - 1;
+      if (num >= 0 && num < DESKTOPS) {
+        e.preventDefault();
+        a.desktopSet(num);
+        return;
+      }
+      if (e.key === "ArrowRight") { e.preventDefault(); a.desktopNext(); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); a.desktopPrev(); }
+    };
+    window.addEventListener("keydown", onDesktopKey);
+    return () => window.removeEventListener("keydown", onDesktopKey);
+  }, [a]);
+
+  useEffect(() => {
     if (!windows.length) return;
-    const focused = byId(focusedId) ?? windows[windows.length - 1];
-    if (focused && (isTerminalWindow(focused) || isFilesWindow(focused))) return;
+    const focused = byId(focusedId);
+    if (!focused || focused.desktop !== a.activeDesktop) return;
+    if (isTerminalWindow(focused) || isFilesWindow(focused) || isNotepadWindow(focused)) return;
     const node = document.activeElement as HTMLElement | null;
     if (node && /^(input|textarea|select)$/i.test(node.tagName)) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { a.windowClose(focusedId ?? ""); }
+      if (e.key === "Escape") { a.windowClose(focused.id); }
       else if (e.key === "ArrowRight") a.windowNext();
       else if (e.key === "ArrowLeft") a.windowPrevious();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [a, focusedId, windows.length]);
+  }, [a, a.activeDesktop, focusedId, windows.length]);
 
   if (!windows.length) return null;
 
   const byId = (id: string | null | undefined) => (id ? windows.find((w) => w.id === id) : undefined);
-  const focused = byId(focusedId) ?? windows[windows.length - 1];
+  // Only the active virtual desktop is on screen; focus falls back to the most
+  // recently opened visible window so the highlight never lands on a hidden one.
+  const visible = onDesktop(windows, a.activeDesktop);
+  const focusedVisible = byId(focusedId);
+  const focused = (focusedVisible && focusedVisible.desktop === a.activeDesktop ? focusedVisible : undefined)
+    ?? visible[visible.length - 1];
 
   const focusWindow = (id: string) => { a.windowFocus(id); };
 
@@ -411,8 +441,8 @@ export default function WindowManager() {
               ...frameBase,
               left: rect.x, top: rect.y, width: rect.w, height: rect.h,
               zIndex: focusedWin ? 60 : 5 + order.indexOf(w),
-              visibility: w.minimized ? "hidden" : "visible",
-              pointerEvents: w.minimized ? "none" : "auto",
+              visibility: w.minimized || w.desktop !== a.activeDesktop ? "hidden" : "visible",
+              pointerEvents: w.minimized || w.desktop !== a.activeDesktop ? "none" : "auto",
               cursor: interacting ? "default" : undefined,
               transition: interacting ? "none" : "left .28s cubic-bezier(.22,.9,.3,1), top .28s cubic-bezier(.22,.9,.3,1), width .28s cubic-bezier(.22,.9,.3,1), height .28s cubic-bezier(.22,.9,.3,1)",
               borderColor: focusedWin ? `${C.cyan}55` : C.line,
@@ -503,14 +533,16 @@ export default function WindowManager() {
           ▦ {arrangement.toUpperCase()}
         </button>
         <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)", letterSpacing: "0.1em", margin: "0 6px" }}>
-          {windows.length}/{MAX_WINDOWS}
+          {visible.length}/{MAX_WINDOWS}
         </span>
         <div style={{ flex: 1, display: "flex", gap: 6, overflowX: "auto" }}>
           {windows.map((w, i) => {
             const title = itemTitle(w.items[w.index] ?? w.items[0]);
+            // Linux-style: every window stays in the taskbar; clicking one on
+            // another desktop switches there, unminimizes and focuses it.
             return (
               <button key={w.id}
-                onClick={() => { if (w.minimized) a.windowToggleMinimize(w.id); else focusWindow(w.id); }}
+                onClick={() => a.windowFocus(w.id)}
                 style={{
                   display: "flex", alignItems: "center", gap: 6, maxWidth: 200,
                   padding: "5px 10px", borderRadius: 9, cursor: "pointer", whiteSpace: "nowrap", overflow: "hidden",
@@ -518,10 +550,38 @@ export default function WindowManager() {
                   color: w.id === focusedId && !w.minimized ? C.cyan : C.dim,
                   background: w.id === focusedId && !w.minimized ? `${C.cyan}12` : "rgba(255,255,255,0.02)",
                   border: w.minimized ? `1px dashed ${C.line}` : `1px solid ${C.line}`,
+                  opacity: w.desktop !== a.activeDesktop && w.id !== focusedId ? 0.55 : 1,
                 }}>
                 <span>{i + 1}</span>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{title}</span>
                 {w.minimized && <span style={{ fontSize: 8, color: C.gold }}>▾</span>}
+              </button>
+            );
+          })}
+        </div>
+        {/* virtual-desktop switcher (right side, like a Linux panel) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: "auto" }}>
+          <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)", letterSpacing: "0.12em", marginRight: 3 }}>
+            ▦
+          </span>
+          {Array.from({ length: DESKTOPS }, (_, d) => {
+            const count = onDesktop(windows, d).length;
+            const active = d === a.activeDesktop;
+            return (
+              <button key={d}
+                onClick={() => a.desktopSet(d)}
+                aria-label={`Virtual desktop ${d + 1}`}
+                title={`Virtual desktop ${d + 1}`}
+                style={{
+                  minWidth: 28, height: 28, borderRadius: 8, cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 3,
+                  padding: "0 4px", fontFamily: "var(--font-mono)", fontSize: 10,
+                  color: active ? C.cyan : C.dim,
+                  background: active ? `${C.cyan}14` : "rgba(255,255,255,0.02)",
+                  border: active ? `1px solid ${C.cyan}66` : `1px solid ${C.line}`,
+                }}>
+                <span>{d + 1}</span>
+                {count > 0 && <span style={{ fontSize: 8, opacity: 0.75 }}>{count}</span>}
               </button>
             );
           })}

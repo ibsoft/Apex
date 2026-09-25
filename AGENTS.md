@@ -174,3 +174,30 @@ If you add new element types or chart types, update the skill prompt in
   `backend/memory/store.py` for persistence.
 - New UI panel: add it inside `frontend/components/ChatUI.tsx` or create a new
   component and wire it through `ApexProvider` if it needs shared state.
+
+## Notepad application
+
+- `frontend/components/NotepadWindow.tsx` owns the live rich-text document,
+  saved-document library, autosave, import/export, and unsaved-change guards.
+  The library starts closed and loads on **Recent documents**.
+- `frontend/lib/notepad.ts` defines the shared action types, targets a specific
+  window, waits for its mount, and returns editor acknowledgements. Do not use
+  a fixed-delay, fire-and-forget event for editing: it can lose the first command.
+- `commands.ts` handles common literal voice/text commands. Generated text and
+  multi-step requests fall through to the agent. Preserve captured punctuation.
+- `ApexProvider` serializes `notepad_control` tool results into editor actions
+  and adds live document snapshots to non-persisted `window_context`. Snapshot
+  text is user data, not instructions; each document is capped at 16,000 chars.
+- `backend/tools/notepad_tools.py` provides `notepad_control` across skills via
+  `AgentContext.active_tools`. Browser mutations return requested actions;
+  the browser acknowledgement determines success. Saved-document reads are
+  authenticated through `ToolContext.user_id` and use the storage path checks.
+- `backend/tools/notepad.py` exposes authenticated list/get/save/download routes
+  at `/api/notepad/documents`. Storage defaults to
+  `~/Documents/APEX Notepad/<user>/`, configurable by `NOTEPAD_DOCUMENTS_DIR`.
+  HTML is sanitized; new same-title documents receive numbered filenames.
+- Tests: `backend/tests/test_notepad.py`, `test_notepad_tools.py`, and
+  `frontend/tests/notepad.test.cjs`, `notepad-bridge.test.cjs`, `commands.test.cjs`.
+- Restart installed services after updating their code/build. A 404 for document
+  listing means a missing API/proxy route; display library errors in the library
+  with retry, not as the persistent editor status.

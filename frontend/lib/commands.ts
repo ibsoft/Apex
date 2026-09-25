@@ -1,18 +1,21 @@
 /** Shared parser for typed and spoken local commands. Greek is opt-in; English
  * remains available in every language. Captures always retain the user's text. */
+import type { NotepadCommand } from "./notepad";
 import type { WindowArrangement } from "./windows";
 
 export type LocalCommand =
   | {
       type: "window";
-      action: "open" | "close" | "close_all" | "focus" | "maximize" | "minimize"
+      action: "open" | "close" | "close_all" | "minimize_all" | "restore_all" | "focus" | "maximize" | "minimize"
         | "restore" | "arrange" | "next" | "previous" | "list" | "note";
       target?: number;
       arrangement?: WindowArrangement;
       note?: string;
     }
-  | { type: "terminal"; action: "open" | "close" | "focus"; target?: number; create?: boolean }
-  | { type: "files"; action: "open" | "close" | "focus"; create?: boolean }
+  | { type: "terminal"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; target?: number; create?: boolean }
+  | { type: "files"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; create?: boolean }
+  | NotepadCommand
+  | { type: "desktop"; action: "switch" | "next" | "previous" | "move"; desktop: number; target?: number }
   | { type: "cancelTimers" }
   | { type: "cancelReminders" }
   | { type: "timer"; name: string; seconds: number }
@@ -297,6 +300,15 @@ function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
       || (greek && /^(?:κλεισε|κρυψε|αποκρυψε)\s+(?:(?:ολα|ολα\s+τα|τα)\s+)?παραθυρα$/.test(normalized)))
     return { type: "window", action: "close_all" };
 
+  // minimize / restore all windows
+  if (/^(?:minim(?:ize|ise)|shrink|collapse)\s+(?:(?:(?:all|every|the)\s+)+)?windows?$/.test(normalized)
+      || (greek && /^(?:ελαχιστοποιησε|μικρυνε|σμικρυνε|κρυψε)\s+(?:(?:ολα|ολα\s+τα|τα)\s+)?παραθυρα$/.test(normalized)))
+    return { type: "window", action: "minimize_all" };
+  if (/^(?:restore|bring\s+back|return)\s+(?:(?:(?:all|every|the)\s+)+)?windows?$/.test(normalized)
+      || /^restore\s+all(?:\s+windows)?$/.test(normalized)
+      || (greek && /^(?:επαναφερε|κανονικοποιησε)\s+(?:(?:ολα|ολα\s+τα|τα)\s+)?παραθυρα$/.test(normalized)))
+    return { type: "window", action: "restore_all" };
+
   // arrange windows
   const arrangeEn = normalized.match(/^arrange\s+(?:(?:the|all)\s+)?windows?(?:\s+(?:in|as|in\s+a)\s+)?([\p{L}\s-]+)?$/u);
   if (arrangeEn) return { type: "window", action: "arrange", arrangement: arrangementFromWord(arrangeEn[1], greek) };
@@ -393,7 +405,7 @@ function parseTerminalCommand(text: string, greek: boolean): LocalCommand | null
     const t = consumeWindowTarget(rest, greek);
     return t ? t.index : NaN;
   };
-  const finish = (rest: string, ordinal: number | undefined, action: "open" | "close" | "focus", createOpt: {}): LocalCommand | null => {
+  const finish = (rest: string, ordinal: number | undefined, action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore", createOpt: {}): LocalCommand | null => {
     const target = ordinal ?? (rest ? trailingOf(rest) : undefined);
     if (target !== undefined && !Number.isNaN(target)) return { type: "terminal", action, target, ...createOpt };
     if (rest.trim() !== "") return null;
@@ -427,6 +439,19 @@ function parseTerminalCommand(text: string, greek: boolean): LocalCommand | null
     `^(?:εστιασε|φερε|επιλεξε|μεταβα|πηγαινε)\\s+(?:(?:στο|στη|στην|σε|το)\\s+)?${ordSlot}τερματικο\\s*`)) as RegExpMatchArray | null : null;
   const focusM = mFocus ?? mFocusEl;
   if (focusM) return finish(norm.slice(focusM[0].length), ordinalOf(focusM), "focus", {});
+
+  // minimize / maximize / restore a terminal
+  const termActs: Array<["minimize" | "maximize" | "restore", string, string]> = [
+    ["minimize", "minim(?:ize|ise)|shrink", "ελαχιστοποιησε|μικρυνε|σμικρυνε"],
+    ["maximize", "maxim(?:ize|ise)|expand|enlarge|full[-\\s]?screen", "μεγιστοποιησε|μεγεθυνε|επεκτεινε|πληρησ?\\s+οθονη"],
+    ["restore", "restore|normali(?:ze|ise)|back\\s+to\\s+normal", "επαναφερε|κανονικοποιησε"],
+  ];
+  for (const [action, en, el] of termActs) {
+    const re = new RegExp(`^(?:${en})\\s+(?:(?:the|this)\\s+)?${ordSlot}terminal\\s*`);
+    const reEl = greek ? new RegExp(`^(?:${el})\\s+(?:(?:το|τη|την)\\s+)?${ordSlot}τερματικο\\s*`) : null;
+    const m = norm.match(re) ?? (reEl ? norm.match(reEl) : null);
+    if (m) return finish(norm.slice(m[0].length), ordinalOf(m), action, {});
+  }
 
   return null;
 }
@@ -467,6 +492,152 @@ function parseFilesCommand(text: string, greek: boolean): LocalCommand | null {
   const focusEl = greek && !focusEn ? norm.match(new RegExp(`^(?:εστιασε|επιλεξε|μεταβασε|πηγαινε)\\s+(?:(?:στον|στο|στη|στην|σε|το|τη|την|στο)\\s+)?${noun}${end}`)) : null;
   if (focusEn || focusEl) return { type: "files", action: "focus" };
 
+  // minimize / maximize / restore the file manager
+  const fmActs: Array<["minimize" | "maximize" | "restore", string, string]> = [
+    ["minimize", "minim(?:ize|ise)|shrink", "ελαχιστοποιησε|μικρυνε|σμικρυνε"],
+    ["maximize", "maxim(?:ize|ise)|expand|enlarge|full[-\\s]?screen", "μεγιστοποιησε|μεγεθυνε|επεκτεινε|πληρησ?\\s+οθονη"],
+    ["restore", "restore|normali(?:ze|ise)|back\\s+to\\s+normal", "επαναφερε|κανονικοποιησε"],
+  ];
+  for (const [action, en, el] of fmActs) {
+    const mEn = greek ? null : norm.match(new RegExp(`^(?:${en})\\s+(?:(?:the|this)\\s+)?${noun}${end}`));
+    const mEl = greek && !mEn ? norm.match(new RegExp(`^(?:${el})\\s+${article}${noun}${end}`)) : null;
+    if (mEn || mEl) return { type: "files", action };
+  }
+
+  return null;
+}
+
+/* ---------- Notepad commands ---------- */
+
+function parseNotepadCommand(text: string, greek: boolean): LocalCommand | null {
+  const clean = text.trim().replace(/^(?:please|can you|could you)\s+/i, "");
+  const norm = normalize(clean).replace(/[.!?;]+$/, "");
+  const noun = "(?:notepad|note\\s*pad|editor)";
+  const article = "(?:(?:the|my)\\s+)?";
+  const actions: Array<["open" | "close" | "focus" | "minimize" | "maximize" | "restore" | "new" | "save" | "download", string, string]> = [
+    ["open", "open|launch|start", "ανοιξε|ξεκινα|ξεκινησε"],
+    ["close", "close|quit|exit", "κλεισε|τερματισε"],
+    ["focus", "focus|show|go\\s+to", "εστιασε|δειξε|πηγαινε"],
+    ["minimize", "minim(?:ize|ise)|shrink", "ελαχιστοποιησε|μικρυνε"],
+    ["maximize", "maxim(?:ize|ise)|expand|full[-\\s]?screen", "μεγιστοποιησε|μεγεθυνε"],
+    ["restore", "restore|normali(?:ze|ise)", "επαναφερε|κανονικοποιησε"],
+    ["new", "new|create\\s+(?:a\\s+)?new", "νεο|δημιουργησε\\s+νεο"],
+    ["save", "save", "αποθηκευσε"],
+    ["download", "download|export", "κατεβασε|εξαγαγε"],
+  ];
+  for (const [action, en, el] of actions) {
+    if (new RegExp("^(?:" + en + ")\\s+" + article + noun + "(?:\\s+document)?$").test(norm)
+        || (greek && new RegExp("^(?:" + el + ")\\s+(?:(?:το|τον)\\s+)?(?:σημειωματαριο|κειμενογραφο)(?:\\s+εγγραφο)?$").test(norm))) {
+      return { type: "notepad", action };
+    }
+  }
+  // Output references and multi-step tasks go to the agent, not into the document as literal text.
+  if (/\b(?:command|terminal|shell)\s+output\b|\boutput\s+of\b/i.test(clean)) {
+    if (/^(?:(?:open|launch)\s+(?:the\s+)?notepad\s+and\s+)?(?:add|insert|paste|copy|append)(?:\s+the)?(?:\s+(?:last|latest))?\s+(?:command|terminal|shell)\s+output(?:\s+(?:to|in|into)\s+(?:the\s+)?notepad)?[.!?]?$/i.test(clean)) return { type: "notepad", action: "command_output" };
+    return null;
+  }
+  const target = "(?:(?:the|my)\\s+)?(?:notepad|note\\s*pad|editor)";
+  const simple: Array<[NotepadCommand["action"], string]> = [
+    ["recent", "(?:show|open|list)(?:\\s+the)?\\s+(?:recent\\s+)?documents(?:\\s+(?:in|of|for)\\s+" + target + ")|(?:show|open)\\s+" + target + "\\s+(?:recent\\s+)?documents"],
+    ["hide_recent", "(?:hide|close)\\s+(?:the\\s+)?(?:recent\\s+documents|documents\\s+panel)(?:\\s+in\\s+" + target + ")?"],
+    ["clear", "(?:clear|empty|erase)\\s+" + target],
+    ["read", "(?:read|show)(?:\\s+me)?\\s+" + target + "(?:\\s+(?:text|content|contents))?"],
+    ["select_all", "select\\s+all(?:\\s+text)?\\s+in\\s+" + target],
+    ["undo", "undo(?:\\s+in)?\\s+" + target], ["redo", "redo(?:\\s+in)?\\s+" + target],
+    ["export_text", "(?:download|export)\\s+" + target + "\\s+(?:as\\s+)?(?:text|txt|plain\\s+text)"],
+  ];
+  for (const [action, pattern] of simple) if (new RegExp("^(?:" + pattern + ")[.!?]?$", "i").test(clean)) return { type: "notepad", action };
+  const title = clean.match(new RegExp("^(?:rename|title|name)\\s+" + target + "\\s+(?:(?:to|as)\\s+)?(.+)$", "i"));
+  if (title) return { type: "notepad", action: "title", content: title[1] };
+  const doc = clean.match(new RegExp("^open\\s+(?:document\\s+)?(.+?)\\s+in\\s+" + target + "$", "i"));
+  if (doc) return { type: "notepad", action: "open_document", content: doc[1] };
+  const format = clean.match(new RegExp("^(?:format|make)\\s+" + target + "(?:\\s+text)?\\s+(?:as\\s+)?(bold|italic|underline|heading 1|heading 2|paragraph|bullet list|numbered list|align left|align center|align right)$", "i"));
+  if (format) return { type: "notepad", action: "format", content: format[1].toLowerCase() };
+  const replace = clean.match(new RegExp("^replace\\s+" + target + "(?:\\s+(?:content|contents|text))?\\s+with\\s+([\\s\\S]+)$", "i"));
+  if (replace) return { type: "notepad", action: "replace", content: replace[1] };
+  const compound = clean.match(new RegExp("^(?:open|launch|start)\\s+" + target + "\\s+(?:and|then|and then)\\s+(?:write|type|add|insert|append)\\s+([\\s\\S]+)$", "i"));
+  const writeFirst = clean.match(/^(?:write|type|add|insert|append)\s+([\s\S]+?)\s+(?:in|into|to)\s+(?:the\s+|my\s+)?(?:notepad|note\s*pad|editor)[.!?]?$/i);
+  const padFirst = clean.match(/^(?:(?:in|into|to)\s+(?:the\s+|my\s+)?(?:notepad|note\s*pad|editor)[,:]?\s+(?:write|type|add|insert|append)|(?:write|type|add|insert|append)\s+(?:in|into|to)\s+(?:the\s+|my\s+)?(?:notepad|note\s*pad|editor))[,:]?\s+([\s\S]+)$/i);
+  const greekWrite = greek ? clean.match(/^(?:γρ[άα]ψε|πρ[όο]σθεσε|β[άα]λε)\s+([\s\S]+?)\s+(?:στο|στον|μ[έε]σα\s+στο)\s+(?:σημειωματ[άα]ριο|κειμενογρ[άα]φο)$/i) : null;
+  const content = compound?.[1] ?? writeFirst?.[1] ?? padFirst?.[1] ?? greekWrite?.[1];
+  if (content && (/\b(?:and then|then)\s+(?:save|close|rename|download|format)\b|\band\s+(?:save|close|download)\b/i.test(content)
+      || /^(?:a|an|the)\s+(?:poem|summary|report|story|essay|letter|email|list)\b/i.test(content))) return null;
+  return content?.trim() ? { type: "notepad", action: "write", content: content.trim() } : null;
+}
+
+/* ---------- virtual-desktop commands ---------- */
+
+/* "go to virtual desktop 1", "switch to desktop 2", "desktop 3", "next desktop",
+ * "move window 2 to desktop 1"; Greek equivalents. Runs before the window
+ * parser so desktop phrases are never interpreted as window referents. */
+const DESK_NUMBER_WORDS: Record<string, number> = {
+  one: 1, first: 1, two: 2, second: 2, three: 3, third: 3, four: 4, fourth: 4,
+  ενασ: 1, ενα: 1, μια: 1, πρωτο: 1, πρωτη: 1, δυο: 2, δευτερο: 2, δευτερη: 2,
+  τρεισ: 3, τρια: 3, τριτο: 3, τριτη: 3, τεσσερισ: 4, τεσσερα: 4, τεταρτο: 4, τεταρτη: 4,
+};
+
+function parseDesktopNumber(token: string): number | null {
+  const t = token.toLowerCase();
+  let n: number | null = null;
+  if (/^\d+$/.test(t)) n = Number(t);
+  else if (DESK_NUMBER_WORDS[t] !== undefined) n = DESK_NUMBER_WORDS[t];
+  if (n === null) return null;
+  return Math.max(1, Math.min(4, n)); // there are exactly DESKTOPS desktops
+}
+
+function parseDesktopCommand(text: string, greek: boolean): LocalCommand | null {
+  const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
+  if (!clean) return null;
+  const norm = normalize(clean);
+  const noun = "(?:(?:virtual\\s+|εικονικ(?:η|εσ)\\s+)?(?:desktop|workspace|επιφανει(?:α|εσ)\\s+εργασιασ|περιοχ(?:η|εσ)\\s+εργασιασ))";
+  const verb =
+    "(?:(?:go|switch|jump|move|open|focus)\\s+to\\s+|(?:go|switch|open|focus)\\s+|" +
+    "(?:πηγαινε|μεταβ(?:α|ησ)|ανοιξε|εστιασε|επιλεξε|εναλλαξε|εναλλαγη)\\s+(?:(?:στο|στη|στην|σε|στον|το|τη|την)\\s+)?)?";
+  const head = `^${verb}(?:(?:the|to|on)\\s+)?`;
+  const switchFor = (token: string): LocalCommand | null => {
+    const desktop = parseDesktopNumber(token);
+    return desktop === null ? null : { type: "desktop", action: "switch", desktop: desktop - 1 };
+  };
+
+  // switch, number first: "go to virtual desktop 1", "switch desktop 2", "desktop 3"
+  const mNumFirst = norm.match(new RegExp(`${head}${noun}\\s+(\\S+)$`));
+  if (mNumFirst) {
+    const cmd = switchFor(mNumFirst[1]);
+    if (cmd) return cmd;
+  }
+  // switch, ordinal first: "focus the fourth desktop", "δεύτερη επιφάνεια εργασίας"
+  const mOrdFirst = norm.match(new RegExp(`${head}(\\S+)\\s+${noun}$`));
+  if (mOrdFirst) {
+    const cmd = switchFor(mOrdFirst[1]);
+    if (cmd) return cmd;
+  }
+
+  // move a window: "move window 2 to desktop 1", "move the second window to
+  // desktop one", "μετακίνησε το παράθυρο 2 στην επιφάνεια εργασίας 1"
+  const moveTail = norm.replace(/^(?:move|send|relocate)\s+|^(?:μετακινησε|στειλε)\s+/, "");
+  if (moveTail !== norm) {
+    const target = consumeWindowTarget(moveTail, greek);
+    if (target) {
+      // consumeWindowTarget leaves a trailing window noun when the ordinal came
+      // first ("the third window to desktop four"): drop it before the "to".
+      const rest = moveTail
+        .slice(target.consumed)
+        .trim()
+        .replace(/^(?:window|παραθυρο)\s+/, "");
+      const mTo = rest.match(new RegExp(`^(?:(?:to|into|onto|on|in|στο|στη|στην|στον|σε)\\s+)?${noun}\\s+(\\S+)$`));
+      const desktop = mTo ? parseDesktopNumber(mTo[1]) : null;
+      if (desktop !== null) return { type: "desktop", action: "move", target: target.index, desktop: desktop - 1 };
+    }
+  }
+
+  // previous / next desktop
+  const traverse = /^(?:(?:switch|go)\s+to\s+|go\s+)?(?:the\s+)?(?:next|following|previous|επομεν(?:η|ο|ε)|προηγουμεν(?:η|ο|ε))\s+(?:virtual\s+|εικονικ(?:η|ε)\s+)?(?:desktop|workspace|επιφανει(?:α|εσ)\s+εργασιασ|περιοχ(?:η|εσ)\s+εργασιασ)(?=\s*$)/;
+  const mTraverse = norm.match(traverse);
+  if (mTraverse) {
+    const action = /^(?:next|following|επομεν)/.test(mTraverse[0]) ? "next" : "previous";
+    return { type: "desktop", action, desktop: 0 };
+  }
+
   return null;
 }
 
@@ -475,10 +646,14 @@ export function parseLocalCommand(text: string, language: string, skills: Array<
   if (!clean) return null;
   const greek = isGreek(language);
   const normalized = normalize(clean);
+  const notepad = parseNotepadCommand(text.trim(), greek);
+  if (notepad) return notepad;
   const terminal = parseTerminalCommand(clean, greek);
   if (terminal) return terminal;
   const files = parseFilesCommand(clean, greek);
   if (files) return files;
+  const desktop = parseDesktopCommand(clean, greek);
+  if (desktop) return desktop;
   const win = parseWindowCommand(clean, greek);
   if (win) return win;
   if (/^(?:cancel|stop|clear)\s+(?:all\s+)?timers?$/.test(normalized)

@@ -1,5 +1,7 @@
 # APEX — AI co-worker with real-time voice
 
+For everyday use, voice commands, desktop apps, and troubleshooting, see the [User Manual](USER-MANUAL.md).
+
 A self-hosted AI assistant with **ChatGPT subscription login through Codex**, an
 **always-on voice mode** (say **"Apex"** and talk to it — no push-to-talk), a
 tool-using agent core with skills and long-term vector memory, and full support
@@ -662,3 +664,60 @@ finishing any feature.
 
 For agent-focused implementation guidance (adding tools, skills, UI nodes, etc.)
 see `AGENTS.md`.
+
+### Notepad
+
+Open **Notepad** from the apps menu or say “open notepad”. It includes rich-text
+formatting, a searchable document library, text/Markdown import as plain text,
+HTML and TXT downloads, and live word and character counts. Paste inserts plain
+text. Use Ctrl/Cmd+S to save; saved documents autosave after edits. New documents
+need an initial save. Opening another document, starting a new one, or closing
+the window prompts before discarding unsaved changes.
+
+Documents are stored as standalone HTML in `~/Documents/APEX Notepad/<user>/`.
+Set `NOTEPAD_DOCUMENTS_DIR` to change the base directory. New documents with the
+same title receive numbered filenames; editing an existing document keeps its
+filename. HTML downloads save the current document first. Chat also supports
+“save notepad”, “download notepad”, and “write Meeting notes in notepad”.
+
+The document sidebar starts closed; **Recent documents** opens it. Voice and text
+share the same controls. Examples:
+
+- “Write to notepad Hello, world!” or “Open notepad and write Meeting notes.”
+- “Open notepad and add command output” copies the latest available command
+  result from this conversation; it does not run a command again.
+- “Run uname -a and put the output in notepad” uses the agent's terminal tool,
+  then writes the actual result (requires an open terminal).
+- “Replace notepad contents with …”, “rename notepad to Meeting Notes”,
+  “open Meeting Notes in notepad”, “show recent documents in notepad”.
+- “Format notepad bold”, “undo in notepad”, “read notepad”,
+  “clear notepad”, “export notepad as text”, “save notepad”.
+
+The `notepad_control` tool is available across skills for flexible, multi-step
+requests and generated text. It receives live document context, including unsaved
+text (up to 16,000 characters per open document). Actions target the focused
+Notepad, otherwise the latest on the current desktop. Formatting commands apply
+to the whole document; the toolbar can format a selection. Editing commands open
+Notepad when needed. The browser reports action results in chat; unsaved-change
+prompts still apply when switching or closing documents.
+
+#### Notepad troubleshooting
+
+“0 words · 0 characters” is normal for an empty document. A `404 Not Found`
+means a server route was unavailable; it is not a word-count error. Document
+history loads when **Recent documents** is opened. Library failures appear in
+that panel with **Retry**, separate from the document status.
+
+After updating an installed systemd deployment, build the frontend and restart
+both services so the UI and API use the same version:
+
+```bash
+cd frontend && npm run build
+sudo systemctl restart apex-backend.service apex-frontend.service
+```
+
+Restarting the backend ends open terminal sessions. Reload the browser after
+restarting. Check `/api/notepad/documents` on the backend and
+`/be/api/notepad/documents` through the frontend; a signed-out request should
+return 401, and a signed-in request should return a document list, never 404.
+See [Linux services](docs/linux-services.md) for deployment details.
