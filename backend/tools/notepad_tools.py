@@ -7,6 +7,23 @@ from tools.notepad import _documents_root, _path_for, _read, _sanitize
 ACTIONS = ["open", "close", "focus", "minimize", "maximize", "restore", "new", "save", "download", "export_text", "write", "replace", "clear", "title", "recent", "hide_recent", "open_document", "undo", "redo", "select_all", "format", "read", "command_output", "list_documents", "read_document"]
 
 
+def notepad_output_result(content):
+    """Deliver captured plain text to the editor instead of a preview link."""
+    # Keep within the editor's storage limit and retain the start of long output.
+    raw = content.encode("utf-8")
+    if len(raw) > 2 * 1024 * 1024 - 100:
+        content = raw[:2 * 1024 * 1024 - 100].decode("utf-8", errors="ignore") + "\n[output truncated at Notepad size limit]"
+    # man pages may use backspace overstrikes for bold/underlined text.
+    import re
+    while "\b" in content:
+        cleaned = re.sub(r"[^\n]\x08", "", content)
+        if cleaned == content:
+            content = content.replace("\b", "")
+            break
+        content = cleaned
+    return json.dumps({"notepad_command": {"type": "notepad", "action": "write", "content": content}, "status": "Output sent to the browser Notepad command queue. Do not write it again or create a preview file. The browser reports completion."}, ensure_ascii=False)
+
+
 def build_notepad_tools(config):
     def control(args, ctx):
         if not ctx.user_id:

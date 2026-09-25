@@ -888,6 +888,9 @@ def create_app() -> Flask:
         # default to it so "run/write on the focused terminal" is deterministic.
         focused_terminal = str(data.get("focused_terminal") or "").strip().lower()
 
+        output_destination = "notepad" if data.get("output_destination") == "notepad" else ""
+        if output_destination:
+            system_prompt += "\n\nThe user explicitly requested output in the live Notepad app. Do not generate a file or preview window as a substitute. For command manuals use noninteractive plain-text output (for example MANPAGER=cat man df, removing overstrike formatting if needed). run_shell automatically delivers its captured output to Notepad for this request; do not duplicate it with notepad_control.write. For other tools or generated prose, call notepad_control with write or replace and the actual content. Opening Notepad alone does not fulfill the request. Report failures honestly."
         tools = make_registry(memory=mem)
         ctx = AgentContext(
             user_id=uid,
@@ -904,6 +907,7 @@ def create_app() -> Flask:
             voice_mode=voice_mode,
             user_name=session.get("name") or user.get("name") or "",
             focused_terminal=focused_terminal,
+            output_destination=output_destination,
         )
         engine = build_engine(engine_name, ctx)
 

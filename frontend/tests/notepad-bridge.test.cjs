@@ -39,3 +39,17 @@ test('live context collects unsaved document content', () => {
   assert.match(context, /Unsaved notes/);
   assert.match(context, /"dirty":true/);
 });
+
+
+test('manual and output requests explicitly target Notepad', () => {
+  const api = bridge(() => true);
+  for (const text of [
+    'show me the manual of the command df and show it on notepad',
+    'put the command output in the notepad',
+    'write a report into my notepad',
+    'δείξε το εγχειρίδιο στο σημειωματάριο',
+  ]) assert.equal(api.requestsNotepadOutput(text), true, text);
+  for (const text of ['show me the manual of df', 'what is Notepad?', 'open notepad']) {
+    assert.equal(api.requestsNotepadOutput(text), false, text);
+  }
+});

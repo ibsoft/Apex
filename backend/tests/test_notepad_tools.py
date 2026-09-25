@@ -8,7 +8,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.base import ToolContext, ToolRegistry
 from tools.notepad import _documents_root, _standalone
-from tools.notepad_tools import build_notepad_tools
+from tools.notepad_tools import build_notepad_tools, notepad_output_result
 from agent.base import AgentContext
 
 
@@ -46,3 +46,15 @@ class NotepadToolTests(unittest.TestCase):
         registry = ToolRegistry().register(self.tool)
         ctx = AgentContext(user_id="alice", conversation_id="c", system_prompt="", history=[], provider=None, provider_kind="test", engine_name="test", tools=registry, skill_tools=["terminal_command"])
         self.assertEqual([tool.name for tool in ctx.active_tools()], ["notepad_control"])
+
+
+class NotepadOutputTests(unittest.TestCase):
+    def test_manual_overstrikes_are_plain_text(self):
+        result = json.loads(notepad_output_result("D\bDF\bF manual\n_\bu_\bs_\ba_\bg_\be"))
+        self.assertEqual(result["notepad_command"]["content"], "DF manual\nusage")
+
+    def test_large_output_respects_editor_limit(self):
+        result = json.loads(notepad_output_result("α" * (2 * 1024 * 1024)))
+        content = result["notepad_command"]["content"]
+        self.assertLessEqual(len(content.encode()), 2 * 1024 * 1024)
+        self.assertIn("output truncated", content)

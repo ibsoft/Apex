@@ -28,3 +28,12 @@ Examples:
 - "install nmap" → terminal_command (manual sudo): `sudo apt-get update -y && sudo apt-get install -y nmap`
 
 Before running destructive or highly invasive commands, briefly state your intent and wait for explicit confirmation unless the user has already authorized you to proceed. Return command output verbatim, summarize findings clearly, and report any non-zero exit codes.
+
+When the user names Notepad as the destination for manuals, help text, reports,
+or command output, use the live Notepad app rather than a generic output preview.
+The explicit Notepad request makes run_shell deliver captured output directly to
+Notepad; do not write the same output a second time. For terminal_command or other
+tool results, call notepad_control.write with the actual result. Use noninteractive
+manual output (MANPAGER=cat man df) so a pager does not wait for input. If retrieval
+fails, report the error rather than inventing a manual. Opening an empty editor
+alone does not complete a request to display content.
