@@ -181,6 +181,7 @@ def create_app() -> Flask:
     from tools.code_tools import register_code_routes
     from tools.shell_out import register_shell_routes
     from tools.preview_tools import register_preview_routes
+    from tools.terminal_server import register_terminal_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
@@ -189,6 +190,7 @@ def create_app() -> Flask:
     register_code_routes(app, require_user, config)
     register_shell_routes(app, require_user, config)
     register_preview_routes(app, require_user, config)
+    register_terminal_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""
@@ -878,6 +880,10 @@ def create_app() -> Flask:
         if window_context:
             system_prompt = system_prompt.rstrip() + "\n\n" + window_context
 
+        # The frontend knows which terminal window is focused; let terminal tools
+        # default to it so "run/write on the focused terminal" is deterministic.
+        focused_terminal = str(data.get("focused_terminal") or "").strip().lower()
+
         tools = make_registry(memory=mem)
         ctx = AgentContext(
             user_id=uid,
@@ -893,6 +899,7 @@ def create_app() -> Flask:
             runtime=rt,
             voice_mode=voice_mode,
             user_name=session.get("name") or user.get("name") or "",
+            focused_terminal=focused_terminal,
         )
         engine = build_engine(engine_name, ctx)
 

@@ -6,7 +6,7 @@
 
 export const MAX_WINDOWS = 10;
 
-export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "other";
+export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "terminal" | "other";
 export type WindowArrangement = "cascade" | "grid" | "tile-h" | "tile-v" | "center";
 
 export type WindowItem = { url: string; title: string; kind?: WindowKind };
@@ -66,11 +66,36 @@ export function isSignedPreviewToken(url: string): boolean {
   return false;
 }
 
+/** Synthetic URL used for terminal windows: "terminal:<sessionId>". */
+export function terminalUrl(sessionId: string): string {
+  return `terminal:${sessionId}`;
+}
+
+/** Extract the PTY session id from a terminal window item url, if any. */
+export function terminalSessionId(item: { url: string } | undefined | null): string | null {
+  const url = item?.url ?? "";
+  if (!url.startsWith("terminal:")) return null;
+  return url.slice("terminal:".length) || null;
+}
+
+/** True when a window hosts a live terminal (needs xterm, no download button). */
+export function isTerminalWindow(window: AppWindow): boolean {
+  return window.kind === "terminal" || terminalSessionId(window.items[window.index] ?? window.items[0]) !== null;
+}
+
+/** React StrictMode (Next dev default) double-mounts effects: an unmount within
+ *  ~1.5s of mount is the phantom cleanup of a fresh session, so the teardown
+ *  DELETE must be skipped to keep the PTY alive for the second mount. */
+export function shouldReleaseTerminal(sinceMountMs: number, now = Date.now()): boolean {
+  return now - sinceMountMs > 1500;
+}
+
 /** Download target for a window item: the backend endpoint for signed links
  *  (serves the file as an attachment), the original URL otherwise. */
 export function windowDownload(item: WindowItem): { href: string; download?: string } | null {
   const url = item?.url;
   if (!url) return null;
+  if (terminalSessionId(item)) return null; // terminals stream, they don't download
   const title = itemTitle(item);
   const signed = isSignedPreviewToken(url);
   if (signed) {
@@ -234,7 +259,9 @@ export function windowContextBlock(windows: AppWindow[], focusedId: string | nul
   const parts = windows.map((w, i) => {
     const focused = w.id === focusedId ? ", focused" : "";
     const item = w.items[w.index] ?? w.items[0];
-    const title = itemTitle(item ?? { url: "", title: "" });
+    let title = itemTitle(item ?? { url: "", title: "" });
+    const sessionId = terminalSessionId(item ?? undefined);
+    if (sessionId) title = `Terminal ${sessionId.slice(0, 8)}`;
     return `#${i + 1} "${title}" (${w.kind}${focused})`;
   });
   return `[Open windows: ${parts.join(" · ")}]`;

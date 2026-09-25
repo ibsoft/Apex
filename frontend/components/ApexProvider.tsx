@@ -43,9 +43,12 @@ import {
   WindowKind,
   collectPreviewableItems,
   itemTitle,
+  isTerminalWindow,
   kindForItems,
   layoutRects,
   resolvePreviewKinds,
+  terminalSessionId,
+  terminalUrl,
   windowContextBlock,
 } from "../lib/windows";
 
@@ -457,11 +460,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setWindows((prev) => {
       const target = prev.find((w) => w.id === id);
       if (!target) return prev;
+      const wasMinimized = target.minimized;
       const next = prev.map((w) => (w.id === id ? { ...w, minimized: !w.minimized } : w));
       const focusId = focusedWindowIdRef.current;
-      if (next.find((w) => w.id === id)?.minimized && focusId === id) {
+      if (!wasMinimized && focusId === id) {
         const fallback = next.filter((w) => !w.minimized);
         setFocusedWindowId(fallback.length ? fallback[fallback.length - 1].id : null);
+      } else if (wasMinimized) {
+        setFocusedWindowId(id);
       }
       return next;
     });
@@ -501,6 +507,29 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const windowUpdate = useCallback((id: string, patch: Partial<Pick<AppWindow, "rect" | "maximized" | "minimized">>) => {
     setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }, []);
+
+  /* Create a host terminal session and open it in a desktop window. Returns an
+   * error message on failure so executeLocalCommand can speak/echo it. */
+  const openTerminalWindow = useCallback(async (): Promise<string | null> => {
+    const url = `${BASE.replace(/\/$/, "")}/api/terminal/session`;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ rows: 24, cols: 80 }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return (data?.error as string) ?? `Could not open a terminal (${res.status}).`;
+      }
+      const data = await res.json();
+      windowOpen([{ url: terminalUrl(data.terminal_id), title: "Terminal" }], { kind: "terminal" });
+      return null;
+    } catch (err: any) {
+      return String(err?.message ?? err);
+    }
+  }, [windowOpen]);
 
   /* ---------- image browser ---------- */
 
@@ -757,6 +786,59 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             return null;
         }
       }
+      case "terminal": {
+        const terminals = windowsRef.current.filter(isTerminalWindow);
+        const termWord = () => localize("Terminal", "Τερματικό");
+        const nth = (n: number | undefined): AppWindow | null => {
+          if (n == null) return terminals[terminals.length - 1] ?? null;
+          return terminals[n - 1] ?? null;
+        };
+        switch (command.action) {
+          case "open": {
+            if (command.create && command.target == null) {
+              const error = await openTerminalWindow();
+              if (error) return error;
+              return "";
+            }
+            const existing = nth(command.target);
+            if (existing) {
+              windowFocus(existing.id);
+              return localize(`Focused ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`, `Επιλέχθηκε ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`);
+            }
+            const error = await openTerminalWindow();
+            if (error) return error;
+            return "";
+          }
+          case "focus": {
+            if (!terminals.length) {
+              const error = await openTerminalWindow();
+              if (error) return error;
+              return "";
+            }
+            let w: AppWindow;
+            if (command.target != null) {
+              w = nth(command.target) as AppWindow;
+            } else {
+              const focused = windowsRef.current.find((t) => t.id === focusedWindowIdRef.current);
+              w = (focused && isTerminalWindow(focused) ? focused : terminals[terminals.length - 1]) as AppWindow;
+            }
+            if (!w) {
+              const error = await openTerminalWindow();
+              if (error) return error;
+              return "";
+            }
+            windowFocus(w.id);
+            return localize(`Focused ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`, `Επιλέχθηκε ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`);
+          }
+          case "close": {
+            const w = nth(command.target);
+            if (!w) return localize("No terminal window is open.", "Δεν είναι ανοιχτό παράθυρο τερματικού.");
+            windowClose(w.id);
+            return localize(`Closed ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`, `Έκλεισε ${termWord()}${command.target != null ? ` ${command.target}` : ""}.`);
+          }
+        }
+        return null;
+      }
       case "cancelTimers":
         setTimers([]);
         return localize("All timers cancelled.", "Ακυρώθηκαν όλα τα χρονόμετρα.");
@@ -894,12 +976,17 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         let streamError = "";
         let streamedTools: NonNullable<NonNullable<Message["meta"]>["tools"]> = [];
         const windowBlock = windowContextBlock(windowsRef.current, focusedWindowIdRef.current);
+        // Tell the backend which terminal window is focused so terminal_command
+        // can default to it ("run this on the focused terminal").
+        const focusedWin = windowsRef.current.find((w) => w.id === focusedWindowIdRef.current);
+        const focusedTerminalId = (focusedWin && terminalSessionId(focusedWin.items[focusedWin.index] ?? focusedWin.items[0])) || "";
         const payload: any = {
           message: clean,
           conversation_id: convId,
           skill: opts.skill ?? skillRef.current,
           voice_mode: !!opts.voice,
           ...(windowBlock ? { window_context: windowBlock } : {}),
+          ...(focusedTerminalId ? { focused_terminal: focusedTerminalId } : {}),
         };
         const model = settingsRef.current.model;
         if (model && stripSystemModel(model)) payload.model = model;

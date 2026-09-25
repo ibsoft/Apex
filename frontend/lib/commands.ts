@@ -11,6 +11,7 @@ export type LocalCommand =
       arrangement?: WindowArrangement;
       note?: string;
     }
+  | { type: "terminal"; action: "open" | "close" | "focus"; target?: number; create?: boolean }
   | { type: "cancelTimers" }
   | { type: "cancelReminders" }
   | { type: "timer"; name: string; seconds: number }
@@ -278,10 +279,10 @@ function consumeWindowTarget(norm: string, greek: boolean): { index: number; con
 
 function arrangementFromWord(word: string | undefined, greek: boolean): WindowArrangement {
   const w = (word || "").trim().toLowerCase();
-  if (/grid|πλεγμα|τετραγωνα|πλεγματα/.test(w)) return "grid";
-  if (/side\s*[- ]?by\s*[- ]?side|column|στηλεσ|vertical|vertically/.test(w)) return "tile-v";
+  if (/grid|tile|πλεγμα|τετραγωνα|πλεγματα/.test(w)) return "grid";
+  if (/side\s*[- ]?by\s*[- ]?side|column|στηλεσ|vertical|vertically|διπλα\s+διπλα/.test(w)) return "tile-v";
   if (/stack|row|γραμμεσ|stacked|horizontal|horizontally/.test(w)) return "tile-h";
-  if (/centre?d?|central|κεντρο/.test(w)) return "center";
+  if (/centre?d?|center|central|κεντρο/.test(w)) return "center";
   return "cascade";
 }
 
@@ -302,6 +303,10 @@ function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
     const arrangeEl = normalized.match(/^(?:ταξινομησε|διαταξε|κανονισε|στοιχισε)\s+(?:τα\s+|τισ\s+)?(?:ανοιχτα\s+)?παραθυρα(?:\s+(?:σε|σε\s+στυλ)\s+)?([\p{L}\s-]+)?$/u);
     if (arrangeEl) return { type: "window", action: "arrange", arrangement: arrangementFromWord(arrangeEl[1], greek) };
   }
+  // bare arrangement words: "cascade the windows", "grid", "stack", "side by side", "center"
+  const bareArr = normalized.match(/^(cascade|grid|stack(?:ed)?|side\s*[- ]?by\s*[- ]?side|tile|center|centre)(?:\s+(?:the\s+)?(?:windows?))?$/)
+    || (greek && normalized.match(/^(κασκαντα|πλεγμα|πλεγματα|στοιβα|στοιβαγμενα|διπλα\s+διπλα|κεντρο|κεντραρισμενα)(?:\s+(?:τα\s+|τισ\s+)?(?:παραθυρα))?$/));
+  if (bareArr) return { type: "window", action: "arrange", arrangement: arrangementFromWord(bareArr[1], greek) };
 
   // list windows
   if (/^(?:list|show|count|enumerate)(?:\s+me)?\s+(?:the\s+)?(?:open\s+)?windows?$/.test(normalized)
@@ -318,8 +323,8 @@ function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
 
   // targeted actions: close / focus / maximize / minimize / restore
   const referent = greek
-    ? "(?:window|preview|image|document|view|that|it|one|παραθυρο|προεπισκοπηση|εικονα|εγγραφο|αυτο|φωτογραφια)"
-    : "(?:window|preview|image|document|view|that|it|one)";
+    ? "(?:window|preview|image|document|view|that|it|one|terminal|παραθυρο|προεπισκοπηση|εικονα|εγγραφο|αυτο|φωτογραφια|τερματικο)"
+    : "(?:window|preview|image|document|view|that|it|one|terminal)";
   const verbs: Array<["close" | "focus" | "maximize" | "minimize" | "restore", string, string]> = [
     ["close", "close|hide|dismiss|shut", "κλεισε|κρυψε|αποκρυψε"],
     ["focus", "focus|select|go\\s+to|switch\\s+to|bring\\s+up|bring\\s+forward", "εστιασε|επιλεξε|φερε|δειξε"],
@@ -365,11 +370,73 @@ function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
   return null;
 }
 
+/* ---------- terminal commands ---------- */
+
+/* "open terminal [2]", "close terminal", "focus on terminal 2", with Greek
+ * equivalents. Runs before the generic window parse so "terminal N" targets a
+ * terminal window (matched by its ordinal among terminals), not window N. */
+const EN_ORD = "(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)";
+const EL_ORD = "(?:πρωτο|πρωτη|δευτερο|δευτερη|τριτο|τριτη|τεταρτο|τεταρτη|πεμπτο|πεμπτη|εκτο|εκτη|εβδομο|εβδομη|ογδοο|ογδοη|ενατο|ενατη|δεκατο|δεκατη)";
+
+function parseTerminalCommand(text: string, greek: boolean): LocalCommand | null {
+  const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
+  if (!clean) return null;
+  const norm = normalize(clean);
+  const ordDict = greek ? EL_ORDINALS : EN_ORDINALS;
+  const ordSlot = greek
+    ? `(?:(?:(${EL_ORD})|καινουργιο|νεο|αλλο)\\s+)?`
+    : `(?:(${EN_ORD})\\s+)?`;
+  const ordinalOf = (m: RegExpMatchArray): number | undefined => (m[1] ? ordDict[m[1]] : undefined);
+  // Trailing "terminal 2", "terminal one" targets; "" yields undefined.
+  const trailingOf = (rest: string): number | undefined => {
+    const t = consumeWindowTarget(rest, greek);
+    return t ? t.index : NaN;
+  };
+  const finish = (rest: string, ordinal: number | undefined, action: "open" | "close" | "focus", createOpt: {}): LocalCommand | null => {
+    const target = ordinal ?? (rest ? trailingOf(rest) : undefined);
+    if (target !== undefined && !Number.isNaN(target)) return { type: "terminal", action, target, ...createOpt };
+    if (rest.trim() !== "") return null;
+    return { type: "terminal", action, ...createOpt };
+  };
+
+  const mOpen = norm.match(new RegExp(
+    `^(?:open|start|launch|spawn)\\s+(?:(?:(?:a|the|another)\\s+)?new\\s+|(?:a|the|another)\\s+)?${ordSlot}terminal\\s*`)) as RegExpMatchArray | null;
+  const mOpenEl = greek && !mOpen ? norm.match(new RegExp(
+    `^(?:ανοιξε|ξεκινα|ξεκινησε|εναρξη|δημιουργησε)\\s+(?:(?:ενα ακομα|ακομα ενα|ενα|το|τη|την|μια)\\s+)?${ordSlot}τερματικο\\s*`)) as RegExpMatchArray | null : null;
+  const openM = mOpen ?? mOpenEl;
+  if (openM) {
+    // "open NEW/ANOTHER terminal" must always open an additional window, never
+    // focus an existing one (Greek: νέο, καινούργιο, άλλο, ακόμα ένα).
+    const create = greek
+      ? /(?:νεο|καινουργιο|αλλο|ακομα)(?=\s|$)/.test(norm)
+      : /\b(?:new|another)\b/i.test(norm);
+    return finish(norm.slice(openM[0].length), ordinalOf(openM), "open", create ? { create: true } : {});
+  }
+
+  const mClose = norm.match(new RegExp(
+    `^(?:close|shut|kill|terminate)\\s+(?:(?:the|this)\\s+)?${ordSlot}terminal\\s*`)) as RegExpMatchArray | null;
+  const mCloseEl = greek && !mClose ? norm.match(new RegExp(
+    `^(?:κλεισε|σταματα|σταματησε|τερματισε)\\s+(?:(?:το|τη|την)\\s+)?${ordSlot}τερματικο\\s*`)) as RegExpMatchArray | null : null;
+  const closeM = mClose ?? mCloseEl;
+  if (closeM) return finish(norm.slice(closeM[0].length), ordinalOf(closeM), "close", {});
+
+  const mFocus = norm.match(new RegExp(
+    `^(?:focus|select|go\\s+to|switch\\s+to)\\s+(?:(?:on|to|at)\\s+)?(?:(?:the)\\s+)?${ordSlot}terminal\\s*`)) as RegExpMatchArray | null;
+  const mFocusEl = greek && !mFocus ? norm.match(new RegExp(
+    `^(?:εστιασε|φερε|επιλεξε|μεταβα|πηγαινε)\\s+(?:(?:στο|στη|στην|σε|το)\\s+)?${ordSlot}τερματικο\\s*`)) as RegExpMatchArray | null : null;
+  const focusM = mFocus ?? mFocusEl;
+  if (focusM) return finish(norm.slice(focusM[0].length), ordinalOf(focusM), "focus", {});
+
+  return null;
+}
+
 export function parseLocalCommand(text: string, language: string, skills: Array<{ name: string }>, now = Date.now()): LocalCommand | null {
   const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
   if (!clean) return null;
   const greek = isGreek(language);
   const normalized = normalize(clean);
+  const terminal = parseTerminalCommand(clean, greek);
+  if (terminal) return terminal;
   const win = parseWindowCommand(clean, greek);
   if (win) return win;
   if (/^(?:cancel|stop|clear)\s+(?:all\s+)?timers?$/.test(normalized)

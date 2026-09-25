@@ -250,6 +250,13 @@ apex-backend[1234]: 127.0.0.1 - - "GET /api/health HTTP/1.1" 200
 apex-frontend[1234]: ✓ Ready in 2.3s
 ```
 
+> The backend runs **one** gunicorn worker (16 threads) on purpose: cross-request
+> in-memory state like the live PTY terminal sessions must live in a single
+> process, so every request (terminal create/drain/input and the model's
+> `terminal_command`) can always find the session it opened. Do not raise
+> `--workers` above 1 or terminal windows will open and immediately die (or
+> Apex will report that no terminal is open).
+
 ### Health checks
 
 ```bash

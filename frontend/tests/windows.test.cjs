@@ -10,7 +10,8 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
-const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock, windowDownload } = moduleExports;
+const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock, windowDownload,
+  terminalUrl, terminalSessionId, isTerminalWindow, shouldReleaseTerminal } = moduleExports;
 
 test('kindForName classifies files by extension', () => {
   assert.equal(kindForName('photo.png'), 'image');
@@ -87,6 +88,19 @@ test('windowDownload returns the backend endpoint for signed links and the origi
   assert.equal(windowDownload({ url: '', title: '' }), null);
 });
 
+test('terminal items carry a synthetic url, identify sessions, and never download', () => {
+  const url = terminalUrl('sess123');
+  assert.equal(url, 'terminal:sess123');
+  assert.equal(terminalSessionId({ url }), 'sess123');
+  assert.equal(terminalSessionId({ url: 'terminal:' }), null);
+  assert.equal(terminalSessionId({ url: 'https://x.com/a.png' }), null);
+  assert.equal(windowDownload({ url, title: 'Terminal' }), null);
+  const w = { id: 'w1', items: [{ url, title: 'Terminal' }], index: 0, kind: 'terminal',
+    rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false };
+  assert.equal(isTerminalWindow(w), true);
+  assert.equal(isTerminalWindow({ ...w, items: [{ url: 'https://x.com/a.png', title: 'a.png' }], kind: 'image' }), false);
+});
+
 test('collectPreviewableItems ignores markdown links to plain sites', () => {
   const items = collectPreviewableItems('[Apex](https://opencode.ai) is a site, and so is https://x.com.');
   assert.deepEqual(items, []);
@@ -100,4 +114,17 @@ test('windowContextBlock labels focused windows and is empty when nothing is ope
     rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false };
   const block = windowContextBlock([w1, w2], 'w2');
   assert.equal(block, `[Open windows: #1 "Budget.xlsx" (xlsx) · #2 "chart.png" (image, focused)]`);
+});
+
+test('windowContextBlock tags terminal windows with their session id', () => {
+  const w = { id: 'w1', items: [{ url: terminalUrl('abcdef1234567890'), title: 'Terminal' }], index: 0, kind: 'terminal',
+    rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false };
+  assert.equal(windowContextBlock([w], 'w1'), `[Open windows: #1 "Terminal abcdef12" (terminal, focused)]`);
+});
+
+test('shouldReleaseTerminal skips the StrictMode phantom cleanup', () => {
+  const mountedAt = Date.now();
+  assert.equal(shouldReleaseTerminal(mountedAt), false);
+  assert.equal(shouldReleaseTerminal(mountedAt - 100), false);
+  assert.equal(shouldReleaseTerminal(mountedAt - 5000), true);
 });
