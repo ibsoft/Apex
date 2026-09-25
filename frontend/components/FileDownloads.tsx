@@ -12,8 +12,9 @@ export function backendFileHref(url: string): string | null {
     const base = BASE.replace(/\/$/, "");
     const prefix = base.endsWith("/api") ? base.slice(0, -4) : base;
 
-    // Signed file-search, editor and image-browser download tokens.
+    // Signed file-search, shell, editor and image-browser download tokens.
     if ((/\/api\/files\/download\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)
+        || /\/api\/shell\/download\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)
         || /\/api\/editor\/download\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)
         || /\/api\/images\/file\/[A-Za-z0-9_.-]+$/.test(parsed.pathname))
         && !parsed.username && !parsed.password && !parsed.search && !parsed.hash) {

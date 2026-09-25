@@ -23,9 +23,10 @@ import {
   itemTitle,
   kindForName,
   layoutRects,
+  windowDownload,
 } from "../lib/windows";
 import { useApex } from "./ApexProvider";
-import { backendFileHref, downloadHref } from "./FileDownloads";
+import { backendFileHref } from "./FileDownloads";
 
 const C = {
   cyan: "#00e5ff",
@@ -61,6 +62,20 @@ function KindTag({ kind }: { kind: string }) {
     }}>
       {kind}
     </span>
+  );
+}
+
+/* Title-bar download: every window gets one. Signed backend links hit the
+ * download endpoint; external links open the original in a new tab. */
+function DownloadButton({ item }: { item: WindowItem }) {
+  const link = windowDownload(item);
+  if (!link) return null;
+  return (
+    <a href={link.href} download={link.download} target="_blank" rel="noreferrer" aria-label="Download file"
+      title="Download file"
+      style={{ background: "none", border: "none", color: C.cyan, cursor: "pointer", fontSize: 13, lineHeight: 1, fontFamily: "var(--font-mono)", textDecoration: "none" }}>
+      ⭳
+    </a>
   );
 }
 
@@ -167,7 +182,7 @@ function PdfBody({ item }: { item: WindowItem }) {
 }
 
 function OtherBody({ item }: { item: WindowItem }) {
-  const href = downloadHref(item.url);
+  const link = windowDownload(item);
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, alignItems: "center", justifyContent: "center", padding: 22, textAlign: "center" }}>
       <div style={{ fontSize: 44 }}>📄</div>
@@ -175,8 +190,8 @@ function OtherBody({ item }: { item: WindowItem }) {
       <div style={{ fontSize: 10, color: C.dim, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
         NO INLINE PREVIEW — DOWNLOAD INSTEAD
       </div>
-      {href ? (
-        <a href={href} download={item.title}
+      {link ? (
+        <a href={link.href} download={link.download}
           style={{ display: "inline-block", padding: "9px 18px", borderRadius: 9,
             background: `${C.cyan}18`, border: `1px solid ${C.line}`,
             color: C.cyan, fontSize: 10, fontFamily: "var(--font-mono)",
@@ -195,7 +210,7 @@ function WindowBody({ w, onNext, onPrevious }: { w: AppWindow; onNext: () => voi
   const kind = w.kind === "image" && w.items.length > 1 ? "image" : w.kind;
   if (kind === "image") return <ImageBody items={w.items} index={w.index} onNext={onNext} onPrevious={onPrevious} />;
   if (kind === "pdf") return <PdfBody item={item} />;
-  if (kind === "docx" || kind === "xlsx" || kind === "text") {
+  if (kind === "docx" || kind === "xlsx" || kind === "pptx" || kind === "text") {
     return <HtmlDocBody item={item} htmlSrc={windowSource(item.url).src} />;
   }
   return <OtherBody item={item} />;
@@ -388,6 +403,7 @@ export default function WindowManager() {
               )}
               <KindTag kind={w.kind} />
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <DownloadButton item={w.items[w.index] ?? w.items[0]} />
                 <button onClick={() => a.windowToggleNotes(w.id)} aria-label={w.showNotes ? "Hide notes" : "Show notes"}
                   style={{ background: "none", border: "none", color: w.showNotes ? C.gold : C.dim, cursor: "pointer", fontSize: 12, lineHeight: 1, fontFamily: "var(--font-mono)" }}>
                   ✎

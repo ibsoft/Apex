@@ -21,11 +21,29 @@ function wordPattern(word: string): string {
   }).join("");
 }
 
+/* Greek phonetic spellings of the default English "apex" wake word. The el-GR
+ * recognizer transcribes the same sound several ways (άπεξ, έιπεξ, αϊπεξ,
+ * απεχς …); accepting all of them keeps Greek wake detection as responsive as
+ * the English one instead of depending on the spelling Chrome happens to pick. */
+const GREEK_APEX_ALIASES = ["απεξ", "ειπεξ", "αιπεξ", "απεχς"];
+
+function greekApexAliases(wakeWord: string): string[] {
+  const word = normalize(wakeWord.trim());
+  return word === "apex" || word === "απεξ" ? GREEK_APEX_ALIASES : [];
+}
+
 export function wakePattern(wakeWord: string, language = "en"): RegExp {
   const word = wakeWord.trim();
   if (!word) return /(?!)/;
-  const aliases = [wordPattern(word)];
-  if (language === "el" && word.toLowerCase() === "apex") aliases.push(wordPattern("απεξ"));
+  const words = [word];
+  if (language === "el") {
+    // Greek aliases are normalized (accent-insensitive, final sigma folded),
+    // so dedupe against their normalized form before adding.
+    for (const greek of greekApexAliases(wakeWord)) {
+      if (!words.some((w) => normalize(w) === greek)) words.push(greek);
+    }
+  }
+  const aliases = words.map(wordPattern);
   // JavaScript's \b treats Greek letters as non-word characters.
   return new RegExp(`(?<![\\p{L}\\p{N}_])(?:${aliases.join("|")})(?![\\p{L}\\p{N}_])`, "iu");
 }
@@ -40,7 +58,11 @@ export function isWakeOnlyText(text: string, wakeWord: string, language = "en"):
 export function isWakeWordFragment(text: string, wakeWord: string, language = "en"): boolean {
   const fragment = normalize(text).replace(/[.!?,;:··;]+/g, "").trim();
   const aliases = [normalize(wakeWord.trim())];
-  if (language === "el" && aliases[0] === "apex") aliases.push("απεξ");
+  if (language === "el") {
+    for (const greek of greekApexAliases(wakeWord)) {
+      if (!aliases.includes(greek)) aliases.push(greek);
+    }
+  }
   return fragment.length < 2 || aliases.some((word) => word.startsWith(fragment));
 }
 
@@ -149,9 +171,11 @@ export function recognitionLanguage(
   armed: boolean,
 ): string {
   if (responseLanguage !== "el") return "en-US";
-  const greekWakeWord = wakeWord.trim().toLowerCase() === "apex" || /[\u0370-\u03ff]/.test(wakeWord);
-  // Default/Greek wake words must be transcribed in Greek to preserve a Greek
-  // command spoken in the same utterance. Custom Latin wake words retain the
-  // previous English standby + Greek command/follow-up behavior.
+  const greekWakeWord = /[\u0370-\u03ff]/.test(wakeWord);
+  // Standby listens for the wake word, so an English wake word (including the
+  // default "apex") needs en-US to stay responsive. Once the wake word is heard
+  // (awake) or a follow-up window arms, the session switches to el-GR so the
+  // command is transcribed in Greek. Only wake words spelled with Greek letters
+  // keep the standby recognizer on el-GR.
   return greekWakeWord || phase === "awake" || (phase === "standby" && armed) ? "el-GR" : "en-US";
 }

@@ -179,6 +179,7 @@ def create_app() -> Flask:
     from tools.image_browser import register_image_routes
     from tools.vapt_tools import register_vapt_routes
     from tools.code_tools import register_code_routes
+    from tools.shell_out import register_shell_routes
     from tools.preview_tools import register_preview_routes
 
     register_file_routes(app, require_user, config)
@@ -186,6 +187,7 @@ def create_app() -> Flask:
     register_image_routes(app, require_user, config)
     register_vapt_routes(app, require_user, config)
     register_code_routes(app, require_user, config)
+    register_shell_routes(app, require_user, config)
     register_preview_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):

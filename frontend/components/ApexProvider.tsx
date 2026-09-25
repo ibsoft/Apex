@@ -24,6 +24,7 @@ import {
 import {
   api,
   ApiError,
+  BASE,
   Conversation,
   MemoryEntry,
   Skill,
@@ -44,6 +45,7 @@ import {
   itemTitle,
   kindForItems,
   layoutRects,
+  resolvePreviewKinds,
   windowContextBlock,
 } from "../lib/windows";
 
@@ -599,7 +601,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   // Auto-open desktop windows for file/image links in assistant replies — for
   // both voice and typed turns. Only reacts to brand-new messages so opening
-  // an old conversation does not pop windows from history.
+  // an old conversation does not pop windows from history. Signed editor/files/
+  // shell tokens hide their real filename behind the token, so the backend is
+  // asked to classify them (docx/xlsx/pptx/pdf/text/image) before the kind is
+  // pinned — otherwise Word/Excel/shell output would fall back to a "download
+  // only" card instead of an inline preview.
   const autoOpenedMsgRef = useRef<string | null>(null);
   useEffect(() => {
     const last = messages[messages.length - 1];
@@ -608,7 +614,9 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     const items = collectPreviewableItems(last.content);
     if (items.length) {
       autoOpenedMsgRef.current = last.id;
-      windowOpen(items);
+      void resolvePreviewKinds(items, fetch, BASE).then((resolved) => {
+        windowOpen(resolved, { kind: kindForItems(resolved) });
+      });
     }
   }, [messages, windowOpen]);
 

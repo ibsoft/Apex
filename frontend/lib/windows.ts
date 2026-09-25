@@ -6,10 +6,10 @@
 
 export const MAX_WINDOWS = 10;
 
-export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "text" | "other";
+export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "other";
 export type WindowArrangement = "cascade" | "grid" | "tile-h" | "tile-v" | "center";
 
-export type WindowItem = { url: string; title: string };
+export type WindowItem = { url: string; title: string; kind?: WindowKind };
 export type WindowRect = { x: number; y: number; w: number; h: number };
 
 export type AppWindow = {
@@ -41,6 +41,7 @@ export function kindForName(name: string, url = ""): WindowKind {
   if (ext === "pdf") return "pdf";
   if (ext === "docx") return "docx";
   if (ext === "xlsx") return "xlsx";
+  if (ext === "pptx") return "pptx";
   if (TEXT_EXTS.includes(ext)) return "text";
   return "other";
 }
@@ -48,8 +49,73 @@ export function kindForName(name: string, url = ""): WindowKind {
 /** Determine the kind a whole window should use for its collection. */
 export function kindForItems(items: WindowItem[]): WindowKind {
   if (!items.length) return "other";
-  if (items.every((i) => kindForName(i.title, i.url) === "image")) return "image";
-  return kindForName(items[0].title, items[0].url);
+  const kinds = items.map((i) => i.kind ?? kindForName(i.title, i.url));
+  if (kinds.every((k) => k === "image")) return "image";
+  return kinds[0];
+}
+
+/** Kind a single item should render as, trusting an explicit kind first. */
+export function kindForItem(item: WindowItem): WindowKind {
+  return item.kind ?? kindForName(item.title, item.url);
+}
+/** True for signed backend preview tokens (no visible extension in the URL). */
+export function isSignedPreviewToken(url: string): boolean {
+  if (/\/api\/(?:files|editor|shell)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
+  if (/\/api\/images\/file\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
+  if (/\/api\/obsidian\/file\?path=/.test(url)) return true;
+  return false;
+}
+
+/** Download target for a window item: the backend endpoint for signed links
+ *  (serves the file as an attachment), the original URL otherwise. */
+export function windowDownload(item: WindowItem): { href: string; download?: string } | null {
+  const url = item?.url;
+  if (!url) return null;
+  const title = itemTitle(item);
+  const signed = isSignedPreviewToken(url);
+  if (signed) {
+    // The original signed URL already points at the backend download route.
+    if (url.startsWith("http")) return { href: url, download: title };
+    try {
+      const base = typeof window !== "undefined" ? window.location.origin : "";
+      return { href: new URL(url, base).href, download: title };
+    } catch {
+      return { href: url, download: title };
+    }
+  }
+  // Raw external/other links: open the original (may render inline in a tab).
+  return url.startsWith("http") ? { href: url, download: title } : null;
+}
+
+/** Ask the backend to classify signed preview tokens (whose real filename and
+
+ *  kind live server-side, hidden behind the token). Returns items with a
+ *  concrete `kind` so Word/Excel/PDF/text render as previews instead of the
+ *  generic download card. Fetches are best-effort: on failure the original
+ *  (guessed) kind is kept so downloads keep working. */
+export async function resolvePreviewKinds(
+  items: WindowItem[],
+  fetchFn: typeof fetch = fetch,
+  prefix = "",
+): Promise<WindowItem[]> {
+  const signed = items.filter((i) => isSignedPreviewToken(i.url));
+  if (!signed.length) return items;
+  const resolved = await Promise.all(
+    signed.map(async (item) => {
+      try {
+        const res = await fetchFn(`${prefix}/api/preview/kind?url=${encodeURIComponent(item.url)}`);
+        if (!res.ok) return item;
+        const data = await res.json();
+        const kind: WindowKind | undefined = data?.kind;
+        if (kind && kind !== "other") return { ...item, kind };
+      } catch {
+        /* keep the item as-is so the url still opens as a download */
+      }
+      return item;
+    }),
+  );
+  const byUrl = new Map(resolved.map((i) => [i.url, i]));
+  return items.map((i) => byUrl.get(i.url) ?? i);
 }
 
 export function titleFromUrl(url: string): string {
@@ -131,10 +197,10 @@ export function layoutRects(arrangement: WindowArrangement, total: number, vw: n
 /* ---------- extraction from assistant messages ---------- */
 
 const PREVIEWABLE_URL_RE =
-  /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|editor)\/download\/[A-Za-z0-9_.\-]+|\/api\/images\/file\/[A-Za-z0-9_.\-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/(?:files|editor)\/download\/[A-Za-z0-9_.\-]+)|(\/api\/images\/file\/[A-Za-z0-9_.\-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
+  /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|editor|shell)\/download\/[A-Za-z0-9_.\-]+|\/api\/images\/file\/[A-Za-z0-9_.\-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/(?:files|editor|shell)\/download\/[A-Za-z0-9_.\-]+)|(\/api\/images\/file\/[A-Za-z0-9_.\-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
 
 function isPreviewableUrl(url: string): boolean {
-  if (/\/api\/(?:files|editor)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
+  if (/\/api\/(?:files|editor|shell)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/images\/file\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/obsidian\/file\?path=/.test(url)) return true;
   if (/\.(jpg|jpeg|png|gif|webp|svg|bmp|pdf)(\?.*)?$/i.test(url)) return true;

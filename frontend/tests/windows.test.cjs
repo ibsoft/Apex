@@ -10,13 +10,14 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
-const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock } = moduleExports;
+const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock, windowDownload } = moduleExports;
 
 test('kindForName classifies files by extension', () => {
   assert.equal(kindForName('photo.png'), 'image');
   assert.equal(kindForName('logo.svg', ''), 'image');
   assert.equal(kindForName('report.pdf'), 'pdf');
   assert.equal(kindForName('budget.xlsx'), 'xlsx');
+  assert.equal(kindForName('deck.pptx'), 'pptx');
   assert.equal(kindForName('notes.txt'), 'text');
   assert.equal(kindForName('script.py'), 'text');
   assert.equal(kindForName('archive.zip'), 'other');
@@ -52,6 +53,7 @@ test('cascade offsets successive windows within bounds', () => {
 test('collectPreviewableItems finds and deduplicates tokens, links and raw URLs', () => {
   const content = [
     'See [Chart](/api/editor/download/abc123) and [Photo](/api/images/file/def456).',
+    'Shell run: [Output](/api/shell/download/xyz789).',
     'Raw image: https://example.com/a/b.png?size=1. Duplicate: [Chart](/api/editor/download/abc123).',
     'Obsidian: /api/obsidian/file?path=Inbox/note.md',
     'https://other.example.org/page.pdf and https://skip.example.com/chart.docx?x=1',
@@ -61,11 +63,28 @@ test('collectPreviewableItems finds and deduplicates tokens, links and raw URLs'
   assert.equal(new Set(urls).size, urls.length, 'no duplicates');
   assert.ok(items.some((i) => i.url === '/api/editor/download/abc123' && i.title === 'Chart'));
   assert.ok(items.some((i) => i.url === '/api/images/file/def456' && i.title === 'Photo'));
+  assert.ok(items.some((i) => i.url === '/api/shell/download/xyz789' && i.title === 'Output'));
   assert.ok(items.some((i) => i.url === 'https://example.com/a/b.png?size=1' && i.title === 'b.png'));
   assert.ok(items.some((i) => i.url.startsWith('/api/obsidian/file?path=Inbox/note.md')));
   assert.ok(items.some((i) => i.url === 'https://other.example.org/page.pdf'));
   assert.ok(!items.some((i) => i.url.includes('chart.docx')), 'docx without a signed token is excluded');
-  assert.equal(items.length, 5);
+  assert.equal(items.length, 6);
+});
+
+test('windowDownload returns the backend endpoint for signed links and the original for external ones', () => {
+  assert.deepEqual(windowDownload({ url: '/api/editor/download/t0k', title: 'report.docx' }), {
+    href: '/api/editor/download/t0k',
+    download: 'report.docx',
+  });
+  assert.deepEqual(windowDownload({ url: '/api/shell/download/t0k', title: 'output.txt' }), {
+    href: '/api/shell/download/t0k',
+    download: 'output.txt',
+  });
+  assert.deepEqual(windowDownload({ url: 'https://example.com/a.png', title: 'a.png' }), {
+    href: 'https://example.com/a.png',
+    download: 'a.png',
+  });
+  assert.equal(windowDownload({ url: '', title: '' }), null);
 });
 
 test('collectPreviewableItems ignores markdown links to plain sites', () => {
