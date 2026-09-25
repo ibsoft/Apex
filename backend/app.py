@@ -183,6 +183,7 @@ def create_app() -> Flask:
     from tools.preview_tools import register_preview_routes
     from tools.terminal_server import register_terminal_routes
     from tools.filebrowser import register_filebrowser_routes
+    from tools.notepad import register_notepad_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
@@ -193,6 +194,7 @@ def create_app() -> Flask:
     register_preview_routes(app, require_user, config)
     register_terminal_routes(app, require_user, config)
     register_filebrowser_routes(app, require_user, config)
+    register_notepad_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""

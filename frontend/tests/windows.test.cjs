@@ -11,7 +11,7 @@ const compiled = ts.transpileModule(source, {
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
 const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock, windowDownload,
-  terminalUrl, terminalSessionId, isTerminalWindow, isFilesWindow, shouldReleaseTerminal } = moduleExports;
+  terminalUrl, terminalSessionId, isTerminalWindow, isFilesWindow, shouldReleaseTerminal, onDesktop } = moduleExports;
 
 test('kindForName classifies files by extension', () => {
   assert.equal(kindForName('photo.png'), 'image');
@@ -96,7 +96,7 @@ test('terminal items carry a synthetic url, identify sessions, and never downloa
   assert.equal(terminalSessionId({ url: 'https://x.com/a.png' }), null);
   assert.equal(windowDownload({ url, title: 'Terminal' }), null);
   const w = { id: 'w1', items: [{ url, title: 'Terminal' }], index: 0, kind: 'terminal',
-    rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false };
+    rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, desktop: 0, note: '', showNotes: false };
   assert.equal(isTerminalWindow(w), true);
   assert.equal(isTerminalWindow({ ...w, items: [{ url: 'https://x.com/a.png', title: 'a.png' }], kind: 'image' }), false);
 });
@@ -114,11 +114,26 @@ test('windowContextBlock labels focused windows and is empty when nothing is ope
     rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false };
   const block = windowContextBlock([w1, w2], 'w2');
   assert.equal(block, `[Open windows: #1 "Budget.xlsx" (xlsx) · #2 "chart.png" (image, focused)]`);
+  // the active virtual desktop is appended so the model stays in sync
+  assert.equal(
+    windowContextBlock([w1], null, 1),
+    `[Open windows: #1 "Budget.xlsx" (xlsx) · active desktop 2/4]`,
+  );
+});
+
+test('onDesktop filters windows to their virtual desktop', () => {
+  const mk = (id, desktop) => ({ id, desktop, items: [], index: 0, kind: 'other',
+    rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false });
+  const windows = [mk('a', 0), mk('b', 1), mk('c', 2), mk('d', 3), mk('e', 0)];
+  assert.deepEqual(onDesktop(windows, 0).map(w => w.id), ['a', 'e']);
+  assert.deepEqual(onDesktop(windows, 2).map(w => w.id), ['c']);
+  assert.deepEqual(onDesktop(windows, 3).map(w => w.id), ['d']);
+  assert.deepEqual(onDesktop([], 1), []);
 });
 
 test('windowContextBlock tags terminal windows with their session id', () => {
   const w = { id: 'w1', items: [{ url: terminalUrl('abcdef1234567890'), title: 'Terminal' }], index: 0, kind: 'terminal',
-    rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false };
+    rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, desktop: 0, note: '', showNotes: false };
   assert.equal(windowContextBlock([w], 'w1'), `[Open windows: #1 "Terminal abcdef12" (terminal, focused)]`);
 });
 
@@ -132,7 +147,7 @@ test('shouldReleaseTerminal skips the StrictMode phantom cleanup', () => {
 test('file-manager windows are identified by kind or synthetic url, and files: never downloads', () => {
   const base = { id: 'w1', index: 0, kind: 'files',
     items: [{ url: 'files:', title: 'File Manager' }],
-    rect: { x: 0, y: 0, w: 600, h: 400 }, maximized: false, minimized: false, note: '', showNotes: false };
+    rect: { x: 0, y: 0, w: 600, h: 400 }, maximized: false, minimized: false, desktop: 0, note: '', showNotes: false };
   assert.equal(isFilesWindow(base), true);
   assert.equal(isFilesWindow({ ...base, kind: 'other' }), true, 'url signals a files window even without the kind');
   assert.equal(isFilesWindow({ ...base, items: [{ url: 'https://x.com/a.png', title: 'a.png' }], kind: 'image' }), false);

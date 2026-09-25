@@ -49,6 +49,10 @@ class Config:
     FM_JOB_TTL_SECONDS = _int("FM_JOB_TTL_SECONDS", 3600)
     FM_UPLOAD_MAX_FILES = _int("FM_UPLOAD_MAX_FILES", 1000)
 
+    # --- Notepad -------------------------------------------------------------
+    # Blank saves to ~/Documents/APEX Notepad; each signed-in user is isolated.
+    NOTEPAD_DOCUMENTS_DIR = os.getenv("NOTEPAD_DOCUMENTS_DIR", "")
+
     # --- OpenAI OAuth (Sign in with ChatGPT / OpenAI) ----------------------
     # Register an OAuth app at https://platform.openai.com -> Apps -> OAuth.
     OPENAI_CLIENT_ID = os.getenv("OPENAI_CLIENT_ID", "")

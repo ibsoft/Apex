@@ -285,7 +285,7 @@ cd ../backend && sudo systemctl restart apex-backend
 
 ## 7. Backups
 
-Everything persistent lives under `backend/data/`:
+Core application data lives under `backend/data/`:
 
 ```
 backend/data/
@@ -300,6 +300,10 @@ tar -czf apex-backup-$(date +%F).tgz backend/data
 sudo systemctl start apex-backend
 ```
 
+Notepad documents are stored separately in
+`~/Documents/APEX Notepad/<user>/` for the service account, or under
+`NOTEPAD_DOCUMENTS_DIR` when configured. Include that directory in backups.
+
 ## 8. Troubleshooting
 
 | Symptom | Check |
@@ -311,6 +315,7 @@ sudo systemctl start apex-backend
 | 401 `Incorrect API key provided: not-needed` | `openai` selected with no key — see the row above (fixed backend rejects it cleanly now) |
 | 402 on sign-in | ChatGPT Plus/Pro required for `gpt-5-codex` via the user token |
 | `Cannot find module './548.js'` | stale `.next` — `cd frontend && rm -rf .next && npm run build`, then restart the UI |
+| Notepad shows `404 Not Found` | Check `/api/notepad/documents` on port 5001 and `/be/api/notepad/documents` on port 3000. Rebuild/restart updated services, reload the browser, and use **Recent documents → Retry**. A signed-out request should return 401, not 404. |
 | Services up but page slow | machine under memory pressure/swap (this box) — close apps or add swap-free RAM |
 | Want a different port | edit the `--bind` / `--port` in the unit, `sudo systemctl daemon-reload` + restart |
 

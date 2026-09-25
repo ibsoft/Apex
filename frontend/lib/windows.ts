@@ -6,7 +6,7 @@
 
 export const MAX_WINDOWS = 10;
 
-export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "terminal" | "files" | "other";
+export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "terminal" | "files" | "notepad" | "other";
 export type WindowArrangement = "cascade" | "grid" | "tile-h" | "tile-v" | "center";
 
 export type WindowItem = { url: string; title: string; kind?: WindowKind };
@@ -20,9 +20,18 @@ export type AppWindow = {
   rect: WindowRect;
   maximized: boolean;
   minimized: boolean;
+  /** Virtual desktop (workspace) this window belongs to, 0..3. */
+  desktop: number;
   note: string;
   showNotes: boolean;
 };
+
+/** The windows that live on a particular virtual desktop. */
+export function onDesktop(windows: AppWindow[], desktop: number): AppWindow[] {
+  return windows.filter((w) => w.desktop === desktop);
+}
+
+export const DESKTOPS = 4;
 
 const IMAGE_EXT_RE = /\.(jpg|jpeg|png|gif|webp|svg|bmp)(\?.*)?$/i;
 
@@ -86,6 +95,11 @@ export function isTerminalWindow(window: AppWindow): boolean {
 /** True when a window hosts the file manager (keeps its own keyboard). */
 export function isFilesWindow(window: AppWindow): boolean {
   return window.kind === "files" || (window.items[window.index] ?? window.items[0])?.url?.startsWith("files:") === true;
+}
+
+/** True when a window hosts the built-in rich-text Notepad app. */
+export function isNotepadWindow(window: AppWindow): boolean {
+  return window.kind === "notepad" || (window.items[window.index] ?? window.items[0])?.url?.startsWith("notepad:") === true;
 }
 
 /** React StrictMode (Next dev default) double-mounts effects: an unmount within
@@ -258,8 +272,9 @@ export function collectPreviewableItems(content: string): WindowItem[] {
 }
 
 /** Apex-awareness block appended to the model prompt, e.g.
- *  [Open windows: #1 "Budget.xlsx" (xlsx, focused) · #2 "chart.png" (image)] */
-export function windowContextBlock(windows: AppWindow[], focusedId: string | null | undefined): string {
+ *  [Open windows: #1 "Budget.xlsx" (xlsx, focused) · #2 "chart.png" (image)]
+ *  Passing the active virtual desktop appends it to the header. */
+export function windowContextBlock(windows: AppWindow[], focusedId: string | null | undefined, desktop?: number): string {
   if (!windows.length) return "";
   const parts = windows.map((w, i) => {
     const focused = w.id === focusedId ? ", focused" : "";
@@ -269,5 +284,6 @@ export function windowContextBlock(windows: AppWindow[], focusedId: string | nul
     if (sessionId) title = `Terminal ${sessionId.slice(0, 8)}`;
     return `#${i + 1} "${title}" (${w.kind}${focused})`;
   });
-  return `[Open windows: ${parts.join(" · ")}]`;
+  const desktopNote = typeof desktop === "number" ? ` · active desktop ${desktop + 1}/${DESKTOPS}` : "";
+  return `[Open windows: ${parts.join(" · ")}${desktopNote}]`;
 }

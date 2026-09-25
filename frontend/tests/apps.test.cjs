@@ -13,10 +13,11 @@ const moduleExports = {};
 new Function('exports', 'require', compiled)(moduleExports, (id) => { throw new Error(`unexpected require: ${id}`); });
 const { APPS, getApps, registerApp } = moduleExports;
 
-test('registry is seeded with the terminal and file-manager apps', () => {
+test('registry is seeded with the terminal, file-manager and Notepad apps', () => {
   const ids = getApps().map((app) => app.id);
   assert.ok(ids.includes('terminal'));
   assert.ok(ids.includes('files'));
+  assert.ok(ids.includes('notepad'));
 });
 
 test('registerApp ignores duplicate ids and empty payloads', () => {
@@ -54,4 +55,16 @@ test('file-manager app opens a new files window via ctx.windowOpenNew', async ()
   assert.equal(opened.length, 1);
   assert.equal(opened[0].opts.kind, 'files');
   assert.equal(opened[0].items[0].url, 'files:');
+});
+
+test('Notepad app opens a fresh rich-text editor window', async () => {
+  const app = getApps().find((a) => a.id === 'notepad');
+  assert.ok(app, 'notepad app present');
+  const opened = [];
+  const ctx = { openTerminal: async () => null, windowOpenNew: (items, opts) => opened.push({ items, opts }) };
+  await app.open(ctx);
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0].opts.kind, 'notepad');
+  assert.equal(opened[0].items[0].kind, 'notepad');
+  assert.match(opened[0].items[0].url, /^notepad:/);
 });

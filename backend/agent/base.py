@@ -33,7 +33,7 @@ class AgentContext:
     def active_tools(self) -> list[Tool]:
         if not self.skill_tools:
             return self.tools.active()
-        names = set(self.skill_tools)
+        names = set(self.skill_tools) | {"notepad_control"}
         return [t for t in self.tools.active() if t.name in names]
 
     def tool_schemas(self) -> list[dict]:
