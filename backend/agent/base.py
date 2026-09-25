@@ -28,6 +28,7 @@ class AgentContext:
     runtime: dict = field(default_factory=dict)
     voice_mode: bool = False
     user_name: str = ""
+    output_destination: str = ""
     focused_terminal: str = ""   # browser-focused terminal session id, if any
 
     def active_tools(self) -> list[Tool]:
@@ -46,6 +47,7 @@ class AgentContext:
             memory=self.memory,
             model=self.provider_kind,
             focused_terminal=self.focused_terminal,
+            output_destination=self.output_destination,
         )
 
 

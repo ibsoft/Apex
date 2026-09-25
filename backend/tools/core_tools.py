@@ -265,6 +265,9 @@ def build_core_tools(registry, cfg):
                 result = f"exit {proc.returncode}\nstderr:\n{err}\nstdout:\n{out}"
             else:
                 result = out or "ok"
+        if ctx.output_destination == "notepad":
+            from tools.notepad_tools import notepad_output_result
+            return notepad_output_result(result)
         if on_screen:
             return _with_screen_link(ctx, cfg, command, result)
         # Truncate what the model has to read; the on-screen file keeps it whole.

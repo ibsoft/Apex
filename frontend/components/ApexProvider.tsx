@@ -34,7 +34,7 @@ import {
 import { useVoiceEngine, VoicePhase } from "../lib/voice";
 import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
-import { sendNotepadCommand, notepadContext } from "../lib/notepad";
+import { sendNotepadCommand, notepadContext, requestsNotepadOutput } from "../lib/notepad";
 import type { NotepadCommand } from "../lib/notepad";
 import { formatDuration, parseLocalCommand } from "../lib/commands";
 import {
@@ -700,11 +700,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   // asked to classify them (docx/xlsx/pptx/pdf/text/image) before the kind is
   // pinned — otherwise Word/Excel/shell output would fall back to a "download
   // only" card instead of an inline preview.
+  const notepadReplyIds = useRef(new Set<string>());
   const autoOpenedMsgRef = useRef<string | null>(null);
   useEffect(() => {
     const last = messages[messages.length - 1];
     if (!last || last.role !== "assistant" || last.streaming || !last.content) return;
-    if (autoOpenedMsgRef.current === last.id) return;
+    if (autoOpenedMsgRef.current === last.id || notepadReplyIds.current.has(last.id)) return;
     const items = collectPreviewableItems(last.content);
     if (items.length) {
       autoOpenedMsgRef.current = last.id;
@@ -1176,6 +1177,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         }));
 
         const asstId = `asst_${Date.now().toString(36)}_${msgSeq++}`;
+        const outputInNotepad = requestsNotepadOutput(clean);
+        if (outputInNotepad) notepadReplyIds.current.add(asstId);
         const pushAssistant = (patch: Partial<Message>) =>
           setByConv((m) => {
             const list = [...(m[convId] ?? [])];
@@ -1203,6 +1206,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         const focusedTerminalId = (focusedWin && terminalSessionId(focusedWin.items[focusedWin.index] ?? focusedWin.items[0])) || "";
         const payload: any = {
           message: clean,
+          ...(outputInNotepad ? { output_destination: "notepad" } : {}),
           conversation_id: convId,
           skill: opts.skill ?? skillRef.current,
           voice_mode: !!opts.voice,
@@ -1214,6 +1218,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
         let notepadWork = Promise.resolve();
         const notepadResults: string[] = [];
+        const notepadWrites = new Set<string>();
         await api.chat(payload, (ev: ChatEvent) => {
           if (ev.type === "meta") {
             if (ev.skill && ev.skill !== skillRef.current) {
@@ -1233,12 +1238,15 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
               },
             });
           } else if (ev.type === "tool_result") {
-            if (ev.name === "notepad_control") {
+            if (ev.name === "notepad_control" || (outputInNotepad && ev.name === "run_shell")) {
               try {
                 const result = JSON.parse(ev.output);
                 if (result.notepad_command) {
                   const command = result.notepad_command as NotepadCommand;
-                  notepadWork = notepadWork.then(async () => {
+                  notepadReplyIds.current.add(asstId);
+                  const duplicate = command.action === "write" && notepadWrites.has(command.content ?? "");
+                  if (command.action === "write") notepadWrites.add(command.content ?? "");
+                  if (!duplicate) notepadWork = notepadWork.then(async () => {
                     const reply = await executeLocalCommand({ ...command, type: "notepad" });
                     if (reply) notepadResults.push(reply);
                   });

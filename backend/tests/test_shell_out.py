@@ -71,6 +71,19 @@ class ShellOutTests(unittest.TestCase):
         directory = self.data_dir / "generated" / "shell" / "alice"
         return sorted(directory.glob("*.txt")) if directory.is_dir() else []
 
+    def test_notepad_destination_delivers_full_text_without_preview_file(self):
+        import json
+        from unittest.mock import patch
+        output = "df manual\n" + "details\n" * 800
+        ctx = ToolContext(user_id="alice", output_destination="notepad")
+        with patch("tools.core_tools.subprocess.run", return_value=SimpleNamespace(stdout=output, stderr="", returncode=0)) as run:
+            result = self.tools["run_shell"].call({"command": "MANPAGER=cat man df", "on_screen": True}, ctx)
+        command = json.loads(result)["notepad_command"]
+        self.assertEqual(command["action"], "write")
+        self.assertEqual(command["content"], output)
+        self.assertEqual(self.shell_files(), [])
+        run.assert_called_once()
+
     # ---- capture ------------------------------------------------------------
 
     def test_save_shell_output_writes_user_bound_file_and_returns_url(self):

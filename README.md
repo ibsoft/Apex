@@ -722,3 +722,9 @@ restarting. Check `/api/notepad/documents` on the backend and
 `/be/api/notepad/documents` through the frontend; a signed-out request should
 return 401, and a signed-in request should return a document list, never 404.
 See [Linux services](docs/linux-services.md) for deployment details.
+
+Explicit requests such as “show me the manual of df on Notepad” route captured
+shell text to the live editor, preserving output beyond the normal chat excerpt.
+These replies do not auto-open a generic preview window. Manual overstrike
+formatting is removed, and the Notepad 2 MB limit still applies. Restart the
+backend and frontend after installing this routing change.

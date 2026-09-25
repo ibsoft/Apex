@@ -21,6 +21,7 @@ class ToolContext:
     emit: Optional[Callable[[dict], None]] = None  # push agent events mid-tool
     model: str = ""
     session: Any = None
+    output_destination: str = ""  # Explicit browser output app, e.g. notepad.
     focused_terminal: str = ""    # session id of the browser-focused terminal window
 
 

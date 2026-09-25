@@ -194,6 +194,7 @@ These are **AI-assisted requests**, not fixed shortcuts:
 - “Summarize this conversation in Notepad and title it Project Summary.”
 - “Rewrite the current Notepad text in a more formal tone.”
 - “Run uname -a in the terminal and put its output in Notepad.”
+- “Show me the manual of the command df and show it on Notepad.”
 - “Open Meeting Notes in Notepad, add the action items below, then save.”
 
 For terminal execution, open a terminal first. APEX should execute a requested
@@ -204,6 +205,9 @@ typed manually into a terminal or recover output from a previous browser session
 
 AI-assisted rewriting receives the current unsaved text, capped at 16,000
 characters per document. For longer notes, request changes in smaller sections.
+Explicit Notepad destinations keep manuals and captured shell output in the live
+editor, instead of auto-opening a separate text preview. If a command manual is
+unavailable on the host, APEX should report that retrieval failure.
 Watch the editor and its action acknowledgements for completion or cancellation.
 
 ## Terminal
