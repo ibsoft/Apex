@@ -10,6 +10,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useApex, Message } from "./ApexProvider";
 import { api } from "../lib/api";
 import FileDownloads, { backendFileHref } from "./FileDownloads";
+import AppsPanel from "./AppsPanel";
 
 const C = {
   cyan: "#00e5ff",
@@ -285,7 +286,7 @@ function Empty({ label }: { label: string }) {
 
 export default function ChatUI() {
   const a = useApex();
-  const [tab, setTab] = useState<"chat" | "hist" | "settings" | "memory">("chat");
+  const [tab, setTab] = useState<"chat" | "hist" | "settings" | "memory" | "apps">("chat");
   const [draft, setDraft] = useState("");
   const [collapsed, setCollapsed] = useState(a.chatCollapsed);
   useEffect(() => {
@@ -429,7 +430,7 @@ export default function ChatUI() {
 
           {/* tabs */}
           <nav style={{ display: "flex", borderBottom: `1px solid ${C.line}` }}>
-            {(["chat", "hist", "settings", "memory"] as const).map((t) => (
+            {(["chat", "hist", "settings", "memory", "apps"] as const).map((t) => (
               <button key={t} onClick={() => setTab(t)}
                 style={{
                   flex: 1, padding: "9px 4px", fontSize: 9.5, letterSpacing: "0.14em", cursor: "pointer",
@@ -509,14 +510,6 @@ export default function ChatUI() {
                     {a.voiceError && <span style={{ color: C.gold }}>{a.voiceError}</span>}
                     {a.voiceEnabled && a.voiceActive && <span>{a.orb === "listening" ? "AWAITING COMMAND…" : `SAY "${wake}"…`}</span>}
                     <span style={{ marginLeft: "auto" }} />
-                    <button onClick={() => a.windowOpen([{ url: "files:", title: "File Manager" }], { kind: "files" })}
-                      style={{
-                        padding: "3px 10px", borderRadius: 12, cursor: "pointer", letterSpacing: "0.1em",
-                        fontFamily: "var(--font-mono)", fontSize: 9.5,
-                        background: "transparent", border: `1px solid ${C.line}`, color: C.dim,
-                      }}>
-                      📁 FILES
-                    </button>
                   </div>
 
                   {/* input */}
@@ -742,6 +735,8 @@ export default function ChatUI() {
                 </div>
               </div>
             )}
+
+            {tab === "apps" && <AppsPanel />}
           </div>
         </aside>
       )}

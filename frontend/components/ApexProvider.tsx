@@ -120,6 +120,8 @@ type ApexContextType = {
   refreshMemory: () => Promise<void>;
   clearError: () => void;
   windowOpen: (items: WindowItem[], opts?: { title?: string; kind?: WindowKind; maximize?: boolean }) => void;
+  windowOpenNew: (items: WindowItem[], opts?: { title?: string; kind?: WindowKind; maximize?: boolean }) => void;
+  openTerminal: () => Promise<string | null>;
   windowClose: (id: string) => void;
   windowCloseAll: () => void;
   windowFocus: (id: string) => void;
@@ -395,18 +397,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const findWindow = (id: string) => windowsRef.current.find((w) => w.id === id);
 
   const signature = (items: WindowItem[]) => items.map((i) => i.url).sort().join("|");
-  const windowOpen = useCallback((items: WindowItem[], opts: { title?: string; kind?: WindowKind; maximize?: boolean } = {}) => {
-    if (!items.length) return;
+  const createWindow = useCallback((items: WindowItem[], opts: { title?: string; kind?: WindowKind; maximize?: boolean } = {}) => {
     const list = windowsRef.current;
-    const target = signature(items);
-    const existing = list.find((w) => signature(w.items) === target);
-    if (existing) {
-      setFocusedWindowId(existing.id);
-      if (existing.minimized) {
-        setWindows((prev) => prev.map((w) => (w.id === existing.id ? { ...w, minimized: false } : w)));
-      }
-      return;
-    }
     if (list.length >= MAX_WINDOWS) {
       speakRef.current(localize(
         `Maximum ${MAX_WINDOWS} windows are open. Close one to open another.`,
@@ -429,6 +421,26 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setWindows((prev) => [...prev, win]);
     setFocusedWindowId(win.id);
   }, []);
+
+  const windowOpen = useCallback((items: WindowItem[], opts: { title?: string; kind?: WindowKind; maximize?: boolean } = {}) => {
+    if (!items.length) return;
+    const list = windowsRef.current;
+    const target = signature(items);
+    const existing = list.find((w) => signature(w.items) === target);
+    if (existing) {
+      setFocusedWindowId(existing.id);
+      if (existing.minimized) {
+        setWindows((prev) => prev.map((w) => (w.id === existing.id ? { ...w, minimized: false } : w)));
+      }
+      return;
+    }
+    createWindow(items, opts);
+  }, [createWindow]);
+
+  const windowOpenNew = useCallback((items: WindowItem[], opts: { title?: string; kind?: WindowKind; maximize?: boolean } = {}) => {
+    if (!items.length) return;
+    createWindow(items, opts);
+  }, [createWindow]);
 
   const windowClose = useCallback((id: string) => {
     const next = windowsRef.current.filter((w) => w.id !== id);
@@ -1281,6 +1293,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       refreshMemory,
       clearError,
       windowOpen,
+      windowOpenNew,
+      openTerminal: openTerminalWindow,
       windowClose,
       windowCloseAll,
       windowFocus,
