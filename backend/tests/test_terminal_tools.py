@@ -100,9 +100,11 @@ class TerminalToolsTests(unittest.TestCase):
         time.sleep(settle)
         return self.peek_text(terminal_id)
 
-    def invoke(self, name: str, args: dict, user: str = "alice", focused_terminal: str = "") -> str:
+    def invoke(self, name: str, args: dict, user: str = "alice", focused_terminal: str = "",
+               terminal_map: tuple = ()) -> str:
         tool = self.tools[name]
-        return tool.call(args, ToolContext(user_id=user, conversation_id="c1", focused_terminal=focused_terminal))
+        return tool.call(args, ToolContext(user_id=user, conversation_id="c1", focused_terminal=focused_terminal,
+                                           terminal_map=terminal_map))
 
     # ---- gating ------------------------------------------------------------
 
@@ -408,6 +410,37 @@ class TerminalToolsTests(unittest.TestCase):
         # Only the OLDER (focused) session received the command, not the newest.
         self.assertIn("focus-target-A77", self.drain_until(older, "focus-target-A77"))
         self.assertNotIn("focus-target-A77", self.peek_text(newer))
+
+    def test_a_spoken_terminal_number_means_the_number_on_screen(self):
+        """`terminal=2` must be the window painted "2", not the 2nd session in
+        the backend's own (most-recently-active-first) order."""
+        first = self.create_session()
+        second = self.create_session()
+        # The operator sees terminal 1 = `second` and terminal 2 = `first` (the
+        # window list is the reverse of the backend's session order).
+        reply = self.invoke("terminal_command", {"command": "echo onscreen-two-B22", "terminal": 2},
+                            terminal_map=(second, first))
+        self.assertNotIn("No terminal session", reply)
+        self.assertIn("onscreen-two-B22", self.drain_until(first, "onscreen-two-B22"))
+        self.assertNotIn("onscreen-two-B22", self.peek_text(second))
+
+        reply = self.invoke("terminal_command", {"command": "echo onscreen-one-C33", "terminal": 1},
+                            terminal_map=(second, first))
+        self.assertIn("onscreen-one-C33", self.drain_until(second, "onscreen-one-C33"))
+        self.assertNotIn("onscreen-one-C33", self.peek_text(first))
+
+    def test_an_explicit_session_id_beats_the_on_screen_number(self):
+        first = self.create_session()
+        second = self.create_session()
+        self.invoke("terminal_command", {"command": "echo by-id-D44", "terminal": second[:8]},
+                    terminal_map=(second, first))
+        self.assertIn("by-id-D44", self.drain_until(second, "by-id-D44"))
+        self.assertNotIn("by-id-D44", self.peek_text(first))
+
+    def test_numbers_still_work_without_an_on_screen_map(self):
+        only = self.create_session()
+        self.invoke("terminal_command", {"command": "echo plain-one-E55", "terminal": 1})
+        self.assertIn("plain-one-E55", self.drain_until(only, "plain-one-E55"))
 
     def test_unmatched_focused_terminal_falls_back_to_newest(self):
         older = self.create_session()

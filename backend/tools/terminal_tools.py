@@ -118,17 +118,54 @@ def _pick_session(sessions: list, terminal: object) -> tuple:
     if terminal in (None, "", 0, "0"):
         return sessions[0], ""  # most recently active terminal
     if isinstance(terminal, str):
-        matches = [s for s in sessions if s.id == terminal]
-        if not matches and terminal.isdigit():
-            matches = [sessions[int(terminal) - 1]] if 0 < int(terminal) <= len(sessions) else []
+        needle = terminal.strip()
+        matches = [s for s in sessions if s.id == needle]
+        if not matches and not needle.isdigit():
+            # The schema advertises a session id *prefix*: the ids shown in
+            # terminal_sessions are truncated, so a prefix must resolve.
+            matches = [s for s in sessions if s.id.startswith(needle)]
+        if not matches and needle.isdigit():
+            matches = [sessions[int(needle) - 1]] if 0 < int(needle) <= len(sessions) else []
         if not matches:
             return None, f"No terminal session matches `{terminal}`."
+        if len(matches) > 1:
+            return None, f"`{terminal}` matches {len(matches)} terminal sessions — use more characters."
         return matches[0], ""
     # number index, 1-based
     index = int(terminal)
     if index < 1 or index > len(sessions):
         return None, f"Terminal {index} does not exist (only {len(sessions)} open)."
     return sessions[index - 1], ""
+
+
+def _resolve_terminal(sessions: list, terminal: object, ctx) -> tuple:
+    """Resolve `terminal`, preferring the operator's on-screen numbering.
+
+    The number painted in a terminal's title bar is its position among the
+    visible terminal windows, and that is the number the operator says ("run top
+    on terminal 2"). The backend's own session list can be in a different order
+    — most-recently-active first — so when the browser sent that visible order
+    (``ctx.terminal_map``) a number must be read from it. An explicit session id
+    still wins: it is unambiguous regardless of any ordering.
+    """
+    if isinstance(terminal, str) and terminal.strip():
+        return _pick_session(sessions, terminal.strip())
+    if terminal not in (None, "", 0, "0"):
+        ordered = [s for sid in getattr(ctx, "terminal_map", ()) or ()
+                   for s in sessions if s.id == sid]
+        if ordered:
+            try:
+                index = int(terminal)
+            except (TypeError, ValueError):
+                return _pick_session(sessions, terminal)
+            if 1 <= index <= len(ordered):
+                return ordered[index - 1], ""
+        return _pick_session(sessions, terminal)
+    # No explicit target: the operator's focused terminal window, else the most
+    # recently active one.
+    focused_id = getattr(ctx, "focused_terminal", "")
+    focused = next((s for s in sessions if s.id == focused_id), None)
+    return (focused or sessions[0]), ""
 
 
 def _log(message: str, *, sess=None, **fields) -> None:
@@ -213,15 +250,9 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
             except Exception as exc:
                 return None, f"Could not open a terminal window: {exc}"
         # No explicit target: default to the operator's FOCUSED terminal window
-        # if known; otherwise the most recently active one.
-        if terminal_arg in (None, "", 0, "0") and ctx.focused_terminal:
-            focused = next((s for s in sessions if s.id == ctx.focused_terminal), None)
-            if focused is not None:
-                return focused, ""
-        sess, err = _pick_session(sessions, terminal_arg)
-        if sess is None:
-            return None, err
-        return sess, ""
+        # if known; otherwise the most recently active one. Numbers are read
+        # against the on-screen order the browser sent.
+        return _resolve_terminal(sessions, terminal_arg, ctx)
 
     def t_terminal_command(args, ctx: ToolContext):
         command = (args.get("command") or "").strip()

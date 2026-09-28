@@ -36,7 +36,7 @@ import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
 import { sendNotepadCommand, notepadContext, requestsNotepadOutput } from "../lib/notepad";
 import type { NotepadCommand } from "../lib/notepad";
-import { formatDuration, parseLocalCommand, parseThinkHard } from "../lib/commands";
+import { formatDuration, parseLocalCommand, parseTerminalTarget, parseThinkHard } from "../lib/commands";
 import {
   AppWindow,
   MAX_WINDOWS,
@@ -54,6 +54,7 @@ import {
   resolvePreviewKinds,
   terminalSessionId,
   terminalUrl,
+  terminalWindows,
   windowContextBlock,
 } from "../lib/windows";
 
@@ -1071,16 +1072,35 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           case "move": {
             const list = windowsRef.current;
             if (!list.length) return localize("No windows are open.", "Δεν είναι ανοιχτό κανένα παράθυρο.");
-            const w = command.target != null
-              ? list[command.target - 1] ?? null
-              : list.find((x) => x.id === focusedWindowIdRef.current) ?? list[list.length - 1];
-            if (!w) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
-            const movedFocused = w.id === focusedWindowIdRef.current;
-            windowMoveToDesktop(w.id, command.desktop);
-            if (movedFocused) windowFocus(w.id);
+            // Terminal moves address terminals by their own number ("move
+            // terminal 2 to desktop 3"), plain window moves by window position.
+            const wanted = command.terminals
+              ? (command.targets ?? (command.target != null ? [command.target] : []))
+                  .map((n) => terminalWindows(list)[n - 1])
+                  .filter((w): w is AppWindow => !!w)
+              : command.targets?.length
+                ? command.targets.map((n) => list[n - 1]).filter((w): w is AppWindow => !!w)
+                : [
+                    (command.target != null
+                      ? list[command.target - 1] ?? null
+                      : list.find((x) => x.id === focusedWindowIdRef.current) ?? list[list.length - 1]) as AppWindow,
+                  ];
+            const targets = wanted.filter(Boolean);
+            if (!targets.length) return localize("That window is not open.", "Αυτό το παράθυρο δεν είναι ανοιχτό.");
+            for (const w of targets) {
+              const movedFocused = w.id === focusedWindowIdRef.current;
+              windowMoveToDesktop(w.id, command.desktop);
+              if (movedFocused) windowFocus(w.id);
+            }
+            if (targets.length > 1) {
+              return localize(
+                `Moved ${targets.length} windows to virtual desktop ${command.desktop + 1}.`,
+                `Μετακινήθηκαν ${targets.length} παράθυρα στην εικονική επιφάνεια εργασίας ${command.desktop + 1}.`,
+              );
+            }
             return localize(
-              `Moved "${nameOf(w)}" to virtual desktop ${command.desktop + 1}.`,
-              `Μετακινήθηκε το «${nameOf(w)}» στην εικονική επιφάνεια εργασίας ${command.desktop + 1}.`,
+              `Moved "${nameOf(targets[0])}" to virtual desktop ${command.desktop + 1}.`,
+              `Μετακινήθηκε το «${nameOf(targets[0])}» στην εικονική επιφάνεια εργασίας ${command.desktop + 1}.`,
             );
           }
         }
@@ -1207,6 +1227,37 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           [convId]: [...(m[convId] ?? []), mkMsg("user", clean, { meta: { voice: !!opts.voice } })],
         }));
 
+        // "open top on terminal 2" — not a window command: focus the named
+        // terminal so the operator watches it, and hand the rest of the
+        // sentence to the agent with that session pinned as focused_terminal.
+        // The user's own sentence is kept in the transcript.
+        let targetedTerminalId: string | null = null;
+        let targetedTerminalNumber = 0;
+        const target = parseTerminalTarget(clean, commandLanguage());
+        if (target) {
+          targetedTerminalNumber = target.target;
+          const win = terminalWindows(windowsRef.current)[target.target - 1];
+          if (win) {
+            targetedTerminalId = win.id;
+            clean = target.message;
+            windowFocus(win.id);
+            if (win.desktop !== activeDesktopRef.current) desktopSet(win.desktop);
+          } else {
+            setByConv((m) => ({
+              ...m,
+              [convId]: [
+                ...(m[convId] ?? []),
+                mkMsg("assistant", localize(`Terminal ${target.target} is not open.`, `Το τερματικό ${target.target} δεν είναι ανοιχτό.`), {
+                  meta: { voice: !!opts.voice },
+                }),
+              ],
+            }));
+            setOrb("idle");
+            if (opts.voice) speakRef.current(localize(`Terminal ${target.target} is not open.`, `Το τερματικό ${target.target} δεν είναι ανοιχτό.`));
+            return;
+          }
+        }
+
         const asstId = `asst_${Date.now().toString(36)}_${msgSeq++}`;
         const outputInNotepad = requestsNotepadOutput(clean);
         if (outputInNotepad) notepadReplyIds.current.add(asstId);
@@ -1234,7 +1285,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         // Tell the backend which terminal window is focused so terminal_command
         // can default to it ("run this on the focused terminal").
         const focusedWin = windowsRef.current.find((w) => w.id === focusedWindowIdRef.current);
-        const focusedTerminalId = (focusedWin && terminalSessionId(focusedWin.items[focusedWin.index] ?? focusedWin.items[0])) || "";
+        // "open top on terminal 2": the spoken number wins over whatever is
+        // focused. terminal_command then uses this session id, so the command
+        // lands in the exact window the operator named.
+        const targetWin = targetedTerminalId ? windowsRef.current.find((w) => w.id === targetedTerminalId) : focusedWin;
+        const focusedTerminalId = (targetWin && terminalSessionId(targetWin.items[targetWin.index] ?? targetWin.items[0])) || "";
+        const terminalMap = terminalWindows(windowsRef.current)
+          .map((w) => terminalSessionId(w.items[w.index] ?? w.items[0]))
+          .filter((id): id is string => !!id);
         const payload: any = {
           message: clean,
           ...(outputInNotepad ? { output_destination: "notepad" } : {}),
@@ -1243,6 +1301,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           voice_mode: !!opts.voice,
           ...(windowBlock ? { window_context: windowBlock } : {}),
           ...(focusedTerminalId ? { focused_terminal: focusedTerminalId } : {}),
+          // Set only when the operator named a window ("… on terminal 4"): it
+          // tells the backend the request is already pinned to one session, so
+          // "open" must not be read as "use a new terminal".
+          ...(targetedTerminalNumber ? { terminal_target: targetedTerminalNumber } : {}),
+          // The number painted in a terminal's title bar is its position in this
+          // list, so the model resolves `terminal=N` to the same window the
+          // operator is looking at instead of the backend's own session order.
+          ...(terminalMap.length ? { terminal_map: terminalMap } : {}),
           ...(thinkHard.thinkHard ? { think_hard: true } : {}),
         };
         const model = settingsRef.current.model;

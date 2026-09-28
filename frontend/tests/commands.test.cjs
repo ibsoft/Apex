@@ -585,3 +585,54 @@ test('the window cap bounds a counted open', () => {
   assert.deepEqual(parse('open 12 terminals', 'en'),
     { type: 'terminal', action: 'open', create: true, count: 10 });
 });
+
+/* ---------- "<command> on terminal N" ---------- */
+const { parseTerminalTarget } = moduleExports;
+
+test('a command aimed at a numbered terminal keeps the command and the number', () => {
+  assert.deepEqual(parseTerminalTarget('open top on terminal 2', 'en'),
+    { message: 'open top', target: 2, text: 'open top on terminal 2' });
+  assert.deepEqual(parseTerminalTarget('run ls -la in the second terminal', 'en'),
+    { message: 'run ls -la', target: 2, text: 'run ls -la in the second terminal' });
+  assert.deepEqual(parseTerminalTarget('open df -h on terminal #3', 'en'),
+    { message: 'open df -h', target: 3, text: 'open df -h on terminal #3' });
+  assert.deepEqual(parseTerminalTarget('show htop in terminal one', 'en'),
+    { message: 'show htop', target: 1, text: 'show htop in terminal one' });
+  // Trailing words belong to the request, not to the target phrase.
+  assert.deepEqual(parseTerminalTarget('execute ping 8.8.8.8 on terminal 2 please', 'en'),
+    { message: 'execute ping 8.8.8.8', target: 2, text: 'execute ping 8.8.8.8 on terminal 2 please' });
+});
+
+test('a targeted terminal request works in Greek', () => {
+  assert.deepEqual(parseTerminalTarget('άνοιξε το top στο τερματικό 2', 'el'),
+    { message: 'άνοιξε το top', target: 2, text: 'άνοιξε το top στο τερματικό 2' });
+  assert.deepEqual(parseTerminalTarget('τρέξε ls στο δεύτερο τερματικό', 'el'),
+    { message: 'τρέξε ls', target: 2, text: 'τρέξε ls στο δεύτερο τερματικό' });
+});
+
+test('a bare terminal mention is not a targeted command', () => {
+  // "open terminal 2" is a window command handled before this parser, and a
+  // mention with no command must not hijack an ordinary question.
+  assert.equal(parseTerminalTarget('open terminal 2', 'en'), null);
+  assert.equal(parseTerminalTarget('terminal 2', 'en'), null);
+  assert.equal(parseTerminalTarget('open top', 'en'), null);
+  assert.equal(parseTerminalTarget('what is the weather on monday', 'en'), null);
+  assert.equal(parseTerminalTarget('in a terminal emulator how do i', 'en'), null);
+  assert.equal(parseTerminalTarget('', 'en'), null);
+});
+
+test('terminals move between virtual desktops by their own number', () => {
+  assert.deepEqual(parse('move terminal 2 to desktop 3', 'en'),
+    { type: 'desktop', action: 'move', desktop: 2, targets: [2], terminals: true });
+  assert.deepEqual(parse('move terminals 1 and 2 to desktop 2', 'en'),
+    { type: 'desktop', action: 'move', desktop: 1, targets: [1, 2], terminals: true });
+  assert.deepEqual(parse('move terminal 1 and 2 to desktop 2', 'en'),
+    { type: 'desktop', action: 'move', desktop: 1, targets: [1, 2], terminals: true });
+  assert.deepEqual(parse('move terminal 2 to desktop two', 'en'),
+    { type: 'desktop', action: 'move', desktop: 1, targets: [2], terminals: true });
+  assert.deepEqual(parse('μετακινησε τα τερματικα 1 και 2 στην επιφανεια εργασιας 2', 'el'),
+    { type: 'desktop', action: 'move', desktop: 1, targets: [1, 2], terminals: true });
+  // Plain window moves keep addressing windows by their position.
+  assert.deepEqual(parse('move window 2 to desktop 1', 'en'),
+    { type: 'desktop', action: 'move', target: 2, desktop: 0 });
+});

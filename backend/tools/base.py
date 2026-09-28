@@ -23,6 +23,10 @@ class ToolContext:
     session: Any = None
     output_destination: str = ""  # Explicit browser output app, e.g. notepad.
     focused_terminal: str = ""    # session id of the browser-focused terminal window
+    terminal_map: tuple = ()      # session ids in the operator's on-screen order;
+                                  # terminal_command resolves `terminal=N` against
+                                  # this so the number painted in the title bar is
+                                  # the number the model types
 
 
 @dataclass

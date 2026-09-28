@@ -92,6 +92,30 @@ export function isTerminalWindow(window: AppWindow): boolean {
   return window.kind === "terminal" || terminalSessionId(window.items[window.index] ?? window.items[0]) !== null;
 }
 
+/** Terminal windows in visible (taskbar) order — the order their numbers run in. */
+export function terminalWindows(windows: AppWindow[]): AppWindow[] {
+  return windows.filter(isTerminalWindow);
+}
+
+/** The number a terminal window shows and is addressed by: its 1-based position
+ *  among terminal windows, matching how "terminal 2" resolves. `null` when the
+ *  window is not a terminal. Non-terminal windows are numbered separately, by
+ *  their position in the full window list (see windowContextBlock). */
+export function terminalNumber(windows: AppWindow[], target: AppWindow): number | null {
+  const index = terminalWindows(windows).findIndex((w) => w.id === target.id);
+  return index < 0 ? null : index + 1;
+}
+
+/** Title shown in the title bar and taskbar, with the number prefixed for
+ *  terminals so the window the operator is looking at matches the number they
+ *  say out loud ("open top on terminal 2"). */
+export function windowDisplayTitle(windows: AppWindow[], target: AppWindow): string {
+  const item = target.items[target.index] ?? target.items[0];
+  const title = itemTitle(item ?? { url: "", title: "" });
+  const number = terminalNumber(windows, target);
+  return number === null ? title : `${number} · ${title}`;
+}
+
 /** True when a window hosts the file manager (keeps its own keyboard). */
 export function isFilesWindow(window: AppWindow): boolean {
   return window.kind === "files" || (window.items[window.index] ?? window.items[0])?.url?.startsWith("files:") === true;
@@ -284,7 +308,14 @@ export function windowContextBlock(windows: AppWindow[], focusedId: string | nul
     const item = w.items[w.index] ?? w.items[0];
     let title = itemTitle(item ?? { url: "", title: "" });
     const sessionId = terminalSessionId(item ?? undefined);
-    if (sessionId) title = `Terminal ${sessionId.slice(0, 8)}`;
+    if (sessionId) {
+      title = `Terminal ${sessionId.slice(0, 8)}`;
+      // A terminal is addressed by its number on screen, so state that number
+      // instead of the window position: the operator says "terminal 2" and the
+      // model must pass the same 2 to terminal_command.
+      const number = terminalNumber(windows, w);
+      return `terminal #${number} "${title}" (${w.kind}${focused})`;
+    }
     return `#${i + 1} "${title}" (${w.kind}${focused})`;
   });
   const desktopNote = typeof desktop === "number" ? ` · active desktop ${desktop + 1}/${DESKTOPS}` : "";

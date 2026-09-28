@@ -28,6 +28,7 @@ import {
   kindForName,
   layoutRects,
   onDesktop,
+  terminalNumber,
   terminalSessionId,
   windowDownload,
 } from "../lib/windows";
@@ -307,6 +308,11 @@ export default function WindowManager() {
   const [interacting, setInteracting] = useState(false);
   const dragRef = useRef<{ id: string; kind: "move" | "resize"; startX: number; startY: number; rect: { x: number; y: number; w: number; h: number } } | null>(null);
 
+  // The number a window is addressed by. Terminals count 1..n among terminals
+  // (the number the operator says: "open top on terminal 2"); other windows
+  // have no spoken number and are addressed by their position in the list.
+  const numberOf = (w: AppWindow) => terminalNumber(windows, w);
+
   const viewport = useMemo(
     () => typeof window !== "undefined"
       ? { vw: window.innerWidth, vh: window.innerHeight }
@@ -464,6 +470,18 @@ export default function WindowManager() {
               <span style={{ flex: 1, minWidth: 0, fontSize: 10, letterSpacing: "0.1em", color: focusedWin ? C.text : C.dim,
                 fontFamily: "var(--font-mono)", textTransform: "uppercase", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {itemTitle(item)}
+                {numberOf(w) !== null && (
+                  <span
+                    title={C.text}
+                    style={{
+                      marginLeft: 8, padding: "1px 6px", borderRadius: 6,
+                      border: `1px solid ${focusedWin ? C.cyan : C.line}`,
+                      color: focusedWin ? C.cyan : C.dim, fontSize: 10, letterSpacing: 0,
+                    }}
+                  >
+                    T{numberOf(w)}
+                  </span>
+                )}
               </span>
               {hasNav && (
                 <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}>
@@ -539,6 +557,7 @@ export default function WindowManager() {
         <div style={{ flex: 1, display: "flex", gap: 6, overflowX: "auto" }}>
           {windows.map((w, i) => {
             const title = itemTitle(w.items[w.index] ?? w.items[0]);
+            const num = numberOf(w);
             // Linux-style: every window stays in the taskbar; clicking one on
             // another desktop switches there, unminimizes and focuses it.
             return (
@@ -553,7 +572,7 @@ export default function WindowManager() {
                   border: w.minimized ? `1px dashed ${C.line}` : `1px solid ${C.line}`,
                   opacity: w.desktop !== a.activeDesktop && w.id !== focusedId ? 0.55 : 1,
                 }}>
-                <span>{i + 1}</span>
+                <span>{num ?? i + 1}</span>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{title}</span>
                 {w.minimized && <span style={{ fontSize: 8, color: C.gold }}>▾</span>}
               </button>

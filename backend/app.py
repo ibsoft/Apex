@@ -22,6 +22,7 @@ import mimetypes
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -171,6 +172,40 @@ def run_conversation_summary(uid: str, conv_id: str):
 # --------------------------------------------------------------------------- #
 # App factory
 # --------------------------------------------------------------------------- #
+def terminal_target_note(number: int, focused_terminal: str) -> str:
+    """Prompt note for a turn that named one specific terminal window.
+
+    "run top on terminal 4" pins the request to a single session, but the words
+    "open ... terminal" read like "start a new one" to a model, and it did
+    exactly that: the command ran in a fresh window while the operator watched
+    another one. The note settles it, and also says the number must not be
+    passed because the pinned window is already the target. Empty when the turn
+    was not addressed at a specific window.
+    """
+    if not number or number < 1 or not focused_terminal:
+        return ""
+    return (
+        f"The operator addressed one specific terminal window for this request: terminal "
+        f"#{number} (the window numbered {number} on their screen). Run the command in THAT "
+        f"window. It is already the focused terminal for this turn, so do not pass the `terminal` "
+        f"argument, and never open an additional terminal for this request — 'open' here means "
+        f"show me it in terminal {number}, not start a new one."
+    )
+
+
+def _log_terminal_target(number: int, session_id: str) -> None:
+    """One line per turn that named a specific terminal window.
+
+    "run top on terminal 4" going somewhere else is only diagnosable from the
+    journal: the session id logged here is the one the turn was pinned to, and
+    the per-command line it can be compared against.
+    """
+    try:
+        print(f"[terminal-target] number={number} session={session_id[:8]}", file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     app.config.update(
@@ -968,6 +1003,22 @@ def create_app() -> Flask:
         # The frontend knows which terminal window is focused; let terminal tools
         # default to it so "run/write on the focused terminal" is deterministic.
         focused_terminal = str(data.get("focused_terminal") or "").strip().lower()
+        # Terminal session ids in the order the operator sees them; a number they
+        # speak is resolved against this, not the backend's own session order.
+        raw_map = data.get("terminal_map") or []
+        terminal_map = [str(x).strip().lower() for x in raw_map if str(x).strip()] if isinstance(raw_map, list) else []
+        # The operator named a specific window ("run top on terminal 4"). That
+        # request is already pinned to one session, so tell the model plainly:
+        # words like "open" must not be read as "use a fresh terminal", and it
+        # must not pass a number either — the pinned window IS the target.
+        try:
+            terminal_target = int(data.get("terminal_target") or 0)
+        except (TypeError, ValueError):
+            terminal_target = 0
+        target_note = terminal_target_note(terminal_target, focused_terminal)
+        if target_note:
+            system_prompt = system_prompt.rstrip() + "\n\n" + target_note
+            _log_terminal_target(terminal_target, focused_terminal)
 
         output_destination = "notepad" if data.get("output_destination") == "notepad" else ""
         if output_destination:
@@ -991,6 +1042,7 @@ def create_app() -> Flask:
             voice_mode=voice_mode,
             user_name=session.get("name") or user.get("name") or "",
             focused_terminal=focused_terminal,
+            terminal_map=terminal_map,
             output_destination=output_destination,
         )
         engine = build_engine(engine_name, ctx)
