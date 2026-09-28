@@ -137,6 +137,25 @@ copy_with_bar() {
 dir_size()  { du -sh "$1" 2>/dev/null | cut -f1; }
 count_files() { find "$1" -type f 2>/dev/null | wc -l; }
 
+# Replace dst with an exact copy of src. NOT a sync: the backup was made with
+# `cp -a`, so it carries the live file's mtime, and git checks the committed
+# file out during the same second — rsync's size+mtime quick check then sees
+# "same size, same mtime" and skips the transfer, silently restoring nothing.
+# Both SQLite files here are page-aligned, so a 1-row and a 3-row database are
+# the same size. Wipe the destination first so the result is byte-exact.
+restore_data() {   # <backup dir> <destination>
+  local src="$1" dst="$2"
+  [[ -d "$src" && -n "$(ls -A "$src" 2>/dev/null)" ]] || { warn "no backup to restore"; return 0; }
+  case "$dst" in
+    "$ROOT"/*) ;;
+    *) die "refusing to restore outside the repo: $dst" ;;
+  esac
+  [[ "$dst" == */data || "$dst" == */data/ ]] || die "refusing to wipe $dst"
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  copy_with_bar "$src" "$dst"
+}
+
 banner() {
   local cmd="${1:-}"
   if [[ $INTERACTIVE -ne 1 ]]; then
@@ -165,7 +184,8 @@ Commands:
   stop                          Stop backend and frontend
   restart [--no-https]          Restart services and HTTPS frontend on port 3001
   status                        Show backend and frontend status
-  update                        Back up data, git pull (keeps local DB), then restart
+  update [ref]                  Copy local DBs, override with git (default origin/main), restore, rebuild, restart
+                               e.g. ./apex update origin/v_2.0.27   (or set APEX_UPDATE_REF)
 EOF
 }
 
@@ -241,21 +261,65 @@ restart_services() {
 }
 
 # ─────────────────────────────────── update ───────────────────────────────────
+PYTHON_BIN=""
+pick_python() {
+  local c
+  for c in "$ROOT/.venv/bin/python" "$ROOT/backend/venv/bin/python" "$(command -v python3 2>/dev/null || true)"; do
+    if [[ -n "$c" && -x "$c" ]]; then PYTHON_BIN="$c"; return 0; fi
+  done
+  return 0
+}
+
+# Consistent copy of a SQLite database. apex.db and chroma.sqlite3 are tracked in
+# git AND are the live databases, and they run in WAL mode: a plain file copy
+# taken while a writer is active can be torn, so the databases are re-copied
+# through SQLite's own backup API once the services are stopped.
+sqlite_backup() {   # <live db> <destination file>
+  local src="$1" dst="$2"
+  [[ -f "$src" ]] || return 0
+  [[ -n "$PYTHON_BIN" ]] || return 0
+  "$PYTHON_BIN" - "$src" "$dst" <<'PY' 2>/dev/null || return 1
+import sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+d = sqlite3.connect(dst)
+with d:
+    s.backup(d)
+d.close(); s.close()
+PY
+}
+
+# update_apex [ref] — back up the local databases, override the checkout with
+# git, then restore the databases. Default target is origin/main; pass a ref
+# (or set APEX_UPDATE_REF) to update to something else, e.g. `./apex update
+# origin/v_2.0.27`.
 update_apex() {
+  local target="${1:-${APEX_UPDATE_REF:-origin/main}}"
+  local head_before
+  head_before="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+
   say "${C_BOLD}Pre-flight checks${C_RESET}"
   [[ -d "$ROOT/.git" ]] || die "not a git repository at $ROOT"
-  if ! git -C "$ROOT" remote -v | grep -q '(fetch)'; then
-    die "no git remote configured — nothing to pull from"
-  fi
+  git -C "$ROOT" remote get-url origin >/dev/null 2>&1 || die "no 'origin' remote configured"
   local branch
   branch="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  ok "repo $ROOT on branch '${branch:-?}'"
+  ok "repo $ROOT on branch '${branch:-detached}' @ ${head_before:0:7}"
 
-  # Anything else locally modified (outside tracked data) can block the merge.
-  local other_dirty
-  other_dirty="$(git -C "$ROOT" status --porcelain -- . 2>/dev/null | grep -v '^ M backend/data/' | grep -v '^. backend/data/' || true)"
-  if [[ -n "$other_dirty" ]]; then
-    warn "you have uncommitted changes outside backend/data; git may refuse to merge"
+  if [[ -n "$branch" && "$branch" != "HEAD" && "$branch" != "main" ]]; then
+    say "  ${C_DIM}target: ${target} · your '${branch}' branch will not be moved${C_RESET}"
+  fi
+
+  say "${C_BOLD}Fetching ${C_RESET}"
+  spinner "fetching origin" git -C "$ROOT" fetch --prune origin || die "fetch failed"
+  if ! git -C "$ROOT" rev-parse --verify --quiet "$target" >/dev/null 2>&1; then
+    die "'$target' does not exist — run './apex update origin/main' or pick a ref from 'git branch -r'"
+  fi
+  local head_target
+  head_target="$(git -C "$ROOT" rev-parse --short "$target" 2>/dev/null || true)"
+  if [[ -n "$head_before" && "$head_before" == "$(git -C "$ROOT" rev-parse "$target" 2>/dev/null || true)" ]]; then
+    ok "already up to date with $target (${head_target})"
+  else
+    ok "$target is now at ${head_target}"
   fi
 
   local had_units=false had_https=false
@@ -273,95 +337,134 @@ update_apex() {
   else
     warn "systemd units not installed — assuming a dev run; skipping service stop"
   fi
-  if [[ "$had_https" == true ]]; then
-    stop_https
-  fi
+  if [[ "$had_https" == true ]]; then stop_https; fi
 
-  say "${C_BOLD}Backing up live data${C_RESET}"
-  local backup_root backup_dir manifest req_before pkg_before req_after pkg_after
+  # ── back up everything local that must survive the override ──
+  say "${C_BOLD}Copying local databases${C_RESET}"
+  pick_python
+  local backup_root backup_dir manifest env_backup
   backup_root="$(mktemp -d "${TMPDIR:-/tmp}/apex-update.XXXXXX")"
   backup_dir="$backup_root/data"
   manifest="$backup_root/MANIFEST.txt"
+  env_backup="$backup_root/backend.env"
   mkdir -p "$backup_dir"
+
   if [[ -d "$DATA_DIR" && -n "$(ls -A "$DATA_DIR" 2>/dev/null)" ]]; then
     copy_with_bar "$DATA_DIR" "$backup_dir"
-    ok "backed up $(count_files "$DATA_DIR") files (${C_BOLD}$(dir_size "$DATA_DIR")${C_RESET}) → $backup_dir"
+    ok "copied $(count_files "$DATA_DIR") files (${C_BOLD}$(dir_size "$DATA_DIR")${C_RESET}) → $backup_dir"
   else
-    warn "no data found under $DATA_DIR — nothing to back up"
+    warn "no data found under $DATA_DIR — nothing to copy"
   fi
+
+  # Re-copy each SQLite database through the backup API so the copy is a
+  # consistent snapshot rather than a byte-for-byte copy of a live WAL file.
+  local db
+  while IFS= read -r db; do
+    local rel="${db#"$DATA_DIR"/}"
+    if sqlite_backup "$db" "$backup_dir/$rel"; then
+      ok "database ${C_BOLD}$rel${C_RESET} snapshotted consistently"
+    else
+      warn "could not snapshot $rel via SQLite API — using the file copy"
+    fi
+  done < <(find "$DATA_DIR" -maxdepth 3 -type f \( -name '*.db' -o -name '*.sqlite3' \) 2>/dev/null)
+
+  if [[ -f "$ROOT/backend/.env" ]]; then
+    cp -a "$ROOT/backend/.env" "$env_backup" 2>/dev/null || true
+    ok "secrets ${C_BOLD}backend/.env${C_RESET} copied"
+  fi
+
+  # Safety net: the override discards uncommitted code edits, so save them as a
+  # patch the user can re-apply with `git apply` instead of losing them.
+  local patch="$backup_root/local-changes.patch"
+  if ! git -C "$ROOT" diff --quiet HEAD -- . 2>/dev/null; then
+    git -C "$ROOT" diff HEAD -- . ":(exclude)backend/data" >"$patch" 2>/dev/null || true
+    if [[ -s "$patch" ]]; then
+      warn "uncommitted code edits saved to ${C_BOLD}$patch${C_RESET} — they will be overridden"
+    fi
+  fi
+
   {
     printf 'APEX update backup · %s\n' "$(date -Is)"
-    printf 'source: %s\n' "$DATA_DIR"
-    printf 'branch: %s\n' "${branch:-?}"
-    printf 'before: HEAD %s\n' "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)"
-    printf 'files:  %s\n' "$(count_files "$backup_dir" 2>/dev/null || echo 0)"
-    printf 'size:   %s\n' "$(dir_size "$backup_dir" 2>/dev/null || echo 0)"
+    printf 'source:     %s\n' "$DATA_DIR"
+    printf 'branch:     %s\n' "${branch:-detached}"
+    printf 'before:     HEAD %s\n' "${head_before:0:7}"
+    printf 'target:     %s (%s)\n' "$target" "${head_target:-?}"
+    printf 'databases:  %s\n' "$(find "$backup_dir" -maxdepth 3 -type f \( -name '*.db' -o -name '*.sqlite3' \) 2>/dev/null | sed "s#^$backup_dir/##" | tr '\n' ' ')"
+    printf 'files:      %s\n' "$(count_files "$backup_dir" 2>/dev/null || echo 0)"
+    printf 'size:       %s\n' "$(dir_size "$backup_dir" 2>/dev/null || echo 0)"
+    printf 'env copy:   %s\n' "$([[ -f "$env_backup" ]] && echo yes || echo no)"
+    printf 'code patch: %s\n' "$([[ -s "$patch" ]] && echo "$patch" || echo none)"
   } >"$manifest"
-  ok "backup manifest written to $manifest"
+  ok "manifest written to $manifest"
 
-  # Snapshot dependency files *before* the pull so we can detect changes.
-  req_before=$(sha256sum "$ROOT/backend/requirements.txt" 2>/dev/null | cut -d' ' -f1 || true)
-  pkg_before=$(sha256sum "$ROOT/frontend/package.json" 2>/dev/null | cut -d' ' -f1 || true)
-
-  say "${C_BOLD}Git pull (keeping local data)${C_RESET}"
-  # Local SQLite/Chroma files are tracked in git AND newer than the repo copy.
-  # Reset them to HEAD so git can merge cleanly; the real content is safe in
-  # the backup and is restored right after the pull.
-  type_cmd "git checkout -- backend/data"
-  git -C "$ROOT" checkout -- backend/data 2>/dev/null || true
-  ok "tracked data files reset to the committed snapshot"
-
-  type_cmd "git pull"
-  if ! spinner "pulling latest code via git" git -C "$ROOT" pull; then
-    warn "git pull failed — restoring your data and restarting"
-    if [[ -d "$backup_dir" && -n "$(ls -A "$backup_dir" 2>/dev/null)" ]]; then
-      copy_with_bar "$backup_dir" "$DATA_DIR"
-      ok "restored live data from backup"
-    fi
+  # ── override the checkout with git ──
+  say "${C_BOLD}Updating from git (override)${C_RESET}"
+  type_cmd "git reset --hard HEAD   # discard local edits (saved above)"
+  git -C "$ROOT" reset --hard HEAD >/dev/null 2>&1 || true
+  type_cmd "git checkout --detach $target"
+  if ! git -C "$ROOT" checkout --detach "$target"; then
+    warn "git could not switch to $target"
+    restore_data "$backup_dir" "$DATA_DIR"
+    ok "restored local databases from the backup"
     restart_services "$had_units" "$had_https"
-    die "update aborted; your data is safe in $backup_root"
+    die "update aborted; your databases are safe in $backup_root"
   fi
-  ok "pulled → HEAD $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
+  local head_after
+  head_after="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+  ok "working tree is now ${head_after:0:7} (${target}); branch '${branch:-HEAD}' left untouched"
 
-  say "${C_BOLD}Restoring local data (yours wins)${C_RESET}"
-  if [[ -d "$backup_dir" && -n "$(ls -A "$backup_dir" 2>/dev/null)" ]]; then
-    copy_with_bar "$backup_dir" "$DATA_DIR"
-    ok "live data restored (apex.db, chroma/, skills/, …)"
-  else
-    warn "no backup to restore"
+  # ── restore the local databases over the git snapshot ──
+  say "${C_BOLD}Restoring local databases (yours wins)${C_RESET}"
+  restore_data "$backup_dir" "$DATA_DIR"
+  ok "restored (apex.db, chroma/, skills/, generated/, …)"
+  if [[ -f "$env_backup" && ! -f "$ROOT/backend/.env" ]]; then
+    cp -a "$env_backup" "$ROOT/backend/.env" 2>/dev/null || true
+    ok "restored backend/.env"
   fi
 
+  # ── dependencies ──
   say "${C_BOLD}Checking dependencies${C_RESET}"
-  req_after=$(sha256sum "$ROOT/backend/requirements.txt" 2>/dev/null | cut -d' ' -f1 || true)
-  pkg_after=$(sha256sum "$ROOT/frontend/package.json" 2>/dev/null | cut -d' ' -f1 || true)
-  if [[ -n "$req_before" && "$req_before" != "$req_after" ]]; then
-    if [[ -x "$ROOT/.venv/bin/python" ]]; then
-      spinner "installing backend deps (pip)" "$ROOT/.venv/bin/pip" install -r "$ROOT/backend/requirements.txt"
-      ok "backend dependencies updated"
-    else
-      warn "requirements changed but no venv at $ROOT/.venv — install manually"
-    fi
-  else
-    ok "backend dependencies unchanged"
+  if [[ -f "$ROOT/backend/requirements.txt" && -x "$ROOT/.venv/bin/python" ]]; then
+    spinner "installing backend deps (pip)" "$ROOT/.venv/bin/pip" install -q -r "$ROOT/backend/requirements.txt" \
+      && ok "backend dependencies up to date" \
+      || warn "pip install failed — check the backend service"
   fi
-  if [[ -n "$pkg_before" && "$pkg_before" != "$pkg_after" ]]; then
-    if [[ -d "$ROOT/frontend/node_modules" ]]; then
-      spinner "installing frontend deps (npm)" npm --prefix "$ROOT/frontend" install
-      ok "frontend dependencies updated"
-    else
-      warn "package.json changed but node_modules absent — run npm install"
-    fi
+  if [[ -d "$ROOT/frontend/node_modules" ]]; then
+    spinner "installing frontend deps (npm)" npm --prefix "$ROOT/frontend" install --silent \
+      && ok "frontend dependencies up to date" \
+      || warn "npm install failed — check the frontend service"
   else
-    ok "frontend dependencies unchanged"
+    warn "no frontend/node_modules — run npm install in frontend/"
+  fi
+
+  # The frontend service runs `npm start`, which serves .next. Without a build
+  # the new code would never reach the browser, so rebuild whenever the
+  # frontend changed (or .next is missing).
+  local fe_changed=true
+  if [[ -n "$head_before" && -n "$head_after" ]] && git -C "$ROOT" diff --quiet "$head_before" "$head_after" -- frontend/ 2>/dev/null; then
+    fe_changed=false
+  fi
+  [[ -d "$ROOT/frontend/.next" ]] || fe_changed=true
+  if [[ "$fe_changed" == true && -d "$ROOT/frontend/node_modules" ]]; then
+    spinner "building the frontend (npm run build)" npm --prefix "$ROOT/frontend" run build \
+      && ok "frontend production build refreshed" \
+      || warn "npm run build failed — the frontend will serve a stale build"
+  else
+    ok "frontend source unchanged — keeping the existing build"
   fi
 
   say "${C_BOLD}Restarting${C_RESET}"
   restart_services "$had_units" "$had_https"
 
   say "${C_BOLD}Update complete${C_RESET}"
-  ok "HEAD is now $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null)"
+  ok "HEAD is now ${head_after:0:7} ($(git -C "$ROOT" log -1 --format=%s "$head_after" 2>/dev/null || echo '?'))"
+  if [[ -s "$patch" ]]; then
+    warn "your uncommitted edits are in: $patch"
+    warn "  it is a diff against the pre-update commit ${head_before:0:7} — after a jump"
+    warn "  across many commits use 'git apply -3 $patch' and resolve any conflicts"
+  fi
   warn "backup kept at: $backup_root  (delete it once you trust the update)"
-  ok "your live data is intact (git shows backend/data as modified — that is expected)"
+  ok "your databases are intact (git shows backend/data as modified — that is expected)"
 }
 
 command="${1:-}"
