@@ -184,6 +184,36 @@ prompts in.
   report the cap to the model instead of evicting.
 - `ctx.emit({"type": "terminal_opened", "terminal_id": ...})` per new session is
   what makes the window appear; the frontend `attachTerminalWindow` adopts it.
+- **Terminals are numbered by their position among the visible terminal
+  windows** (`frontend/lib/windows.ts::terminalNumber`), and that number is what
+  the operator says ("open top on terminal 2"). Three things must agree or the
+  command lands in the wrong window:
+  1. the `T2` badge in `WindowManager` title/taskbar;
+  2. `windowContextBlock`, which reports `terminal #N` (not `#N`, which is the
+     position among *all* windows) so the model is handed the number spoken;
+  3. `terminal_command`'s `terminal=N`, resolved by `_resolve_terminal` against
+     `ctx.terminal_map` — the on-screen order sent as `terminal_map` in the chat
+     payload — because the backend's own session list is ordered
+     most-recently-active-first and does not match what is on screen.
+  An explicit session id or id prefix still beats the number, and
+  `_pick_session` resolves prefixes because the schema advertises them.
+  `focused_terminal` is the single session id for the turn, and
+  `parseTerminalTarget` in `frontend/lib/commands.ts` sets it from a spoken
+  "… on terminal N" while leaving the rest of the sentence for the agent. That
+  is not enough on its own: the model read "open top on terminal 4" as *open a
+  terminal* and ran `top` in a brand new window while the operator watched
+  another one. The turn therefore also sends `terminal_target: N`, and
+  `app.terminal_target_note` appends a prompt note naming the window and
+  forbidding an extra terminal — a pinned turn must run where it was pinned.
+- A browser tab opened before a rebuild keeps running the old JavaScript until
+  it is reloaded, so a fix that only exists in the frontend looks broken after a
+  service restart. Check `journalctl -u apex-backend` for `[terminal-target]`:
+  its absence means the browser never sent `terminal_target`, i.e. the tab is
+  stale, not the backend.
+- Desktop moves may address terminals by their own number too: `{action:
+  "move", terminals: true, targets: [1, 2]}` is "move terminals 1 and 2 to
+  desktop 2", and a move without `terminals` keeps addressing windows by their
+  position in the full window list.
 - The REST `drain` endpoint is **not consuming**: each poller owns its own
   `since` cursor and the session keeps a bounded scrollback
   (`TerminalSession.window_max`). A session can have more than one reader — the

@@ -15,7 +15,7 @@ export type LocalCommand =
   | { type: "terminal"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; target?: number; create?: boolean; count?: number }
   | { type: "files"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; create?: boolean }
   | NotepadCommand
-  | { type: "desktop"; action: "switch" | "next" | "previous" | "move"; desktop: number; target?: number }
+  | { type: "desktop"; action: "switch" | "next" | "previous" | "move"; desktop: number; target?: number; targets?: number[]; terminals?: boolean }
   | { type: "cancelTimers" }
   | { type: "cancelReminders" }
   | { type: "timer"; name: string; seconds: number }
@@ -638,6 +638,33 @@ function parseDesktopCommand(text: string, greek: boolean): LocalCommand | null 
   // desktop one", "μετακίνησε το παράθυρο 2 στην επιφάνεια εργασίας 1"
   const moveTail = norm.replace(/^(?:move|send|relocate)\s+|^(?:μετακινησε|στειλε)\s+/, "");
   if (moveTail !== norm) {
+    // Terminals are addressed by their own number, not their window position:
+    // "move terminal 2 to desktop 3", "move terminals 1 and 2 to desktop 2",
+    // "μετακινησε τα τερματικα 1 και 2 στην επιφανεια εργασιας 2".
+    // Two groups: the terminal list, then the destination desktop token.
+    const listRe = greek
+      ? "(\\d{1,2}(?:\\s*(?:και|,|&)\\s*\\d{1,2})*)"
+      : "(\\d{1,2}(?:\\s*(?:and|,|&)\\s*\\d{1,2})*)";
+    const headRe = greek
+      ? "^(?:τα|το|τη|την)\\s+"
+      : "^(?:the\\s+)?";
+    const nounRe = greek ? "(?:τερματικα|τερματικο|τερματικες)" : "terminals?";
+    const toRe = greek
+      ? "(?:στο|στη|στην|στον)"
+      : "(?:to|into|onto|on|in)";
+    const termMove = moveTail.match(
+      new RegExp(`${headRe}${nounRe}\\s+${listRe}\\s+${toRe}\\s+(?:the\\s+)?${noun}\\s+(\\S+)$`, "u"),
+    );
+    if (termMove) {
+      const targets = termMove[1]
+        .split(/\s*(?:and|και|,|&)\s*/i)
+        .map((part) => Number(part.trim()))
+        .filter((n) => Number.isFinite(n) && n >= 1 && n <= 99);
+      const desktop = parseDesktopNumber(termMove[2]);
+      if (desktop !== null && targets.length) {
+        return { type: "desktop", action: "move", desktop: desktop - 1, targets, terminals: true };
+      }
+    }
     const target = consumeWindowTarget(moveTail, greek);
     if (target) {
       // consumeWindowTarget leaves a trailing window noun when the ordinal came
@@ -743,4 +770,60 @@ export function formatDuration(totalSeconds: number, language = "en"): string {
   if (minutes) parts.push(`${minutes} ${greek ? minutes === 1 ? "λεπτό" : "λεπτά" : minutes === 1 ? "minute" : "minutes"}`);
   if (seconds || !parts.length) parts.push(`${seconds} ${greek ? seconds === 1 ? "δευτερόλεπτο" : "δευτερόλεπτα" : seconds === 1 ? "second" : "seconds"}`);
   return parts.join(" ");
+}
+
+/* ---------- "<command> on terminal N" ----------
+ * "open top on terminal 2", "run ls -la in the second terminal", "άνοιξε το top
+ * στο τερματικο 2". This is NOT a window command: the window action is done by
+ * focusing that terminal, and the rest of the sentence is a real request that
+ * must still reach the agent. The provider uses the number to pick the terminal
+ * window, focus it and send its session id as focused_terminal, so
+ * terminal_command lands the command in exactly that window.
+ *
+ * The number may sit before the noun ("in the second terminal"), after it
+ * ("in terminal 2", "in terminal one") or both ("in the second terminal 2").
+ * The target phrase is a suffix, so the command is the prefix; `message` is
+ * returned from the ORIGINAL text (not the accent-stripped form) and the
+ * operator's own sentence is returned in `text` for the chat transcript. */
+export type TerminalTargeted = { message: string; target: number; text: string };
+
+export function parseTerminalTarget(text: string, language = "en"): TerminalTargeted | null {
+  const source = (text ?? "").trim();
+  if (!source) return null;
+  const greek = isGreek(language) || /[\u0370-\u03ff]/.test(source);
+  const norm = normalize(source);
+  const dict: Record<string, number> = {
+    ...EN_ORDINALS,
+    ...(greek ? EL_ORDINALS : EN_NUMBERS),
+  };
+  const words = Object.keys(dict)
+    .sort((a, b) => b.length - a.length)
+    .join("|");
+  // group 1 = ordinal/number before the noun, groups 2/3 = number after it.
+  const pattern = greek
+    ? new RegExp(
+        `(?:στο|στη|στην|σε|μέσα\\s+σε)\\s+(?:το|τη|την)?\\s*` +
+        `(?:(${words})\\s+)?(?:τερματικο|τερματικα|τερματικης|τερματικες|κονσολα)` +
+        `(?:\\s+(?:αριθμο(?:ς)?|number))?\\s*(?:#?(\\d{1,2})|#?(${words}))?`)
+    : new RegExp(
+        `(?:on|in|inside|into|to)\\s+(?:the\\s+)?(?:(${words})\\s+)?` +
+        `(?:terminal|console)s?` +
+        `(?:\\s+(?:number|no))?\\s*(?:#?(\\d{1,2})|#?(${words}))?`, "i");
+
+  const match = pattern.exec(norm);
+  if (!match) return null;
+
+  const named = match[1] ? dict[match[1]] : undefined;
+  const target = match[2] ? Number(match[2]) : named ?? (match[3] ? dict[match[3]] : undefined);
+  if (target === undefined || !Number.isFinite(target) || target < 1 || target > 99) return null;
+
+  // Nothing before the target: that is "focus terminal 2", a window command.
+  const prefix = norm.slice(0, match.index).trim();
+  if (!prefix) return null;
+
+  return {
+    message: originalSlice(source, 0, match.index).trim() || prefix,
+    target,
+    text: source,
+  };
 }

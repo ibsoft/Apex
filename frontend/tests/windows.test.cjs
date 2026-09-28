@@ -11,7 +11,8 @@ const compiled = ts.transpileModule(source, {
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
 const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock, windowDownload,
-  terminalUrl, terminalSessionId, isTerminalWindow, isFilesWindow, shouldReleaseTerminal, onDesktop } = moduleExports;
+  terminalUrl, terminalSessionId, isTerminalWindow, isFilesWindow, shouldReleaseTerminal, onDesktop,
+  terminalNumber, terminalWindows } = moduleExports;
 
 test('kindForName classifies files by extension', () => {
   assert.equal(kindForName('photo.png'), 'image');
@@ -131,10 +132,12 @@ test('onDesktop filters windows to their virtual desktop', () => {
   assert.deepEqual(onDesktop([], 1), []);
 });
 
-test('windowContextBlock tags terminal windows with their session id', () => {
+test('windowContextBlock tags terminal windows with their session id and number', () => {
   const w = { id: 'w1', items: [{ url: terminalUrl('abcdef1234567890'), title: 'Terminal' }], index: 0, kind: 'terminal',
     rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, desktop: 0, note: '', showNotes: false };
-  assert.equal(windowContextBlock([w], 'w1'), `[Open windows: #1 "Terminal abcdef12" (terminal, focused)]`);
+  // "terminal #N" is the number painted in the title bar, so the model is handed
+  // the same number the operator says out loud.
+  assert.equal(windowContextBlock([w], 'w1'), `[Open windows: terminal #1 "Terminal abcdef12" (terminal, focused)]`);
 });
 
 test('shouldReleaseTerminal skips the StrictMode phantom cleanup', () => {
@@ -172,4 +175,36 @@ test('text windows use Notepad controls while other preview kinds remain unchang
   for (const kind of ['pdf', 'docx', 'image']) {
     assert.equal(moduleExports.isNotepadWindow({ kind, items: [{ title: 'file', url: '/file', kind }], index: 0 }), false);
   }
+});
+
+/* ---------- terminal numbering ---------- */
+const win = (id, kind, extra) => ({
+  id, kind, index: 0, items: [{ url: kind === 'terminal' ? 'terminal:s' + id : '/f/' + id, title: id }],
+  rect: { x: 0, y: 0, w: 10, h: 10 }, maximized: false, minimized: false, desktop: 0, note: '', showNotes: false,
+  ...extra,
+});
+
+test('terminals are numbered by their position among terminals, not among all windows', () => {
+  const windows = [win('a', 'image'), win('t1', 'terminal'), win('b', 'pdf'), win('t2', 'terminal')];
+  assert.equal(terminalNumber(windows, windows[0]), null, 'a non-terminal has no spoken number');
+  assert.equal(terminalNumber(windows, windows[1]), 1, 'first terminal is 1 even though it is window 2');
+  assert.equal(terminalNumber(windows, windows[3]), 2, 'second terminal is 2 even though it is window 4');
+  assert.equal(terminalWindows(windows).map((w) => w.id).join(','), 't1,t2');
+  assert.equal(terminalNumber(windows, win('ghost', 'terminal')), null, 'unknown window is not numbered');
+});
+
+test('the window context block tells the model the number shown on screen', () => {
+  const windows = [win('a', 'image'), win('t1', 'terminal'), win('t2', 'terminal')];
+  const block = windowContextBlock(windows, 't2');
+  // The operator says "terminal 2", so the model must be handed that same 2.
+  assert.match(block, /terminal #1 "Terminal st1" \(terminal\)/);
+  assert.match(block, /terminal #2 "Terminal st2" \(terminal, focused\)/);
+  assert.match(block, /#1 "a" \(image\)/, 'non-terminals keep their window position');
+});
+
+test('a terminal window item is recognised by its terminal: url regardless of kind', () => {
+  const mislabelled = win('t1', 'other');
+  mislabelled.items[0].url = 'terminal:sABC';
+  assert.equal(isTerminalWindow(mislabelled), true);
+  assert.equal(terminalNumber([mislabelled], mislabelled), 1);
 });

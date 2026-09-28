@@ -30,6 +30,9 @@ class AgentContext:
     user_name: str = ""
     output_destination: str = ""
     focused_terminal: str = ""   # browser-focused terminal session id, if any
+    # Session ids in the operator's on-screen order, so terminal_command reads
+    # `terminal=N` against the number painted in the title bar.
+    terminal_map: list[str] = field(default_factory=list)
     # Skill frontmatter require_tool: force at least one tool call on the first
     # model call of a turn, so a skill whose contract is "run it, don't explain
     # it" cannot quietly answer from training data instead.
@@ -82,6 +85,7 @@ class AgentContext:
             memory=self.memory,
             model=self.provider_kind,
             focused_terminal=self.focused_terminal,
+            terminal_map=self.terminal_map,
             output_destination=self.output_destination,
             emit=self.push_event,
         )
