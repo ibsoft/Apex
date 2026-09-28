@@ -65,6 +65,9 @@ class TerminalSession:
         self.closed = False
         self.base = 0
         self.data = bytearray()
+        # Scrollback kept for window readers, mirroring the model queue's cap.
+        # Bytes older than this are dropped, so the buffer cannot grow forever.
+        self.window_max = 262144
         self.lock = threading.Lock()
         self.last_touch = time.time()
         self.reader: threading.Thread | None = None
@@ -182,23 +185,32 @@ class TerminalSession:
     def drain(self, since: int, limit: int = 131072) -> tuple[int, bytes, bool]:
         """Return (new_from, new_bytes, closed) for output after ``since``.
 
-        Consumed bytes are trimmed so a long-running buffer cannot grow without
-        bound; ``from`` cursor semantics match the client's poll position.
+        NOT consuming. Each poller owns its own ``since`` cursor and gets the
+        bytes from that point, because a session can legitimately have more
+        than one reader: the window remounts on focus/layout changes, a second
+        tab may be open, and a model-opened session gets a window attached
+        while the previous one is still mounted. When drain consumed, whichever
+        poller asked first took the bytes and the others were left staring at
+        a bare prompt while the command and its output had already been
+        swallowed - which is exactly the "terminal is empty but the chat has
+        the answer" report.
+
+        Bytes are still bounded: a scrollback window is kept and only history
+        older than it is dropped, so a client that is briefly behind (or
+        remounting) can still replay instead of losing the stream.
         """
         with self.lock:
             self.last_touch = time.time()
             if since is None or since < self.base:
-                since = self.base
+                since = self.base          # older than our scrollback: clamp
             rel = since - self.base
-            if self.closed:
-                chunk = bytes(self.data[rel:])
-                self.base += len(self.data) - rel
-                del self.data[:]
-                return self.base, chunk, True
             chunk = bytes(self.data[rel: rel + limit])
-            self.base += rel + len(chunk)
-            del self.data[:rel + len(chunk)]
-            return self.base, chunk, False
+            cursor = since + len(chunk)
+            if len(self.data) > self.window_max:
+                drop = len(self.data) - self.window_max
+                del self.data[:drop]
+                self.base += drop
+            return cursor, chunk, self.closed
 
     def model_read(self, since: int, limit: int = 131072) -> tuple[int, bytes, bool]:
         """Return (new_from, bytes, closed) for the *model* output stream.
@@ -329,6 +341,55 @@ def _evict_oldest(user_id: str, keep: int = _MAX_PER_USER) -> None:
         sess.close()
 
 
+def open_session(user_id: str, config=None, rows: int = 24, cols: int = 80) -> TerminalSession:
+    """Create, register and return a fresh PTY session owned by ``user_id``.
+
+    Shared by the REST route and the model-facing terminal tools, so a terminal
+    the model opens for itself is the exact same kind of session a browser
+    window creates — it can be adopted by a window and typed into by hand.
+
+    Raises OSError/RuntimeError when the pty or login shell cannot start; the
+    caller turns that into a recoverable error string.
+    """
+    shell = os.environ.get("SHELL", "/bin/bash")
+    sess = TerminalSession(shell, max(2, int(rows)), max(2, int(cols)))
+    sess.user_id = str(user_id)
+    sess.start()
+    _drop_closed(sess.user_id)
+    _reap_idle(sess.user_id, int(getattr(config, "TERMINAL_IDLE_SECONDS", _IDLE_SECONDS)))
+    with _TERMINALS_LOCK:
+        _TERMINALS[sess.id] = sess
+    # Registered first, then capped, so _MAX_PER_USER is a real ceiling rather
+    # than one more than the cap (the new session is the newest, so it is never
+    # the victim).
+    _evict_oldest(sess.user_id)
+    return sess
+
+
+def room_for(user_id: str, wanted: int = 1) -> int:
+    """How many more sessions ``user_id`` may open without evicting any.
+
+    open_session() caps by evicting the oldest session, which is right for a
+    single manual window but wrong when the model opens several at once: it
+    would silently close a terminal the operator is looking at. Callers that
+    open more than one ask here first, so the cap is a ceiling the user sees
+    rather than a surprise. Returns 0 when the user is already at the cap.
+    """
+    _drop_closed(user_id)
+    with _TERMINALS_LOCK:
+        live = sum(
+            1
+            for s in _TERMINALS.values()
+            if s.user_id == str(user_id) and not s.closed
+        )
+    return max(0, min(int(wanted), _MAX_PER_USER - live))
+
+
+def max_sessions_per_user() -> int:
+    """The per-user terminal cap, for messages that need to state it."""
+    return _MAX_PER_USER
+
+
 def register_terminal_routes(app, require_user, config):
     def enabled() -> bool:
         return bool(getattr(config, _ENABLE_ATTR, False))
@@ -349,17 +410,10 @@ def register_terminal_routes(app, require_user, config):
         except (TypeError, ValueError):
             rows, cols = 24, 80
         shell = os.environ.get("SHELL", "/bin/bash")
-        sess = TerminalSession(shell, rows, cols)
-        sess.user_id = str(user["id"])
         try:
-            sess.start()
+            sess = open_session(str(user["id"]), config, rows, cols)
         except Exception as err:
             return jsonify({"error": f"Could not start terminal: {err}"}), 500
-        _drop_closed(sess.user_id)
-        _reap_idle(sess.user_id, int(getattr(config, "TERMINAL_IDLE_SECONDS", _IDLE_SECONDS)))
-        _evict_oldest(sess.user_id)
-        with _TERMINALS_LOCK:
-            _TERMINALS[sess.id] = sess
         return jsonify({
             "terminal_id": sess.id,
             "shell": shell,

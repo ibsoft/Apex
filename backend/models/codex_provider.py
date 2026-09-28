@@ -17,7 +17,7 @@ class CodexProvider:
     def client_options(self):
         raise CodexError("The Codex provider uses the responses engine. Select that engine in Settings.")
 
-    def chat_stream(self, messages, tools=None):
+    def chat_stream(self, messages, tools=None, tool_choice=None):
         if self.client is None:
             self.client = CodexClient(config.CODEX_HOME, config.CODEX_BINARY)
             account = self.client.account()

@@ -12,7 +12,7 @@ export type LocalCommand =
       arrangement?: WindowArrangement;
       note?: string;
     }
-  | { type: "terminal"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; target?: number; create?: boolean }
+  | { type: "terminal"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; target?: number; create?: boolean; count?: number }
   | { type: "files"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; create?: boolean }
   | NotepadCommand
   | { type: "desktop"; action: "switch" | "next" | "previous" | "move"; desktop: number; target?: number }
@@ -412,6 +412,25 @@ function parseTerminalCommand(text: string, greek: boolean): LocalCommand | null
     return { type: "terminal", action, ...createOpt };
   };
 
+  // "open 4 terminals" / "open four terminals" / "άνοιξε 4 τερματικά".
+  // A PLURAL terminal with a count always means "open N of them" and never
+  // "target terminal N", so this is checked before the single-target patterns.
+  // Plurality is what signals a count, so "open one terminal" and "open
+  // terminal 2" keep their old meaning (one window / a target).
+  const mCount = norm.match(new RegExp(
+    `^(?:open|start|launch|spawn|ανοιξε|ξεκινα|ξεκινησε|εναρξη|δημιουργησε)\\s+` +
+    `(?:(?:a|the|another|new|ενα|ενα ακομα|ακομα ενα|μια)\\s+)*` +
+    `(\\d+|[a-zα-ω]+)\\s+(?:(?:new|windows?|παραθυρα?)\\s+)*(?:terminals|τερματικα?|τερματικου)(?![a-zα-ω])` +
+    `|(\\d+|[a-zα-ω]+)\\s+(?:terminal|τερματικο)\\s+(?:windows?|παραθυρα?)(?![a-zα-ω])`));
+  if (mCount) {
+    const raw = mCount[1] ?? mCount[2];
+    const num = /^\d+$/.test(raw) ? Number(raw) : (greek ? EL_NUMBERS : EN_NUMBERS)[raw];
+    // An unknown word ("open a terminals") is not a count: fall through.
+    if (num !== undefined && num >= 1) {
+      return { type: "terminal", action: "open", create: true, count: Math.min(num, 10) };
+    }
+  }
+
   const mOpen = norm.match(new RegExp(
     `^(?:open|start|launch|spawn)\\s+(?:(?:(?:a|the|another)\\s+)?new\\s+|(?:a|the|another)\\s+)?${ordSlot}terminal\\s*`)) as RegExpMatchArray | null;
   const mOpenEl = greek && !mOpen ? norm.match(new RegExp(
@@ -681,6 +700,37 @@ export function parseLocalCommand(text: string, language: string, skills: Array<
   if (/^(?:be\s+quiet|silence|shut\s+up|quiet|pause\s+autonomy|stop\s+talking)$/.test(normalized)
       || (greek && /^(?:σιωπη|ησυχια|κανε\s+ησυχια|μη(?:ν)?\s+μιλασ|σταματα\s+να\s+μιλασ|παυση\s+αυτονομιασ)$/.test(normalized))) return { type: "silence" };
   return parseImages(clean, greek) ?? parseSkill(text.trim(), greek, skills);
+}
+
+/* ---------- think-hard prefix ----------
+ * "think hard: <request>" (text or voice) routes that SINGLE turn to
+ * THINK_HARD_MODEL. The marker is stripped so the agent only ever sees the
+ * request, returned verbatim from the original text. This is not a local
+ * command: the request itself still goes to the agent.
+ *
+ * Patterns match the accent-stripped lowercase form (see normalize/afterPrefix),
+ * so the Greek spellings need no accented character classes. Greek needs an
+ * explicit separator or a trailing adverb, otherwise "σκεψε το πρόβλημα" would
+ * swallow the article and hand the agent a mutilated request. The Greek adverb
+ * ends in (?![α-ω]) rather than \b because JS \b is ASCII-only and never
+ * matches after a Greek letter. */
+const THINK_HARD_PREFIX =
+  /^\s*(?:think\s+hard|think\s+deeply|think\s+carefully|deeply\s+think)\b\s*(?:[:,\-\u2013\u2014]\s*|\b(?:about|on)\b\s+)?/;
+
+const THINK_HARD_PREFIX_EL =
+  /^\s*(?:σκεψου|σκεψε)\s+(?:(?:ας|το|τη|την|αυτο)\s+)?(?:καλα|σοβαρα|αναλυτικα|πολυ)(?![α-ω])\s*(?:[:,\-\u2013\u2014]\s*)?|^\s*(?:σκεψου|σκεψε)\s*[:,\-\u2013\u2014]\s*/;
+
+/** Strip a leading think-hard marker.
+ * Returns {message, thinkHard}; when the marker is absent `thinkHard` is false
+ * and `message` is the trimmed input. A bare marker with no request after it is
+ * NOT an escalation, so an empty turn is never sent to the hard model. */
+export function parseThinkHard(text: string, language = "en"): { message: string; thinkHard: boolean } {
+  const source = text ?? "";
+  const greek = isGreek(language) || /[\u0370-\u03ff]/.test(source);
+  const rest = afterPrefix(source, greek ? THINK_HARD_PREFIX_EL : THINK_HARD_PREFIX);
+  const message = (rest ?? source).trim();
+  if (rest === null || !message) return { message: source.trim(), thinkHard: false };
+  return { message, thinkHard: true };
 }
 
 export function formatDuration(totalSeconds: number, language = "en"): string {

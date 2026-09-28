@@ -35,6 +35,9 @@ export default function TerminalWindow({ sessionId, base, focused, onClosed }: P
   const pollIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inputQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const disconnectedRef = useRef(false);
+  // One drain in flight at a time: two overlapping polls can land out of order,
+  // which interleaves a command and its output in the wrong sequence.
+  const inFlightRef = useRef(false);
   const focusedRef = useRef(focused);
   focusedRef.current = focused;
 
@@ -93,6 +96,8 @@ export default function TerminalWindow({ sessionId, base, focused, onClosed }: P
     let disposed = false;
     const poll = async () => {
       if (disposed || disconnectedRef.current) return;
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
       try {
         const res = await fetch(api(`/drain?from=${cursorRef.current}`), { credentials: "include" });
         if (!res.ok) {
@@ -103,14 +108,22 @@ export default function TerminalWindow({ sessionId, base, focused, onClosed }: P
           return;
         }
         const payload = await res.json();
-        cursorRef.current = payload.from;
+        // If this effect was torn down mid-flight, drop the response entirely:
+        // the cursor must only ever advance past bytes that were actually
+        // written to the terminal, or the bytes in between are lost for good
+        // and the window stays blank. drain() is not consuming, so re-reading
+        // the same cursor is free and the remounted effect repaints them.
+        if (disposed) return;
         if (payload.data) term.write(Uint8Array.from(atob(payload.data), (c) => c.charCodeAt(0)));
+        cursorRef.current = payload.from;
         if (payload.closed) {
           disconnectedRef.current = true;
           closeWindow();
         }
       } catch {
         /* transient network error; keep polling */
+      } finally {
+        inFlightRef.current = false;
       }
     };
     void poll();

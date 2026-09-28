@@ -38,9 +38,17 @@ def _strip_ansi(raw: bytes) -> str:
     return _ANSI_RE.sub("", text)
 
 
+AUTO_OPENED_NOTE = (
+    "No terminal window was open, so one was opened for you automatically — "
+    "the command above ran in it and the operator can see it, type in it and "
+    "answer any password prompt by hand. Just call the tool again next time; "
+    "never ask the operator to open a terminal."
+)
+
 NO_TERMINAL_MSG = (
-    'No terminal window is open right now. Ask the operator to say "open '
-    "terminal\" (voice or text) so there is a window to run commands in."
+    "No terminal window is open. Nothing has run. The next terminal_command "
+    "call opens one automatically, so just call it instead of asking the "
+    "operator to open a terminal."
 )
 
 # Exact-once guard: the model's retry loop often re-sends the same command right
@@ -57,6 +65,49 @@ def _user_sessions(user_id: str) -> list:
         key=lambda s: s.last_touch,
         reverse=True,
     )
+
+
+def _truthy(value) -> bool:
+    """Model-supplied booleans arrive as real bools or as "true"/"1" strings."""
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
+def _coerce_count(value, cap: int = 8) -> int:
+    """How many terminals the model asked for, clamped to something sane.
+
+    A model asking for "count": 4000 is not a request to spawn 4000 ptys.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 1
+    if n < 1:
+        return 1
+    return min(n, max(1, cap))
+
+
+def _open_session(ctx: ToolContext, cfg) -> object:
+    """Open a terminal window for the model, without being asked to.
+
+    The session is a normal PTY session owned by the user, so the browser can
+    adopt the same id and show it. ``terminal_opened`` tells the frontend to do
+    exactly that, which is why the operator still sees every command APEX runs
+    and can answer sudo/passphrase prompts by hand.
+    """
+    from tools.terminal_server import open_session
+
+    rows, cols = 24, 80
+    if ctx.session is not None:
+        # A browser-adopted session reports its real size; keep the auto-opened
+        # window the same shape as a manually opened one when we know it.
+        rows = max(2, min(200, int(getattr(ctx.session, "rows", 24) or 24)))
+        cols = max(2, min(500, int(getattr(ctx.session, "cols", 80) or 80)))
+    sess = open_session(ctx.user_id, cfg, rows, cols)
+    if ctx.emit:
+        ctx.emit({"type": "terminal_opened", "terminal_id": sess.id})
+    return sess
 
 
 def _pick_session(sessions: list, terminal: object) -> tuple:
@@ -78,6 +129,28 @@ def _pick_session(sessions: list, terminal: object) -> tuple:
     if index < 1 or index > len(sessions):
         return None, f"Terminal {index} does not exist (only {len(sessions)} open)."
     return sessions[index - 1], ""
+
+
+def _log(message: str, *, sess=None, **fields) -> None:
+    """One line per command, with the session id.
+
+    A command can land in a session the browser is not watching; that is
+    invisible from the browser side (the window simply never updates) and was
+    impossible to tell apart from "no command ran". The session id in the
+    journal settles it.
+    """
+    parts = [message]
+    if sess is not None:
+        parts.append(f"session={getattr(sess, 'id', '?')[:8]}")
+    for key, value in fields.items():
+        text = str(value).replace("\n", " ")
+        parts.append(f"{key}={text[:120]}")
+    try:
+        import sys as _sys
+
+        print("[terminal] " + " ".join(parts), file=_sys.stderr, flush=True)
+    except Exception:
+        pass
 
 
 def _capture(sess, start: int, timeout: float, quiet: float, max_bytes: int) -> tuple[str, bool]:
@@ -121,14 +194,24 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
     def _enabled() -> bool:
         return bool(getattr(cfg, "ENABLE_RUN_SHELL", False))
 
-    def _require_sessions(ctx: ToolContext, terminal_arg: object):
+    def _require_sessions(ctx: ToolContext, terminal_arg: object, auto_open: bool = True):
+        """Resolve the target session, opening a window first if none exists.
+
+        Never tells the operator to open a terminal: if no window is open the
+        model opens one itself and keeps going. Only a genuine failure (no pty,
+        shell cannot start) returns an error string."""
         if not ctx.user_id:
             return None, "Sign in before using a terminal window."
         if not _enabled():
             return None, "Terminal commands are disabled (set ENABLE_RUN_SHELL=true)."
         sessions = _user_sessions(ctx.user_id)
         if not sessions:
-            return None, NO_TERMINAL_MSG
+            if not auto_open:
+                return None, NO_TERMINAL_MSG
+            try:
+                return _open_session(ctx, cfg), ""
+            except Exception as exc:
+                return None, f"Could not open a terminal window: {exc}"
         # No explicit target: default to the operator's FOCUSED terminal window
         # if known; otherwise the most recently active one.
         if terminal_arg in (None, "", 0, "0") and ctx.focused_terminal:
@@ -147,11 +230,55 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
         mode = str(args.get("mode") or "run").strip().lower()
         if mode not in ("run", "type"):
             return 'mode must be "run" (execute) or "type" (write without executing).'
-        sess, err = _require_sessions(ctx, args.get("terminal"))
-        if sess is None:
-            return err
+        auto_open = args.get("auto_open", True)
+        if isinstance(auto_open, str):
+            auto_open = auto_open.strip().lower() not in {"0", "false", "no", "off"}
+        count = _coerce_count(args.get("count", 1))
+        want_new = _truthy(args.get("new_terminal")) or count > 1
+        if want_new:
+            # The model is allowed several terminals at once — for parallel jobs
+            # or just because it was asked to "open 4 terminals". Opening is
+            # capped by the free room, never by evicting one the user is using.
+            from tools.terminal_server import max_sessions_per_user, room_for
+
+            if not ctx.user_id:
+                return "Sign in before using a terminal window."
+            if not _enabled():
+                return "Terminal commands are disabled (set ENABLE_RUN_SHELL=true)."
+            room = room_for(ctx.user_id, count)
+            if room <= 0:
+                return (
+                    f"All {max_sessions_per_user()} terminal windows are already "
+                    "open. Nothing was closed. Close one with terminal_close, or "
+                    "reuse an existing window by leaving new_terminal unset."
+                )
+            opened = []
+            for _ in range(room):
+                try:
+                    opened.append(_open_session(ctx, cfg))
+                except Exception as exc:
+                    if not opened:
+                        return f"Could not open a terminal window: {exc}"
+                    break   # keep the terminals that did start
+            # Run in the newest one; the earlier ones are there for parallel work.
+            sess = opened[-1]
+            err = ""
+            ids = ", ".join(s.id for s in opened)
+            opened_note = (
+                f"\n\nOpened {len(opened)} new terminal window"
+                f"{'s' if len(opened) > 1 else ''} ({ids}) and ran the command in "
+                f"{sess.id}. Each one is a normal window the operator can see and "
+                "type in. Pass new_terminal=true or count=N to open more, and "
+                f'terminal="{sess.id}" (or its 1-based index) to target one.'
+            )
+        else:
+            had_session = bool(_user_sessions(ctx.user_id)) if ctx.user_id else False
+            sess, err = _require_sessions(ctx, args.get("terminal"), auto_open=bool(auto_open))
+            if sess is None:
+                return err
+            opened_note = "" if had_session else f"\n\n{AUTO_OPENED_NOTE}"
         if sess.closed:
-            return "That terminal session is closed — open a new one."
+            return "That terminal session is closed — a new one was opened, call the tool again."
         payload = command.encode("utf-8")
         repeat = False
         enter_only = False
@@ -189,15 +316,19 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
                 with sess.lock:
                     sess.last_typed = payload
         except RuntimeError:
+            _log("write failed: session closed", sess=sess, command=command)
             return "That terminal session is closed — open a new one."
         except OSError as exc:
+            _log("write failed", sess=sess, command=command, error=str(exc))
             return f"Could not write to the terminal: {exc}"
+        _log("command written", sess=sess, command=command, mode=mode)
 
         if mode == "type":
             return (
                 f'Typed "{command}" into the terminal window WITHOUT pressing '
                 "Enter — nothing has run. If the operator now wants it executed, "
                 'call terminal_command with mode="run", exactly once.'
+                + opened_note
             )
 
         want_capture = bool(args.get("capture", True))
@@ -214,7 +345,7 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
             prefix = f"The command \"{command}\" was sent to the terminal"
         if repeat:
             if not want_capture:
-                return f"{repeat_note}. Do not re-run it."
+                return f"{repeat_note}. Do not re-run it." + opened_note
             text, still = read_capture(
                 sess, start,
                 timeout=float(args.get("timeout", 25)),
@@ -226,15 +357,16 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
                 note = "\n[still running — output continues in the terminal window]"
             return (
                 f"{repeat_note}.\nOutput so far:\n"
-                f"{text or '(none yet)'}{note}"
+                f"{text or '(none yet)'}{note}{opened_note}"
             )
         if not want_capture:
             if enter_only:
                 return (
                     f'The command "{command}" was already typed on the terminal '
                     "window; pressed Enter to execute it [Enter only, text not re-written]."
+                    + opened_note
                 )
-            return f"Typed into the terminal [@{len(payload)} bytes]."
+            return f"Typed into the terminal [@{len(payload)} bytes].{opened_note}"
         text, still = read_capture(
             sess, start,
             timeout=float(args.get("timeout", 25)),
@@ -251,7 +383,7 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
             )
         if still:
             note += "\n[still running — output continues in the terminal window]"
-        return f"{prefix}. Output so far:\n{text or '(none yet)'}{note}"
+        return f"{prefix}. Output so far:\n{text or '(none yet)'}{note}{opened_note}"
 
     def t_terminal_sessions(args, ctx: ToolContext):
         _ = args
@@ -261,7 +393,11 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
             return "Terminal commands are disabled (set ENABLE_RUN_SHELL=true)."
         sessions = _user_sessions(ctx.user_id)
         if not sessions:
-            return NO_TERMINAL_MSG
+            return (
+                "No terminal window is open yet. Nothing needs doing about that: "
+                "calling terminal_command opens one automatically and runs the "
+                "command in it, and the operator sees it appear on screen."
+            )
         lines = ["Open terminal windows (the focused one is the default target for terminal_command):"]
         for i, sess in enumerate(sessions, 1):
             mark = " (focused)" if sess.id == ctx.focused_terminal else ""
@@ -273,13 +409,16 @@ def build_terminal_tools(cfg, capture: Callable | None = None) -> list[Tool]:
     return [
         Tool(
             "terminal_command",
-            "Drive the operator's visible terminal window (their PTY login shell) the exact way the operator asked. mode=\"run\" (default) types the command plus a final Enter and can capture its output — the command EXECUTES, and only once; never call it again for the same command that is already running (a re-send is auto-blocked for 5s). If the SAME command was already WRITTEN into the window by a previous mode=\"type\" call and the operator then says confirm/execute/go ahead, call mode=\"run\" with that same command again — the tool sees it is already typed and only presses Enter, so the line is never doubled. mode=\"type\" only WRITES the text into the window WITHOUT pressing Enter, so NOTHING executes — use it when the operator asked to write/prepare/fill in a command rather than run it. Ideal for live/interactive work (ping, tail -f, ssh, nano) and for sudo: type `sudo <command>` and let the operator answer the password by hand in the window. Use terminal= index or 8-char session id to choose a window; omit to target the operator's FOCUSED terminal window (fallback: most recently active). Several terminals can be open at once.",
+            "Drive the operator's visible terminal window (their PTY login shell) the exact way the operator asked. If NO terminal window is open, this tool OPENS ONE BY ITSELF and runs the command in it — never ask the operator to open a terminal, never tell them to do it for you, just call this tool. mode=\"run\" (default) types the command plus a final Enter and can capture its output — the command EXECUTES, and only once; never call it again for the same command that is already running (a re-send is auto-blocked for 5s). If the SAME command was already WRITTEN into the window by a previous mode=\"type\" call and the operator then says confirm/execute/go ahead, call mode=\"run\" with that same command again — the tool sees it is already typed and only presses Enter, so the line is never doubled. mode=\"type\" only WRITES the text into the window WITHOUT pressing Enter, so NOTHING executes — use it when the operator asked to write/prepare/fill in a command rather than run it. Ideal for live/interactive work (ping, tail -f, ssh, nano) and for sudo: type `sudo <command>` and let the operator answer the password by hand in the window. Use terminal= index or 8-char session id to choose a window; omit to target the operator's FOCUSED terminal window (fallback: most recently active). You may open as many terminals as the job needs, by yourself, without asking: set new_terminal=true for one more, or count=N to open N at once and run the command in the newest (use the others for parallel jobs). The per-user cap is never exceeded and no window the operator is using is ever closed for you.",
             {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "One shell command line, verbatim. run mode adds a single trailing Enter for you; type mode adds nothing."},
                     "mode": {"type": "string", "enum": ["run", "type"], "default": "run", "description": "run: write the command + Enter and execute it (once). type: only write the text WITHOUT Enter, so it is NOT executed."},
                     "terminal": {"description": "Optional: 1-based terminal index or session id prefix (see terminal_sessions). Defaults to the most recently active terminal."},
+                    "new_terminal": {"type": "boolean", "default": False, "description": "Open an ADDITIONAL terminal even when one is already open, and run the command in it. Use for parallel jobs or when the operator asked for another window. Never required for the first command: a terminal is opened automatically when none exists."},
+                    "count": {"type": "integer", "default": 1, "minimum": 1, "maximum": 8, "description": "Open this many NEW terminals at once (1-8) and run the command in the newest one. Implies new_terminal. Use when the operator says \"open 4 terminals\" or several jobs should run side by side."},
+                    "auto_open": {"type": "boolean", "default": True, "description": "Open a terminal automatically when none is open (default). Set false only to deliberately do nothing instead."},
                     "capture": {"type": "boolean", "default": True, "description": "Wait briefly and return the command's early output back to the model."},
                     "timeout": {"type": "number", "default": 25, "description": "Max seconds to wait for output when capture=true."},
                     "quiet": {"type": "number", "default": 1.2, "description": "Seconds of output silence before returning the result."},

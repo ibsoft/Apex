@@ -10,7 +10,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
-const { parseLocalCommand, formatDuration } = moduleExports;
+const { parseLocalCommand, formatDuration, parseThinkHard } = moduleExports;
 const skills = ['general', 'code', 'research', 'translator', 'obsidian', 'shell',
   'skill_creator', 'FILE_SEARCH', 'EDITOR', 'custom', 'custom helper'].map(name => ({ name }));
 const now = new Date(2026, 8, 23, 10, 15).getTime();
@@ -503,4 +503,85 @@ test('Notepad supports natural editing and compound output commands without losi
   for (const text of ['run uname -a and put the command output in notepad', 'open notepad and write a poem about spring', 'open notepad and write Hello then save']) {
     assert.equal(parseLocalCommand(text, 'en', []), null, text + ' should reach the agent');
   }
+});
+
+/* ---------- think-hard prefix ---------- */
+
+test('a leading "think hard" marker is stripped and flagged, in both languages', () => {
+  assert.deepEqual(parseThinkHard('think hard: prove that sqrt(2) is irrational', 'en'),
+    { message: 'prove that sqrt(2) is irrational', thinkHard: true });
+  assert.deepEqual(parseThinkHard('Think hard, design a database schema', 'en'),
+    { message: 'design a database schema', thinkHard: true });
+  assert.deepEqual(parseThinkHard('think hard about this race condition', 'en'),
+    { message: 'this race condition', thinkHard: true });
+  assert.deepEqual(parseThinkHard('σκέψου καλά: απόδειξε ότι το αθροισμα ζητάει άπειρο', 'el'),
+    { message: 'απόδειξε ότι το αθροισμα ζητάει άπειρο', thinkHard: true });
+  assert.deepEqual(parseThinkHard('σκέψου το καλά - σχεδίασε μια βάση', 'el'),
+    { message: 'σχεδίασε μια βάση', thinkHard: true });
+});
+
+test('a request without the marker is passed through untouched', () => {
+  assert.deepEqual(parseThinkHard('what is the weather in Athens?', 'en'),
+    { message: 'what is the weather in Athens?', thinkHard: false });
+  assert.deepEqual(parseThinkHard('  explain recursion  ', 'en'),
+    { message: 'explain recursion', thinkHard: false });
+  // The marker only counts at the start: this is a normal question.
+  assert.deepEqual(parseThinkHard('why do people think hard about math?', 'en'),
+    { message: 'why do people think hard about math?', thinkHard: false });
+});
+
+test('a bare marker with no request is not escalated', () => {
+  // Otherwise an empty turn would be sent to the hard model with nothing to do.
+  assert.deepEqual(parseThinkHard('think hard', 'en'),
+    { message: 'think hard', thinkHard: false });
+  assert.deepEqual(parseThinkHard('σκέψου καλά', 'el'),
+    { message: 'σκέψου καλά', thinkHard: false });
+});
+
+test('Greek is detected from the text even when the UI is set to English', () => {
+  assert.deepEqual(parseThinkHard('σκέψου καλά: τι κάνει αυτό', 'en'),
+    { message: 'τι κάνει αυτό', thinkHard: true });
+});
+
+/* ---------- open N terminals ---------- */
+
+test('"open N terminals" asks for N windows, in both languages and digits or words', () => {
+  assert.deepEqual(parse('open 4 terminals', 'en'),
+    { type: 'terminal', action: 'open', create: true, count: 4 });
+  assert.deepEqual(parse('open four terminals', 'en'),
+    { type: 'terminal', action: 'open', create: true, count: 4 });
+  assert.deepEqual(parse('open 2 terminal windows', 'en'),
+    { type: 'terminal', action: 'open', create: true, count: 2 });
+  assert.deepEqual(parse('open 3 new terminals', 'en'),
+    { type: 'terminal', action: 'open', create: true, count: 3 });
+  assert.deepEqual(parse('άνοιξε 4 τερματικά'),
+    { type: 'terminal', action: 'open', create: true, count: 4 });
+  assert.deepEqual(parse('άνοιξε τέσσερα τερματικά'),
+    { type: 'terminal', action: 'open', create: true, count: 4 });
+  assert.deepEqual(parse('άνοιξε 2 παραθύρα τερματικού'),
+    { type: 'terminal', action: 'open', create: true, count: 2 });
+});
+
+test('a counted plural never collides with "target terminal N"', () => {
+  // Plurality is the signal: these keep their original single-window meaning.
+  assert.deepEqual(parse('open terminal', 'en'), { type: 'terminal', action: 'open' });
+  assert.deepEqual(parse('open terminal 2', 'en'), { type: 'terminal', action: 'open', target: 2 });
+  assert.deepEqual(parse('open a new terminal', 'en'),
+    { type: 'terminal', action: 'open', create: true });
+  assert.deepEqual(parse('open the second terminal', 'en'),
+    { type: 'terminal', action: 'open', target: 2 });
+  assert.deepEqual(parse('άνοιξε νέο τερματικό'),
+    { type: 'terminal', action: 'open', create: true });
+});
+
+test('a nonsense count is not treated as a count', () => {
+  assert.equal(parse('open a terminals', 'en'), null);
+  assert.equal(parse('open 0 terminals', 'en'), null);
+  assert.equal(parse('open one terminal', 'en'), null);
+});
+
+test('the window cap bounds a counted open', () => {
+  // 10 == MAX_WINDOWS; a larger request is clamped, never unbounded.
+  assert.deepEqual(parse('open 12 terminals', 'en'),
+    { type: 'terminal', action: 'open', create: true, count: 10 });
 });

@@ -35,6 +35,13 @@ class TerminalTests(unittest.TestCase):
         self.login("alice")
 
     def tearDown(self):
+        # SIGHUP the real login shells; clearing the dict alone leaks them.
+        for sess in list(_TERMINALS.values()):
+            try:
+                sess.close()
+            except Exception:
+                pass
+        _TERMINALS.clear()
         self.temporary.cleanup()
 
     def login(self, user):
@@ -191,6 +198,64 @@ class TerminalTests(unittest.TestCase):
         self.assertIn(b"model-stream-check", tail)
         _, browser_tail = self.drain_until(terminal_id, b"model-stream-check", since=browser_cursor)
         self.assertIn(b"model-stream-check", browser_tail)
+
+    def test_two_window_pollers_both_see_the_command(self):
+        """Two readers on one session must not steal bytes from each other.
+
+        This is the "terminal is empty but the chat has the answer" report: the
+        model-opened session got a second window attached while the first was
+        still mounted, drain consumed the command on the way past, and the
+        window the operator was actually looking at never received it.
+        """
+        terminal_id = self.create()
+        sess = _TERMINALS[terminal_id]
+        first_cursor, first_seen = self.drain_until(terminal_id, b"$ ")
+
+        # A second poller attaches and replays from 0, as a remount does.
+        second_cursor, second_seen = self.drain_until(terminal_id, b"$ ", since=0)
+        self.assertIn(b"$ ", second_seen)
+
+        marker = b"two-poller-check"
+        self.client.post(
+            f"/api/terminal/session/{terminal_id}/input",
+            json={"data": base64.b64encode(b"echo " + marker + b"\n").decode("ascii")},
+        )
+        _, first_tail = self.drain_until(
+            terminal_id, marker, timeout=10, since=first_cursor)
+        self.assertIn(marker, first_tail)
+        _, second_tail = self.drain_until(
+            terminal_id, marker, timeout=10, since=second_cursor)
+        self.assertIn(marker, second_tail)
+
+    def test_drain_replays_for_a_late_poller_instead_of_returning_nothing(self):
+        terminal_id = self.create()
+        self.drain_until(terminal_id, b"$ ")
+        marker = b"late-poller-check"
+        self.client.post(
+            f"/api/terminal/session/{terminal_id}/input",
+            json={"data": base64.b64encode(b"echo " + marker + b"\n").decode("ascii")},
+        )
+        # Someone polls from 0 long after the bytes were first handed out.
+        _, replay = self.drain_until(terminal_id, marker, timeout=10, since=0)
+        self.assertIn(marker, replay)
+
+    def test_drain_scrollback_is_bounded(self):
+        sess = _TERMINALS[self.create()]
+        # Feed the buffer directly: writing 1MB through a pty would be slow.
+        with sess.lock:
+            sess.data = bytearray(b"x" * (sess.window_max + 5000))
+        limit = 131072
+        cursor, chunk, _ = sess.drain(0, limit=limit)
+        # One response is capped by `limit`; the retained history by window_max.
+        self.assertEqual(len(chunk), limit)
+        self.assertEqual(cursor, limit)
+        self.assertLessEqual(len(sess.data), sess.window_max)
+        # ...and the rest is still readable, from where the client left off.
+        _, rest, _ = sess.drain(cursor, limit=limit)
+        self.assertTrue(rest)
+        # A cursor older than the scrollback is clamped, not an error.
+        _, clamped, _ = sess.drain(0, limit=8)
+        self.assertEqual(len(clamped), 8)
 
     def test_reader_survives_high_fd_numbers(self):
         # Regression: the reader used select(), which raises ValueError for

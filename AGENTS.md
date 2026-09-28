@@ -33,6 +33,17 @@ Tool handlers receive a `ToolContext` with `user_id`, `conversation_id`,
 `memory`, `emit`, `model`, `session`. Errors should be returned as strings so the
 model can recover; do not raise out of the handler.
 
+`ctx.emit(event_dict)` is the only way a tool talks to the browser. It is wired to
+`AgentContext.push_event`, and each engine drains the queue right after that
+tool's result (`AgentEngine._drained()` in `agent/base.py`), so mid-tool events
+reach the SSE stream in causal order. An event without a string `type` is
+dropped. Never use it for data the model should see — that is the return value.
+
+`AgentContext.active_tools()` force-includes `notepad_control`, `terminal_command`
+and `terminal_sessions` for **every** skill, whatever its `tools:` list says. The
+agent must always be able to act on the machine and drive the live editor without
+the user setting anything up, so those three are not optional per skill.
+
 ## Adding a new skill
 
 Create `backend/skills/definitions/<skill>.md`:
@@ -132,6 +143,67 @@ optional per-window notes.
   all/list, arrange `<style>`, next/previous, targeted close/focus/maximize/
   minimize/restore by number/ordinal, and notes. Executed in
   `ApexProvider::executeLocalCommand` under `case "window"`.
+
+## Voice mode (wake word)
+
+`frontend/lib/voice.ts` is the whole voice engine and owns the phase state
+machine `standby → awake → thinking → speaking`. `frontend/lib/voiceCommands.ts`
+holds the browser-free matching logic (`wakePattern`, sleep phrases, wake-word
+slicing, endpoint accumulation) and is the only place a new pure helper should
+go — it is unit tested in `frontend/tests/voiceCommands.test.cjs` by
+transpiling the `.ts` source on the fly.
+
+- A wake (`wakeSlow`) beeps and then speaks a random acknowledgement from
+  `pickWakeAck` (English or Greek, never twice in a row). It bypasses `speak()`
+  on purpose: the phase must stay `awake` so the command that follows is still
+  collected and the orb keeps showing LISTENING. Do not route it through
+  `speak()`/`finishSpeaking()` — they drop to `standby` and re-arm the
+  follow-up window, which would swallow the command.
+- `stripAckEcho` / `applyAckEcho` remove the confirmation from text the speakers
+  fed back into the recognizer. `applyAckEcho` returns `null` when the echo is
+  all that was heard, so no command fires. It runs before `sliceAfterLastWake`,
+  which matters for acks that contain the wake word ("APEX online.").
+- The echo guard is cleared by `fireCommand`, `speak`, `sleepVoice`,
+  `cancelSpeech` and `stopRecognition`, so its words can never be stripped from
+  a later real command.
+
+## Terminals (model-opened, never requested from the user)
+
+`backend/tools/terminal_server.py::open_session` is the single way a PTY session
+is created — the browser route and the model-facing tools share it, so a window
+the agent opened is an ordinary session the user can type into and answer sudo
+prompts in.
+
+- `terminal_command` auto-opens a window when none exists and never answers
+  "please open a terminal first". `new_terminal=true` adds one more and
+  `count=N` opens N at once, running the command in the newest.
+- `room_for(user_id, wanted)` in `terminal_server.py` caps bulk opening by the
+  free room. `open_session` itself evicts the oldest session past the cap, which
+  is right for a single manual window but wrong for bulk opening: it would close
+  a window the user is looking at. Bulk callers must ask `room_for` first and
+  report the cap to the model instead of evicting.
+- `ctx.emit({"type": "terminal_opened", "terminal_id": ...})` per new session is
+  what makes the window appear; the frontend `attachTerminalWindow` adopts it.
+- The REST `drain` endpoint is **not consuming**: each poller owns its own
+  `since` cursor and the session keeps a bounded scrollback
+  (`TerminalSession.window_max`). A session can have more than one reader — the
+  window remounts on focus/layout changes, StrictMode double-mounts effects, and
+  a model-opened session gets a window attached while the previous one is still
+  mounted. When drain consumed, the first poller swallowed the command and the
+  window the operator was looking at stayed blank. Tests may poll it; reading
+  `sess.data` under `sess.lock` (`peek_text`) is still fine for assertions.
+- Tests must `close()` their sessions in `tearDown`. Clearing `_TERMINALS` only
+  drops the references and leaks real login shells, which then starve the
+  timing-sensitive pty assertions in later tests.
+- `TerminalWindow.tsx` must only advance `cursorRef` for bytes it actually
+  wrote to xterm, and must check `disposed` **before** that update. The window
+  remounts constantly (focus/layout changes, StrictMode), and an effect that
+  advances the cursor for a response it then discards loses those bytes
+  permanently — the buffer looks fine to the next poller, but the screen stays
+  blank. Because drain is not consuming, simply not advancing is enough: the
+  remounted effect re-reads the same cursor and repaints for free. Never let
+  two polls of one instance run concurrently (the `inFlightRef` guard), or the
+  same bytes are written twice.
 
 ## Server-side media preview
 

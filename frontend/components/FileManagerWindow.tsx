@@ -935,7 +935,7 @@ export default function FileManagerWindow({ focused }: { focused: boolean }) {
       )}
 
       {/* main area */}
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", position: "relative" }}>
+      <div className="apex-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", position: "relative" }}>
         {showTrash ? (
           <div>
             <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 1.2fr 90px 70px", gap: 8, padding: "6px 10px", borderBottom: `1px solid ${C.line}`, color: C.dim, fontSize: 9, fontFamily: "var(--font-mono)", letterSpacing: "0.1em" }}>
@@ -1078,7 +1078,7 @@ export default function FileManagerWindow({ focused }: { focused: boolean }) {
           <div style={{ fontSize: 11, color: C.dim, lineHeight: 1.5, marginBottom: 10 }}>
             Some names already exist in the destination. Choose what to do with each.
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "55%", overflowY: "auto", marginBottom: 12 }}>
+          <div className="apex-scroll" style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "55%", overflowY: "auto", marginBottom: 12 }}>
             {conflictState.conflicts.map((conflict) => {
               const choice = conflictChoices[conflict.source] ?? "replace";
               return (

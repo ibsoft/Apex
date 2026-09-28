@@ -94,6 +94,12 @@ class Config:
     CHATGPT_MODEL = os.getenv("CHATGPT_MODEL", "gpt-5-codex")
     # Model used by the "code" skill when no runtime/user model is selected.
     CODE_MODEL = os.getenv("CODE_MODEL", CHATGPT_MODEL)
+    # Model APEX switches to for a single turn when the user asks it to think
+    # hard ("think hard: ...", or the Think hard switch in Settings). Only
+    # consulted when THINK_HARD_MODEL_ENABLED is true and a model is set; the
+    # turn is answered once by this model, with no second pass.
+    THINK_HARD_MODEL = os.getenv("THINK_HARD_MODEL", "").strip()
+    THINK_HARD_MODEL_ENABLED = _bool("THINK_HARD_MODEL_ENABLED", False)
     # Tools that need special permission (only enabled via env).
     ENABLE_RUN_PYTHON = _bool("ENABLE_RUN_PYTHON", False)
     ENABLE_RUN_SHELL = _bool("ENABLE_RUN_SHELL", False)
@@ -123,6 +129,11 @@ class Config:
     # --- Agent engine ------------------------------------------------------
     # One of: responses | agents_sdk | langgraph   (build one, run all)
     AGENT_ENGINE = os.getenv("AGENT_ENGINE", "responses").strip().lower()
+
+    # --- SOUL.md ----------------------------------------------------------
+    # Operator-authored persona (settings tab). Appended to every system prompt.
+    # Kept bounded because it is sent with every single request.
+    SOUL_MAX_CHARS = _int("SOUL_MAX_CHARS", 8000)
 
     # --- Local models ------------------------------------------------------
     # Default backend at boot; can be changed at runtime via /api/settings.
