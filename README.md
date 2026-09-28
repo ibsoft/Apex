@@ -728,3 +728,8 @@ shell text to the live editor, preserving output beyond the normal chat excerpt.
 These replies do not auto-open a generic preview window. Manual overstrike
 formatting is removed, and the Notepad 2 MB limit still applies. Restart the
 backend and frontend after installing this routing change.
+
+Text files opened from File Manager or assistant previews now use Notepad instead
+of the framed document viewer. Signed links retain authenticated access, source
+contents load as plain text, and Save creates a Notepad copy without modifying
+the original. Loading is limited to 2 MB; failed or expired links show an error.

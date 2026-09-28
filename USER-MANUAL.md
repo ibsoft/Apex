@@ -285,8 +285,12 @@ necessarily the computer displaying your browser.
 | `previous image` | Go back within the focused gallery. |
 
 Click supported file/image links or preview controls to open floating windows.
-Images and PDFs can display inline; supported Office and text documents can
-have rendered previews. Unsupported types may offer a download card instead.
+Text files open directly in Notepad with editable contents, including text,
+Markdown, logs, and code. HTML source is shown as text, not executed. Saving
+creates a Notepad copy; it does not overwrite the source file. Files over 2 MB
+cannot be loaded into Notepad.
+Images and PDFs can display inline; supported Office documents can have rendered
+previews. Unsupported types may offer a download card instead.
 A gallery can contain several items in one window.
 
 Generated Word/Excel documents and file-search results use download links that

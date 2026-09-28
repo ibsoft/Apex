@@ -548,6 +548,9 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const windowNext = useCallback(() => {
     const id = focusedWindowIdRef.current;
     if (!id) return;
+    const current = windowsRef.current.find((w) => w.id === id);
+    if (current && current.items.length > 1 && isNotepadWindow(current)
+        && !window.dispatchEvent(new CustomEvent("apex:window-before-close", { cancelable: true, detail: { id } }))) return;
     setWindows((prev) => prev.map((w) =>
       w.id === id && w.items.length > 1 ? { ...w, index: (w.index + 1) % w.items.length } : w,
     ));
@@ -556,6 +559,9 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const windowPrevious = useCallback(() => {
     const id = focusedWindowIdRef.current;
     if (!id) return;
+    const current = windowsRef.current.find((w) => w.id === id);
+    if (current && current.items.length > 1 && isNotepadWindow(current)
+        && !window.dispatchEvent(new CustomEvent("apex:window-before-close", { cancelable: true, detail: { id } }))) return;
     setWindows((prev) => prev.map((w) =>
       w.id === id && w.items.length > 1 ? { ...w, index: (w.index - 1 + w.items.length) % w.items.length } : w,
     ));

@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BASE, api } from "../lib/api";
-import type { NotepadCommand } from "../lib/notepad";
+import { loadNotepadText, type NotepadCommand } from "../lib/notepad";
+import type { WindowItem } from "../lib/windows";
+import { backendFileHref } from "./FileDownloads";
 import styles from "./NotepadWindow.module.css";
 
 type Doc = { name: string; modified_at: number; size_bytes: number };
 
-export default function NotepadWindow({ focused, windowId }: { focused: boolean; windowId: string }) {
+export default function NotepadWindow({ focused, windowId, source }: { focused: boolean; windowId: string; source?: WindowItem }) {
   const revision = useRef(0);
   const busy = useRef(false);
   const importRef = useRef<HTMLInputElement>(null);
@@ -22,9 +24,34 @@ export default function NotepadWindow({ focused, windowId }: { focused: boolean;
   const [title, setTitle] = useState("Untitled");
   const [content, setContent] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [loadingDocument, setLoadingDocument] = useState(false);
+  const [loadingDocument, setLoadingDocument] = useState(!!source);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("Ready · saves to Documents/APEX Notepad");
+  useEffect(() => {
+    if (!source) return;
+    const controller = new AbortController();
+    let live = true;
+    busy.current = true;
+    setLoadingDocument(true);
+    setStatus("Opening text file…");
+    const authenticatedUrl = backendFileHref(source.url);
+    void loadNotepadText(authenticatedUrl ?? source.url, !!authenticatedUrl, controller.signal)
+      .then((value) => {
+        if (!live || !editorRef.current) return;
+        // Never interpret source HTML, Markdown, or command output as markup.
+        editorRef.current.innerText = value;
+        setText(value);
+        setContent(editorRef.current.innerHTML);
+        setTitle(source.title.replace(/\.[^.]+$/, "") || "Untitled");
+        setName(undefined);
+        setDirty(false);
+        setStatus(`Opened ${source.title} · Save creates a Notepad copy`);
+      })
+      .catch((error) => { if (live) setStatus(error?.message || "Could not open text file"); })
+      .finally(() => { if (live) { busy.current = false; setLoadingDocument(false); } });
+    return () => { live = false; controller.abort(); };
+  }, [source?.url, source?.title]);
+
   const changed = () => {
     revision.current += 1;
     setContent(editorRef.current?.innerHTML ?? "");

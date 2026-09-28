@@ -241,12 +241,13 @@ function WindowBody({ w, focused, onNext, onPrevious }: {
     );
   }
   if (isNotepadWindow(w)) {
-    return <NotepadWindow key={w.id} windowId={w.id} focused={focused} />;
+    const source = item && !item.url.startsWith("notepad:") ? item : undefined;
+    return <NotepadWindow key={`${w.id}:${source?.url ?? ""}`} windowId={w.id} focused={focused} source={source} />;
   }
   const kind = w.kind === "image" && w.items.length > 1 ? "image" : w.kind;
   if (kind === "image") return <ImageBody items={w.items} index={w.index} onNext={onNext} onPrevious={onPrevious} />;
   if (kind === "pdf") return <PdfBody item={item} />;
-  if (kind === "docx" || kind === "xlsx" || kind === "pptx" || kind === "text") {
+  if (kind === "docx" || kind === "xlsx" || kind === "pptx") {
     return <HtmlDocBody item={item} htmlSrc={windowSource(item.url).src} />;
   }
   return <OtherBody item={item} />;
