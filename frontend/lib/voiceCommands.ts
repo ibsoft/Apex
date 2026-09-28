@@ -79,6 +79,104 @@ export function isSleepCommand(text: string, language = "en"): boolean {
   return GREEK_SLEEP.test(clean);
 }
 
+/* ---------- wake acknowledgement ---------- */
+
+/* Short spoken confirmations played right after the wake word. They tell the
+ * user the mic caught them without covering the command that usually follows,
+ * so they stay under ~1.5 words. */
+const WAKE_ACKS_EN = [
+  "Go ahead.",
+  "I'm listening.",
+  "Yes?",
+  "Ready.",
+  "I'm here.",
+  "What do you need?",
+  "Go for it.",
+  "Tell me.",
+  "I'm ready.",
+  "Standing by.",
+  "At your service.",
+  "How can I help?",
+  "Listening.",
+  "Proceed.",
+  "What's next?",
+  "APEX online.",
+  "APEX ready.",
+  "I'm with you.",
+  "Say the word.",
+];
+
+const WAKE_ACKS_EL = [
+  "Πες μου.",
+  "Σε ακούω.",
+  "Ναι;",
+  "Έτοιμος.",
+  "Είμαι εδώ.",
+  "Τι χρειάζεσαι;",
+  "Πάμε.",
+  "Πες το.",
+  "Είμαι έτοιμος.",
+  "Σε ετοιμότητα.",
+  "Στη διάθεσή σου.",
+  "Πώς μπορώ να βοηθήσω;",
+  "Ακούω.",
+  "Συνέχεισε.",
+  "Τι ακολουθεί;",
+  "Το APEX είναι έτοιμο.",
+  "APEX σε ετοιμότητα.",
+  "Είμαι μαζί σου.",
+  "Πες τον λόγο σου.",
+];
+
+export function wakeAcks(language = "en"): readonly string[] {
+  return /^el(?:-|$)/i.test((language || "en").trim()) ? WAKE_ACKS_EL : WAKE_ACKS_EN;
+}
+
+/**
+ * Pick the acknowledgement to speak after the wake word, without repeating the
+ * previous one back to back. Falls back to a uniform pick when the list is
+ * empty or `previous` is not one of its entries (start-up, language switch).
+ */
+export function pickWakeAck(
+  language = "en",
+  previous?: string | null,
+  rand: () => number = Math.random,
+): string {
+  const acks = wakeAcks(language);
+  if (!acks.length) return "";
+  const pool = previous && acks.includes(previous) ? acks.filter((a) => a !== previous) : acks;
+  const pick = pool[Math.min(pool.length - 1, Math.max(0, Math.floor(rand() * pool.length)))];
+  return pick ?? acks[0];
+}
+
+/**
+ * Drop an acknowledgement the recognizer heard back from the speaker while the
+ * command was collected, so a command is never prefixed or replaced by it.
+ * Matching is accent/punctuation-insensitive, and the whole utterance is dropped
+ * when the echo is all that was heard.
+ */
+export function stripAckEcho(text: string, ack: string | null | undefined): string {
+  if (!ack) return text;
+  // Per-token normalisation, so punctuation, accents and capitalisation from
+  // the recognizer never stop the echo from matching.
+  const clean = (value: string) =>
+    normalize(value).replace(/[.!?,;:··;'"’]+/g, "").toLowerCase();
+  const words = clean(ack).split(/\s+/).filter(Boolean);
+  if (!words.length) return text;
+  const original = text.split(/\s+/).filter(Boolean);
+  const parts = original.map(clean);
+  const kept: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const end = i + words.length;
+    if (end <= parts.length && parts.slice(i, end).join(" ") === words.join(" ")) {
+      i = end - 1;
+      continue;
+    }
+    kept.push(original[i]);
+  }
+  return kept.join(" ").trim();
+}
+
 /* ---------- utterance accumulation (pause-safe endpointing) ---------- */
 
 export type ResultSnapshot = {

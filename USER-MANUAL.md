@@ -44,8 +44,11 @@ administration, see [Linux services](docs/linux-services.md).
 
 The default wake word is **Apex**. You can say the wake word and request together,
 or say the wake word, wait for the listening cue, and then give the request.
-After a reply, the configured follow-up window lets you continue without saying
-“Apex” again.
+APEX answers every wake word with a short beep and a spoken confirmation such
+as “I'm listening.” or “APEX ready.” — a different one each time, in the language
+you selected. You can keep talking straight away, so the confirmation never
+interrupts you. After a reply, the configured follow-up window lets you continue
+without saying “Apex” again.
 
 - **“Apex, open notepad.”** — wake and give a command.
 - **“Write to notepad Meeting at ten.”** — a follow-up while listening.
@@ -87,6 +90,7 @@ clear. Do not assume every paraphrase is a direct shortcut.
 | `save notepad` | Save the current Notepad document. |
 | `open terminal` | Open or focus a terminal. |
 | `open new terminal` | Create another terminal session. |
+| `open 4 terminals` | Open four terminal windows at once (up to the window limit). |
 | `open file manager` | Open or focus File Manager. |
 | `list windows` | List open windows and their numbers. |
 | `arrange windows in a grid` | Arrange windows on the current desktop. |
@@ -197,8 +201,11 @@ These are **AI-assisted requests**, not fixed shortcuts:
 - “Show me the manual of the command df and show it on Notepad.”
 - “Open Meeting Notes in Notepad, add the action items below, then save.”
 
-For terminal execution, open a terminal first. APEX should execute a requested
-command once and copy its actual result. Asking to copy existing output does
+APEX opens terminal windows by itself. You never need to open one first: ask for
+a command and APEX creates a visible terminal, runs the command in it and reports
+the real output. It can also open several at once for parallel jobs ("open 4
+terminals"), up to a per-user limit, and it never closes a window you already
+have open. APEX executes a requested command once and copies its actual result. Asking to copy existing output does
 not rerun it. The direct output-copy shortcut uses command-tool results
 available in the current conversation; it does not scrape arbitrary commands
 typed manually into a terminal or recover output from a previous browser session.
@@ -450,6 +457,7 @@ available. These examples use the built-in Greek command forms:
 | `αποθήκευσε σημειωματάριο` | Save Notepad. |
 | `κλείσε σημειωματάριο` | Close Notepad. |
 | `άνοιξε τερματικό` | Open a terminal. |
+| `άνοιξε 4 τερματικά` | Open four terminal windows at once. |
 | `κλείσε όλα τα παράθυρα` | Close all windows. |
 | `βάλε χρονόμετρο για πέντε λεπτά` | Start a five-minute timer. |
 | `θύμισέ μου σε δέκα λεπτά να καλέσω τη Μαρία` | Schedule a reminder. |

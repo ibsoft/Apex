@@ -43,6 +43,89 @@ const inputBase: React.CSSProperties = {
 };
 const selectBase: React.CSSProperties = { ...inputBase, width: "100%" };
 
+/* SOUL.md - the operator-authored persona. Unlike every other setting, a
+   keystroke must not hit the database, so the textarea keeps a local draft and
+   saves it once typing stops (and on blur, and on unmount). A draft in flight is
+   never overwritten by the value coming back from the server. */
+const SOUL_SAVE_DEBOUNCE_MS = 800;
+
+function SoulEditor() {
+  const a = useApex();
+  const saved = String(a.settings.soul ?? a.config?.soul ?? "");
+  const limit = Number(a.config?.soul_max_chars ?? 8000);
+  const [draft, setDraft] = useState(saved);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const draftRef = useRef(saved);
+  const dirtyRef = useRef(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const save = useCallback((text: string) => {
+    dirtyRef.current = false;
+    setStatus("saving");
+    void a.updateSettings({ soul: text }).then(() => {
+      setStatus((s) => (s === "saving" ? "saved" : s));
+    }).catch(() => {
+      dirtyRef.current = true; // let blur or the next edit retry
+      setStatus("idle");
+    });
+  }, [a.updateSettings]);
+
+  // Adopt a value that changed outside this box (first load, another tab).
+  useEffect(() => {
+    if (!dirtyRef.current) setDraft(saved);
+  }, [saved]);
+
+  // Never lose the tail of an in-flight draft when the settings tab unmounts.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      if (dirtyRef.current) save(draftRef.current);
+    };
+  }, [save]);
+
+  const edit = (text: string) => {
+    draftRef.current = text;
+    dirtyRef.current = true;
+    setDraft(text);
+    setStatus("idle");
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      if (dirtyRef.current) save(draftRef.current);
+    }, SOUL_SAVE_DEBOUNCE_MS);
+  };
+
+  const flush = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (dirtyRef.current) save(draftRef.current);
+  };
+
+  const over = Math.max(0, draft.length - limit);
+  return (
+    <>
+      <textarea
+        value={draft}
+        onChange={(e) => edit(e.target.value)}
+        onBlur={flush}
+        rows={7}
+        spellCheck={false}
+        placeholder={"Speak in first person, stay dry and precise, push back when the request is a bad idea.\nExample:\n\nYou are calm, exact and slightly dry. You never pad an answer. You disagree when the user is wrong, and you say why in one sentence."}
+        style={{ ...inputBase, width: "100%", resize: "vertical", minHeight: 130, lineHeight: 1.5 }}
+      />
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 9, fontFamily: "var(--font-mono)", color: over ? C.gold : C.dim }}>
+        <span>{over ? `over limit by ${over} — the end will be cut off` : "added to every system prompt · trusted, and sent with every request"}</span>
+        <span>{status === "saving" ? "SAVING…" : status === "saved" ? "SAVED" : `${draft.length}/${limit}`}</span>
+      </div>
+    </>
+  );
+}
+
 function ToolChips({ tools }: { tools?: NonNullable<Message["meta"]>["tools"] }) {
   if (!tools || tools.length === 0) return null;
   return (
@@ -213,7 +296,7 @@ function MensajeList({ messages }: { messages: Message[] }) {
     );
   }
   return (
-    <div ref={ref} style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, padding: "12px 14px" }}>
+    <div ref={ref} className="apex-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, padding: "12px 14px" }}>
       <div aria-hidden style={{ height: 4 }} />
       {messages.map((m) => <MessageBubble key={m.id} msg={m} />)}
       <div aria-hidden style={{ height: 6 }} />
@@ -350,6 +433,8 @@ export default function ChatUI() {
   const engine = a.settings.engine ?? a.config?.engine ?? "";
   const provider = a.settings.provider ?? a.config?.provider ?? "";
   const model = a.settings.model ?? "<auto>";
+  const thinkHardModel = a.settings.think_hard_model ?? a.config?.think_hard_model ?? "";
+  const thinkHardEnabled = !!(a.settings.think_hard_model_enabled ?? a.config?.think_hard_model_enabled);
   const wake = a.settings.wake_word ?? a.config?.wake_word ?? "apex";
   const responseLanguage = a.settings.response_language ?? a.config?.response_language ?? "en";
 
@@ -542,7 +627,7 @@ export default function ChatUI() {
             )}
 
             {tab === "hist" && (
-              <div style={{ padding: 10, overflowY: "auto", flex: 1 }}>
+              <div className="apex-scroll" style={{ padding: 10, overflowY: "auto", flex: 1 }}>
                 <button onClick={() => void a.newConversation()} disabled={a.busy}
                   style={{ width: "100%", marginBottom: 8, padding: 8, borderRadius: 8, cursor: "pointer",
                     background: `${C.gold}14`, border: `1px solid ${C.lineGold}`, color: C.gold,
@@ -573,7 +658,7 @@ export default function ChatUI() {
             )}
 
             {tab === "settings" && (
-              <div style={{ padding: 12, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 11 }}>
+              <div className="apex-scroll" style={{ padding: 12, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 11 }}>
                 <Row label="Engine">
                   <select style={selectBase} value={engine} onChange={(e) => void a.updateSettings({ engine: e.target.value })}>
                     {engines.map((x) => <option key={x} value={x}>{x}</option>)}
@@ -605,6 +690,29 @@ export default function ChatUI() {
                   <datalist id="apex-model-list">
                     {models.concat(a.config?.models ?? []).filter((m, i, arr) => m && arr.indexOf(m) === i).map((m) => <option key={m} value={m} />)}
                   </datalist>
+                </Row>
+                <Row label="Think hard model">
+                  <input style={inputBase} list="apex-think-hard-model-list"
+                    placeholder="off (uses the main model)"
+                    value={thinkHardModel === "<auto>" ? "" : thinkHardModel}
+                    onChange={(e) => { const v = e.target.value; void a.updateSettings({ think_hard_model: v || null }); }}
+                  />
+                  <datalist id="apex-think-hard-model-list">
+                    {models.concat(a.config?.models ?? []).filter((m, i, arr) => m && arr.indexOf(m) === i).map((m) => <option key={m} value={m} />)}
+                  </datalist>
+                </Row>
+                <Row label="Think hard">
+                  <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+                    <input type="checkbox" checked={!!thinkHardEnabled}
+                      disabled={!thinkHardModel}
+                      onChange={(e) => void a.updateSettings({ think_hard_model_enabled: e.target.checked })} />
+                    Answer “think hard” turns with that model
+                  </label>
+                  <span style={{ fontSize: 9, color: C.dim, lineHeight: 1.5 }}>
+                    {thinkHardModel
+                      ? `One turn only: “think hard: …” (text or voice) is answered by ${thinkHardModel}.`
+                      : "Set a model above (or THINK_HARD_MODEL) to enable it."}
+                  </span>
                 </Row>
                 <Row label="Temperature">
                   <input type="range" min={0} max={2} step={0.05}
@@ -645,6 +753,9 @@ export default function ChatUI() {
                     Let APEX initiate, evolve and play
                   </label>
                 </Row>
+                <Row label="SOUL.md · personality">
+                  <SoulEditor />
+                </Row>
                 <Row label="Humor level">
                   <input type="range" min={1} max={100}
                     value={Number(a.settings.humor_level ?? a.config?.humor_level ?? 30)}
@@ -663,18 +774,11 @@ export default function ChatUI() {
                     onChange={(e) => void a.updateSettings({ autonomous_voice_budget: Number(e.target.value) })} />
                   <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.autonomous_voice_budget ?? a.config?.autonomous_voice_budget ?? 50)}%</span>
                 </Row>
-                <Row label="Account">
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {a.user
-                      ? <button style={{ ...inputBase, color: C.gold, cursor: "pointer", borderColor: C.lineGold }} onClick={() => void a.logout()}>SIGN OUT</button>
-                      : <button style={{ ...inputBase, color: C.cyan, cursor: "pointer" }} onClick={() => a.login()}>SIGN IN WITH OPENAI</button>}
-                  </div>
-                </Row>
               </div>
             )}
 
             {tab === "memory" && (
-              <div style={{ padding: 12, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div className="apex-scroll" style={{ padding: 12, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ display: "flex", gap: 6 }}>
                   <input style={inputBase} placeholder="Add a memory note…" value={memNote}
                     onChange={(e) => setMemNote(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && memNote.trim()) { void a.addMemory(memNote.trim()); setMemNote(""); } }} />

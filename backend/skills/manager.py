@@ -31,6 +31,14 @@ class Skill:
     system_prompt: str
     tools: list[str] = field(default_factory=list)   # names; empty = all active
     model: str = ""
+    # When true the engine passes tool_choice="required" on the FIRST model call
+    # of a turn, so a skill that promises to actually run things cannot instead
+    # answer from memory. Only meaningful for skills whose whole job is acting.
+    require_tool: bool = False
+    # Tool names this skill must NEVER be offered, even if tools: ALL. Used to
+    # take the headless run_shell away from skills whose promise is that the
+    # user watches every command in a terminal window.
+    exclude_tools: list[str] = field(default_factory=list)
     builtin: bool = True
     source: str = ""
 
@@ -38,6 +46,17 @@ class Skill:
 MISSING_SKILL_TEMPLATE = (
     "You are {name}, a focused specialist persona. {name} {description}. "
 )
+
+
+def _tool_list(value) -> list[str]:
+    """Frontmatter tool lists accept a comma-separated string or a YAML list."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [t.strip() for t in value.split(",") if t.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(t).strip() for t in value if str(t).strip()]
+    return []
 
 
 def _expand_config_vars(value: str) -> str:
@@ -88,6 +107,9 @@ class SkillManager:
             system_prompt=body,
             tools=[t for t in tools if t != "ALL"] if tools else [],
             model=_expand_config_vars(str(meta.get("model") or "")),
+            require_tool=str(meta.get("require_tool") or "").strip().lower()
+            in {"1", "true", "yes", "on"},
+            exclude_tools=_tool_list(meta.get("exclude_tools")),
             builtin=path.parent == self._builtin_dir,
             source=str(path),
         )
@@ -238,6 +260,132 @@ def _keyword_override(user_text: str, model_choice: str) -> str | None:
     return None
 
 
+# --- deterministic host-state routing -------------------------------------
+# The LLM router is a soft suggestion and it does get it wrong: "check our
+# network connection" was routed to `general`, which has no reason to touch a
+# tool, so the model answered from memory with a fabricated ping. Anything that
+# is a question about the LIVE state of this host must land on the shell skill,
+# which forces a real command in a visible terminal.
+_HOST_STATE_PATTERNS = (
+    # connectivity / internet
+    r"\binternet\b", r"\bonline\b", r"\boffline\b", r"\bconnectivity\b",
+    r"\bwi-?fi\b", r"\bbandwidth\b", r"\bping\b", r"\bdns\b",
+    r"\bip address\b", r"\brouter\b", r"\bgateway\b", r"\bvpn\b",
+    r"\bethernet\b", r"\bnetwork card\b", r"\bnetwork (status|interface|adapter|diagnos\w*|problem\w*|issue\w*|config\w*|connection)\b",
+    r"\b(listening|open|exposed|used) ports?\b",
+    r"\bports?\b\s+(are|is)?\s*(being\s+)?(listen\w*|open)",
+    r"\bfirewall\b", r"\blatency\b", r"\bconnection speed\b",
+    r"\bspeed ?test\b", r"\bdown(up)?load\b",
+    r"\b(host|server|laptop|machine|pc) (status|health|uptime)\b",
+    # storage / cpu / memory / processes
+    # "disk"/"storage" are host nouns in this app, and the codeish guard keeps
+    # them out of programming turns. Matching the noun rather than the word
+    # "usage" is also what survives "disk usagge".
+    r"\bdisks?\b", r"\bstorage\b",
+    r"\bdisk (usage|space|health|free|full)\b", r"\bdf -h\b", r"\blsblk\b",
+    r"\bfilesystem\b", r"\bhow much (memory|ram|disk|space)\b",
+    r"\b(memory|ram) (usage|free|left|used|consumption|available)\b",
+    r"\b(cpu) (usage|load|cores?|info\w*|consumption|temperature)\b",
+    r"\bfree -h\b", r"\buptime\b",
+    r"\bprocess(es)? (list|running|using|consum\w*|count)\b",
+    r"\bhow many process\b", r"\b(ps aux|top|htop)\b",
+    # services / logs / system
+    r"\bsystemd\b", r"\bsystemctl\b", r"\bservice(s)? (status|running|failed|failing)\b",
+    r"\bjournalctl\b", r"\bsystem (log|status|info|health)\w*\b",
+    r"\bkernel\b", r"\buname\b", r"\bhostname\b", r"\blsmod\b",
+    r"\bdmesg\b", r"\bbattery\b", r"\btemperature\b",
+    r"\bopen (a )?(new )?terminal\b", r"\b(terminal|shell) (command|prompt)\b",
+    # an address or a network tool on the command line is host work
+    r"\b\d{1,3}(?:\.\d{1,3}){3}\b", r"\bnmap\b", r"\bport scan\b",
+    r"\btraceroute\b", r"\btracepath\b", r"\bnslookup\b", r"\bdig\b",
+    r"\bifconfig\b", r"\bnetstat\b", r"\biptables\b", r"\bping\b",
+)
+_HOST_STATE_RE = re.compile("|".join(_HOST_STATE_PATTERNS), re.IGNORECASE)
+
+# ...unless the message is really about writing code, where a terminal run is
+# optional and hijacking the turn would be worse than the bug.
+_CODEISH_RE = re.compile(
+    r"(?i)\b(def |class |function|method|lambda|python|javascript|typescript|"
+    r"refactor|unit test|pytest|regex|sql|query|database schema|api endpoint|"
+    r"dockerfile|makefile|git commit|npm |pip install|stack trace)\b"
+)
+
+HOST_STATE_SKILL = "shell"
+
+# People type "conenction" and "interne". Exact matching missed the real
+# message that broke this ("check our network conenction for interne"), so long
+# keywords are also matched with a small Damerau-Levenshtein distance: one
+# transposition or two edits still counts. Only keywords of 6+ letters are fuzzy
+# matched, otherwise short words collide with ordinary English.
+_FUZZY_KEYWORDS = (
+    "internet", "connection", "network", "networks", "terminal", "terminals",
+    "bandwidth", "wireless", "ethernet", "interface", "interfaces",
+    "filesystem", "processor", "temperature", "hostname", "diagnostics",
+    "listening", "throughput", "localhost",
+)
+_FUZZY_MIN_LEN = 6
+_FUZZY_MAX_DIST = 2
+
+
+def _damerau(a: str, b: str, limit: int) -> int:
+    """Damerau-Levenshtein distance, abandoned early once it exceeds limit."""
+    la, lb = len(a), len(b)
+    if abs(la - lb) > limit:
+        return limit + 1
+    prev2: list[int] = []
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        best = cur[0]
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            val = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (i > 1 and j > 1 and a[i - 1] == b[j - 2]
+                    and a[i - 2] == b[j - 1]):
+                val = min(val, prev2[j - 2] + 1)
+            cur[j] = val
+            best = min(best, val)
+        if best > limit:
+            return limit + 1
+        prev2, prev = prev, cur
+    return prev[lb]
+
+
+def _fuzzy_host_hit(text: str) -> str | None:
+    normalized = _strip_accents(text).lower()
+    for token in re.findall(r"[a-z]{%d,}" % _FUZZY_MIN_LEN, normalized):
+        for kw in _FUZZY_KEYWORDS:
+            if _damerau(token, kw, _FUZZY_MAX_DIST) <= _FUZZY_MAX_DIST:
+                return token
+    return None
+
+
+def _strip_accents(text: str) -> str:
+    import unicodedata
+
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text or "")
+        if unicodedata.category(c) != "Mn"
+    )
+
+
+
+def force_host_skill(user_text: str, skills: list[Skill]) -> str | None:
+    """Return HOST_STATE_SKILL for live-host questions, else None.
+
+    Deliberately keyword-based: this runs before the LLM router precisely
+    because the LLM router cannot be trusted with this decision.
+    """
+    if not any(s.name == HOST_STATE_SKILL for s in skills):
+        return None
+    text = user_text or ""
+    if not text.strip() or _CODEISH_RE.search(text):
+        return None
+    if _HOST_STATE_RE.search(text):
+        return HOST_STATE_SKILL
+    return HOST_STATE_SKILL if _fuzzy_host_hit(text) else None
+
+
 def route_skill(
     user_text: str,
     skills: list[Skill],
@@ -253,6 +401,12 @@ def route_skill(
     """
     if not skills:
         return fallback
+
+    # Deterministic first: live-host questions always go to the skill that
+    # actually runs commands, no matter what the classifier decides (or caches).
+    forced = force_host_skill(user_text, skills)
+    if forced:
+        return forced
 
     cached = _ROUTER_CACHE.get(user_text)
     if cached is not None:

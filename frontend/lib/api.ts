@@ -68,12 +68,20 @@ export type AppConfig = {
   providers: ProviderStatus;
   engines: string[];
   models: string[];
+  /** Model APEX uses for one turn when the user asks it to think hard. */
+  think_hard_model: string;
+  /** Whether the think-hard switch is armed (env THINK_HARD_MODEL_ENABLED). */
+  think_hard_model_enabled: boolean;
   memory_enabled: boolean;
   embedding: string | null;
   wake_word: string;
   follow_up_seconds: number;
   voice: string;
   response_language: string;
+  /** Operator-authored persona appended to every system prompt. */
+  soul: string;
+  /** Server-side cap for `soul`; longer text is truncated on save. */
+  soul_max_chars: number;
   autonomous_mode: boolean;
   humor_level: number;
   sarcasm_level: number;
@@ -96,6 +104,7 @@ export type ChatEvent =
   | { type: "tool_call"; name: string; id: string; arguments: any }
   | { type: "tool_result"; name: string; output: string }
   | { type: "memory"; action: string; detail: any }
+  | { type: "terminal_opened"; terminal_id: string }
   | { type: "skills_changed" }
   | { type: "sudo_password"; reason?: string }
   | { type: "github_token"; reason?: string }

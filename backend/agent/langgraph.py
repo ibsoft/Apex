@@ -71,6 +71,7 @@ class LangGraphEngine(AgentEngine):
                 })
                 out = ctx.tools.invoke(name, args or {}, ctx.make_tool_context())
                 tool_log.append({"type": "tool_result", "name": name, "output": out})
+                tool_log.extend(ctx.drain_events())
                 outputs.append(
                     ToolMessage(content=str(out), tool_call_id=call["id"], name=name)
                 )

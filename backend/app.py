@@ -60,11 +60,72 @@ def _rt_bool(value) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_model(
+    provider_name: str,
+    requested: str,
+    rt: dict,
+    skill_model: str,
+    *,
+    is_subscription: bool,
+    hard_requested: bool = False,
+    hard_enabled: bool = False,
+    hard_model: str = "",
+    allowed_models=None,
+) -> tuple[str, str]:
+    """Pick the model for one turn. Returns ``(model, think_hard_note)``.
+
+    Precedence, highest first: a turn the user asked to think hard on, then the
+    model the request asked for, then the saved runtime model, then the skill's
+    model, then the provider default. A think-hard turn is answered once by the
+    think-hard model — there is no second pass.
+
+    ``think_hard_note`` is non-empty only when the user asked to think hard and
+    that could not be honoured. It is appended to the system prompt so the model
+    answers as well as it can and says why, instead of silently pretending.
+    """
+    model = requested or rt.get("model") or skill_model
+    if not model:
+        if provider_name == "codex":
+            model = config.CODEX_MODEL
+        elif provider_name == "ollama":
+            model = rt.get("ollama_model") or config.OLLAMA_MODEL
+        elif provider_name == "kimi":
+            model = rt.get("kimi_model") or config.KIMI_MODEL
+        elif provider_name == "torch":
+            model = rt.get("torch_model") or config.TORCH_MODEL
+        elif is_subscription:
+            model = config.CHATGPT_MODEL
+        else:
+            model = config.DEFAULT_MODEL
+    if not hard_requested:
+        return model, ""
+    hard_model = (hard_model or "").strip()
+    if not hard_enabled or not hard_model:
+        return model, (
+            "The user asked you to think hard, but no think-hard model is configured: "
+            "set THINK_HARD_MODEL and THINK_HARD_MODEL_ENABLED (or use the Think hard "
+            "rows in Settings). Answer as well as you can on your current model and "
+            "mention in one short line that the think-hard model is not set up yet."
+        )
+    # Local/self-hosted providers only accept models they actually serve, so an
+    # env-only model name must not break the turn.
+    if allowed_models is not None and hard_model not in allowed_models:
+        return model, (
+            f"The user asked you to think hard, but the configured think-hard model "
+            f"({hard_model}) is not available on the {provider_name} provider. Answer as "
+            "well as you can on your current model and mention in one short line that the "
+            "think-hard model is unavailable for this provider."
+        )
+    return hard_model, ""
+
 from db import get_db
 from memory.store import get_memory
 from models.embedders import EmbeddingManager
 from models.providers import ProviderError, ProviderManager
 from skills.manager import get_skill_manager, route_skill
+from soul import normalize_soul, soul_prompt_block
 from tools.memory_tools import memory_prompt_block
 
 
@@ -470,12 +531,16 @@ def create_app() -> Flask:
                 "providers": provider_status(uid),
                 "engines": engines_available(),
                 "models": model_list(),
+                "think_hard_model": str(rt.get("think_hard_model") or config.THINK_HARD_MODEL or "").strip(),
+                "think_hard_model_enabled": _rt_bool(rt.get("think_hard_model_enabled")) if "think_hard_model_enabled" in rt else config.THINK_HARD_MODEL_ENABLED,
                 "memory_enabled": bool(mem),
                 "embedding": (get_memory().embedding_name if mem else None),
                 "wake_word": rt.get("wake_word") or config.WAKE_WORD,
                 "follow_up_seconds": int(rt.get("follow_up_seconds") or config.FOLLOW_UP_SECONDS),
                 "voice": rt.get("voice") or config.VOICE,
                 "response_language": rt.get("response_language") or config.RESPONSE_LANGUAGE,
+                "soul": normalize_soul(rt.get("soul")),
+                "soul_max_chars": config.SOUL_MAX_CHARS,
                 "autonomous_mode": _rt_bool(rt.get("autonomous_mode")) if "autonomous_mode" in rt else config.AUTONOMOUS_MODE,
                 "humor_level": _clamp_int(rt.get("humor_level"), 1, 100) if "humor_level" in rt else config.HUMOR_LEVEL,
                 "sarcasm_level": _clamp_int(rt.get("sarcasm_level"), 1, 100) if "sarcasm_level" in rt else config.SARCASM_LEVEL,
@@ -552,7 +617,8 @@ def create_app() -> Flask:
             "wake_word", "follow_up_seconds", "tts_enabled", "memory_enabled",
             "embedding_backend", "strict_tool_json", "ollama_base_url",
             "base_url", "torch_model", "model_extra", "autonomous_mode",
-            "humor_level", "sarcasm_level", "autonomous_voice_budget",
+            "humor_level", "sarcasm_level", "autonomous_voice_budget", "soul",
+            "think_hard_model", "think_hard_model_enabled",
         }
         for key, value in data.items():
             if key not in allowed:
@@ -571,6 +637,12 @@ def create_app() -> Flask:
                 value = _clamp_int(value, 1, 100)
             if key == "autonomous_voice_budget":
                 value = _clamp_int(value, 0, 100)
+            if key == "soul":
+                value = normalize_soul(value)
+            if key == "think_hard_model":
+                value = str(value or "").strip()
+            if key == "think_hard_model_enabled":
+                value = str(value).strip().lower() in {"1", "true", "yes", "on"}
             get_db().set_setting(key, value)
         get_skill_manager().refresh()
         return jsonify({"ok": True, "settings": runtime()})
@@ -820,21 +892,24 @@ def create_app() -> Flask:
                 skill_model = ""
             # openai / codex / torch accept the skill model as-is
 
-        # resolve model per provider
-        model = data.get("model") or rt.get("model") or skill_model
-        if not model:
-            if provider_name == "codex":
-                model = config.CODEX_MODEL
-            elif provider_name == "ollama":
-                model = rt.get("ollama_model") or config.OLLAMA_MODEL
-            elif provider_name == "kimi":
-                model = rt.get("kimi_model") or config.KIMI_MODEL
-            elif provider_name == "torch":
-                model = rt.get("torch_model") or config.TORCH_MODEL
-            elif is_subscription_access(uid):
-                model = config.CHATGPT_MODEL
-            else:
-                model = config.DEFAULT_MODEL
+        # resolve model per provider, honouring a per-turn "think hard" request
+        model, think_hard_note = resolve_model(
+            provider_name,
+            str(data.get("model") or ""),
+            rt,
+            skill_model,
+            is_subscription=is_subscription_access(uid),
+            hard_requested=_rt_bool(data.get("think_hard")),
+            hard_enabled=(
+                _rt_bool(rt.get("think_hard_model_enabled"))
+                if "think_hard_model_enabled" in rt
+                else config.THINK_HARD_MODEL_ENABLED
+            ),
+            hard_model=str(rt.get("think_hard_model") or config.THINK_HARD_MODEL or ""),
+            allowed_models=(
+                set(model_list(provider_name)) if provider_name in ("ollama", "kimi") else None
+            ),
+        )
 
         try:
             provider = provider_mgr.build(provider_name, model)
@@ -875,6 +950,9 @@ def create_app() -> Flask:
             voice_mode=voice_mode,
             user_name=session.get("name") or user.get("name") or "",
             response_language=rt.get("response_language") or config.RESPONSE_LANGUAGE,
+            # Operator persona from the settings tab. Last so it stays the most
+            # recent instruction; empty by default and never persisted to history.
+            extra=soul_prompt_block(rt.get("soul")),
         )
 
         # Frontend sends a compact, non-persisted inventory of open desktop
@@ -883,6 +961,9 @@ def create_app() -> Flask:
         window_context = str(data.get("window_context") or "").strip()
         if window_context:
             system_prompt = system_prompt.rstrip() + "\n\n" + window_context
+
+        if think_hard_note:
+            system_prompt += "\n\n" + think_hard_note
 
         # The frontend knows which terminal window is focused; let terminal tools
         # default to it so "run/write on the focused terminal" is deterministic.
@@ -901,7 +982,10 @@ def create_app() -> Flask:
             provider_kind=provider_name,
             engine_name=engine_name,
             tools=tools,
-            skill_tools=list(get_skill_manager().select(skill_name).tools),
+            skill_tools=list(skill_obj.tools),
+            # getattr: a stubbed/legacy skill object may predate these fields.
+            require_tool=bool(getattr(skill_obj, "require_tool", False)),
+            exclude_tools=list(getattr(skill_obj, "exclude_tools", ()) or ()),
             memory=mem,
             runtime=rt,
             voice_mode=voice_mode,
@@ -932,8 +1016,17 @@ def create_app() -> Flask:
                 for ev in engine.stream():
                     if ev["type"] == "text_delta":
                         assistant_parts.append(ev["content"])
-                    elif ev["type"] == "tool_result" and ev.get("name") == "file_search":
-                        tool_events.append({"name": "file_search", "output": ev.get("output", ""), "running": False})
+                    elif ev["type"] == "tool_result":
+                        # Record EVERY tool, not just file_search. Restricting
+                        # this to one name made `tools: []` in the stored message
+                        # look like "the model ran nothing" when it had in fact
+                        # run terminal_command - which sent the investigation
+                        # after a phantom bug for a whole round.
+                        tool_events.append({
+                            "name": ev.get("name"),
+                            "output": ev.get("output", ""),
+                            "running": False,
+                        })
                     elif ev["type"] == "tool_result" and ev.get("name") == "create_skill":
                         # Notify the UI that the skill list has changed so the new
                         # skill appears in the panel without a manual refresh.

@@ -13,6 +13,7 @@ new Function('exports', compiled)(moduleExports);
 const {
   wakePattern, isWakeOnlyText, isWakeWordFragment, isSleepCommand, recognitionLanguage,
   accumulateResults, commandText, emptyResultSnapshot, sliceAfterLastWake,
+  wakeAcks, pickWakeAck, stripAckEcho,
 } = moduleExports;
 
 test('Greek default wake aliases preserve command text and recognize Unicode boundaries', () => {
@@ -221,4 +222,60 @@ test('endpointing keeps a finalized chunk that arrived before the current interi
   let snap = emptyResultSnapshot(0);
   snap = accumulateResults([res(true, 'x'), res(false, 'stop the music')], snap);
   assert.equal(commandText(snap), 'x stop the music');
+});
+
+test('wake acknowledgements are offered in the language the assistant answers in', () => {
+  assert.equal(wakeAcks('el').length > 0, true);
+  assert.equal(wakeAcks('el-GR').length, wakeAcks('el').length);
+  assert.equal(wakeAcks('en').length > 0, true);
+  assert.deepEqual(wakeAcks('en').filter((a) => /[\u0370-\u03ff]/.test(a)), []);
+  // The two language sets must not overlap, so a language switch cannot hand
+  // the Greek TTS voice English text.
+  assert.deepEqual(wakeAcks('el').filter((a) => wakeAcks('en').includes(a)), []);
+  for (const list of [wakeAcks('en'), wakeAcks('el')]) {
+    assert.equal(new Set(list).size, list.length, 'no duplicate phrases');
+    for (const ack of list) assert.ok(ack.trim().length > 0);
+  }
+});
+
+test('the spoken wake acknowledgement is random and never repeats itself back to back', () => {
+  for (const language of ['en', 'el']) {
+    const list = wakeAcks(language);
+    let previous = null;
+    const seen = new Set();
+    // A 0.999 roll must still land inside the list.
+    assert.ok(list.includes(pickWakeAck(language, previous, () => 0)));
+    assert.ok(list.includes(pickWakeAck(language, previous, () => 0.999)));
+    for (let i = 0; i < 400; i++) {
+      const ack = pickWakeAck(language, previous);
+      assert.notEqual(ack, previous, `${language}: ${ack}`);
+      assert.ok(list.includes(ack), ack);
+      seen.add(ack);
+      previous = ack;
+    }
+    assert.equal(seen.size, list.length, 'every phrase is reachable');
+  }
+  // A stale phrase from the other language is not "the previous one".
+  assert.ok(wakeAcks('en').includes(pickWakeAck('en', 'Σε ακούω.')));
+});
+
+test('acknowledgement echo is removed from a command without touching its wording', () => {
+  // The recognizer can hear the acknowledgement through the speakers.
+  assert.equal(stripAckEcho('apex I\'m listening. what time is it', "I'm listening."),
+    'apex what time is it');
+  assert.equal(stripAckEcho("i'm listening what's the weather in Athens", "I'm listening."),
+    "what's the weather in Athens");
+  // Accents, capitals and trailing punctuation from the recognizer still match.
+  assert.equal(stripAckEcho('Άπεξ ΣΕ ΑΚΟΥΩ? βάλε ξυπνητήρι', 'Σε ακούω.'), 'Άπεξ βάλε ξυπνητήρι');
+  assert.equal(stripAckEcho('apex APEX READY set a timer', 'APEX ready.'), 'apex set a timer');
+  // A partial match is real user speech and must survive intact.
+  assert.equal(stripAckEcho('apex I am listening to music', "I'm listening."), 'apex I am listening to music');
+  assert.equal(stripAckEcho('apex open the app', "I'm listening."), 'apex open the app');
+  assert.equal(stripAckEcho('apex hello', null), 'apex hello');
+  assert.equal(stripAckEcho('apex hello', ''), 'apex hello');
+  // Stripping runs before the wake word is sliced, so a wake-word ack echo can
+  // never make the command come out as the tail of the acknowledgement.
+  const ack = 'APEX online.';
+  const heard = stripAckEcho('apex open the notes APEX online', ack);
+  assert.equal(sliceAfterLastWake(heard, 'apex', 'en'), 'open the notes');
 });

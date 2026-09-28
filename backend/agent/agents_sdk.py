@@ -64,6 +64,8 @@ class AgentsSdkEngine(AgentEngine):
                     })
                     out = _t.call(parsed, ctx.make_tool_context())
                     emit({"type": "tool_result", "name": _t.name, "output": out})
+                    for extra in ctx.drain_events():
+                        emit(extra)
                     return out
 
                 tools.append(

@@ -30,12 +30,47 @@ class AgentContext:
     user_name: str = ""
     output_destination: str = ""
     focused_terminal: str = ""   # browser-focused terminal session id, if any
+    # Skill frontmatter require_tool: force at least one tool call on the first
+    # model call of a turn, so a skill whose contract is "run it, don't explain
+    # it" cannot quietly answer from training data instead.
+    require_tool: bool = False
+    # Skills may veto tools entirely (see Skill.exclude_tools).
+    exclude_tools: list[str] = field(default_factory=list)
+    # Events queued by tools through ToolContext.emit. Engines drain them right
+    # after the tool result so mid-tool events (a terminal window that had to be
+    # opened, a memory write) reach the browser in causal order.
+    pending_events: list[dict] = field(default_factory=list)
+
+    def push_event(self, event: dict) -> None:
+        """Queue a mid-tool event for the engine to yield to the client."""
+        if isinstance(event, dict) and event.get("type"):
+            self.pending_events.append(event)
+
+    def drain_events(self) -> list[dict]:
+        queued, self.pending_events = self.pending_events, []
+        return queued
 
     def active_tools(self) -> list[Tool]:
+        banned = set(self.exclude_tools or ())
         if not self.skill_tools:
-            return self.tools.active()
-        names = set(self.skill_tools) | {"notepad_control"}
-        return [t for t in self.tools.active() if t.name in names]
+            pool = self.tools.active()
+            if banned:
+                return [t for t in pool if t.name not in banned]
+            return pool
+        # notepad_control drives the live editor, and the terminal tools let the
+        # model act on the machine. Both are available in EVERY skill: asking
+        # the user to open a terminal first (or a skill that simply cannot run
+        # anything) is not an acceptable answer, so terminal_command /
+        # terminal_sessions are force-included alongside notepad_control.
+        names = set(self.skill_tools) | {
+            "notepad_control",
+            "terminal_command",
+            "terminal_sessions",
+        }
+        return [
+            t for t in self.tools.active()
+            if t.name in names and t.name not in banned
+        ]
 
     def tool_schemas(self) -> list[dict]:
         return [t.to_openai() for t in self.active_tools()]
@@ -48,6 +83,7 @@ class AgentContext:
             model=self.provider_kind,
             focused_terminal=self.focused_terminal,
             output_destination=self.output_destination,
+            emit=self.push_event,
         )
 
 
@@ -61,6 +97,10 @@ class AgentEngine:
 
     def stream(self) -> Iterator[dict]:
         raise NotImplementedError
+
+    def _drained(self) -> Iterator[dict]:
+        """Yield whatever tools queued through ctx.emit during the last call."""
+        yield from self.ctx.drain_events()
 
     def _emit_tool_round(self, name: str, arguments: str):
         yield {
@@ -82,6 +122,7 @@ class AgentEngine:
             "name": name,
             "output": out,
         }
+        yield from self._drained()
 
 
 def run_async_generator(agen_factory, args, on_event):

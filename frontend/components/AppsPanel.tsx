@@ -27,7 +27,7 @@ export default function AppsPanel() {
   const apps = useMemo(() => getApps(), []);
 
   return (
-    <div style={{ padding: 12, overflowY: "auto", flex: 1 }}>
+    <div className="apex-scroll" style={{ padding: 12, overflowY: "auto", flex: 1 }}>
       {apps.length === 0 && (
         <div style={{ padding: 22, textAlign: "center", color: C.dim, fontSize: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.12em" }}>
           NO APPS REGISTERED

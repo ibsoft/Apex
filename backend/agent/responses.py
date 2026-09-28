@@ -29,8 +29,18 @@ class ResponsesEngine(AgentEngine):
         for step in range(config.MAX_TOOL_STEPS):
             assistant_text = ""
             tool_calls: list[dict] = []
+            # A skill that promises to actually DO things (shell: "for every
+            # request you MUST use a shell tool") gets tool_choice="required" on
+            # the FIRST model call only. Without it a small model just answers
+            # from training data -- inventing a ping result that never ran.
+            # Only step 0: after a tool result the model must be free to answer
+            # normally, otherwise every turn would loop into another tool call.
+            force = step == 0 and ctx.require_tool and bool(schemas)
             try:
-                chunks = provider.chat_stream(messages, schemas or None)
+                chunks = provider.chat_stream(
+                    messages, schemas or None,
+                    **({"tool_choice": "required"} if force else {}),
+                )
                 for chunk in chunks:
                     ctype = chunk.get("type")
                     if ctype == "text":
@@ -75,6 +85,7 @@ class ResponsesEngine(AgentEngine):
                     tc["name"], _safe_args(tc["arguments"]), ctx.make_tool_context()
                 )
                 yield {"type": "tool_result", "name": tc["name"], "output": out}
+                yield from ctx.drain_events()
                 messages.append(
                     {"role": "tool", "tool_call_id": tc["id"], "content": out}
                 )

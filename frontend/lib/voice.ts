@@ -4,7 +4,10 @@
 
    - SpeechRecognition runs continuously and auto-restarts on end.
    - Hearing the wake word (default "apex") arms the next utterance as a
-     command; text after the wake word in the SAME utterance is also used.
+      command; text after the wake word in the SAME utterance is also used. A
+      short random acknowledgement ("I'm listening.", «Σε ακούω», …) is spoken
+      right after the beep to confirm the mic is live, without leaving the awake
+      state, so a command can start while it is still talking.
    - A command is sent only after a stable quiet period (ENDPOINT_SILENCE_MS)
      with no new recognition results. All finalized chunks of one sentence are
      merged with the live interim, so pausing mid-sentence (or a browser that
@@ -25,8 +28,10 @@ import {
   isSleepCommand,
   isWakeOnlyText,
   isWakeWordFragment,
+  pickWakeAck,
   recognitionLanguage,
   sliceAfterLastWake,
+  stripAckEcho,
   wakePattern,
   type ResultSnapshot,
 } from "./voiceCommands";
@@ -58,6 +63,15 @@ type SpeechRecognitionLike = {
 };
 
 const WAKE_BEEP_FREQ = 1180;
+
+/* The acknowledgement is short and the recognizer keeps running while it is
+ * spoken, so the user can start talking straight away. The echo guard only has
+ * to outlast the utterance itself: it stops filtering shortly after the
+ * acknowledgement ends, so a later command that happens to contain the same
+ * words is never truncated. */
+const ACK_ECHO_TTL_MS = 6000; // while the acknowledgement may still be playing
+const ACK_ECHO_TAIL_MS = 2500; // extra window after it stops
+const ACK_ECHO_MAX_HITS = 3; // same interim repeated: ignore instead of re-arming
 
 // Auto-recovery knobs: browsers (Chromium especially) can reject a restart
 // issued too soon after an abort, or start a session that silently never
@@ -124,6 +138,8 @@ export function useVoiceEngine(opts: {
   const accRef = useRef<ResultSnapshot>(emptyResultSnapshot(0)); // utterance collector
   const needsWakeSliceRef = useRef(false); // awake-collection mode vs follow-up mode
   const healthTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ackRef = useRef<{ text: string; until: number; hits: number } | null>(null);
+  const lastWakeAckRef = useRef<string | null>(null); // avoid repeating the last phrase
 
   const [active, setActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -175,6 +191,8 @@ export function useVoiceEngine(opts: {
     followUpUntilRef.current = 0;
     pendingCommand.current = "";
     needsWakeSliceRef.current = false;
+    lastWakeAckRef.current = null;
+    forgetAck(true);
     accRef.current = emptyResultSnapshot(lastResultLenRef.current);
     if (commandTimer.current) clearTimeout(commandTimer.current);
     if (idleTimer.current) clearTimeout(idleTimer.current);
@@ -223,6 +241,7 @@ export function useVoiceEngine(opts: {
     commandEpoch.current += 1;
     queueRef.current = [];
     setSegmentsLeft(0);
+    forgetAck(true);
     try {
       window.speechSynthesis?.cancel();
     } catch {}
@@ -242,6 +261,9 @@ export function useVoiceEngine(opts: {
     try {
       window.speechSynthesis?.cancel();
     } catch {}
+    // A real response replaces the wake acknowledgement; its echo guard would
+    // otherwise strip those same words from a later command.
+    forgetAck();
     const clean = (text || "").replace(/\s+/g, " ").trim();
     if (!clean || !window.speechSynthesis) {
       finishSpeaking();
@@ -341,6 +363,81 @@ export function useVoiceEngine(opts: {
     }
   };
 
+  /** Forget a pending acknowledgement, its echo guard and its audible utterance. */
+  const forgetAck = (cancelSpeechToo = false) => {
+    ackRef.current = null;
+    if (cancelSpeechToo) {
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {}
+    }
+  };
+
+  /**
+   * Speak the random wake acknowledgement. It deliberately bypasses `speak()`:
+   * the phase must stay "awake" so the command that follows is still collected
+   * and the orb keeps showing LISTENING. A Greek reply language gets Greek
+   * phrases, otherwise the Greek TTS voice would read English.
+   */
+  const speakAck = () => {
+    const language = cfgRef.current.responseLanguage;
+    const text = pickWakeAck(language, lastWakeAckRef.current);
+    if (!text) return;
+    lastWakeAckRef.current = text;
+    const synth = typeof window === "undefined" ? undefined : window.speechSynthesis;
+    if (!synth) return;
+    // Any response the assistant is still giving is obsolete now.
+    forgetAck(true);
+    ackRef.current = { text, until: Date.now() + ACK_ECHO_TTL_MS, hits: 0 };
+    try {
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.rate = 1.02;
+      utt.pitch = 1.0;
+      const voices = synth.getVoices();
+      const wantsGreek = /^el(?:-|$)/i.test(language || "en");
+      const picked =
+        (wantsGreek && voices.find((v: any) => /^el(?:[-_]|$)/i.test(v.lang) || /greek|ελλην/i.test(v.name))) ??
+        (!wantsGreek && voices.find((v: any) => v.name.toLowerCase() === cfgRef.current.voiceName.toLowerCase())) ??
+        voices.find((v: any) => (wantsGreek ? /^el[-_]/i.test(v.lang) : /en[-_]/i.test(v.lang))) ??
+        voices[0];
+      if (picked) {
+        utt.voice = picked;
+        utt.lang = picked.lang;
+      }
+      // Only the explicit cancel() must drop it: barge-in and disabling the mic
+      // rely on that, a stale/errored utterance must not swallow a real command.
+      // The echo guard is narrowed to a short tail once the audio is over.
+      const settleAck = () => {
+        if (ackRef.current?.text !== text) return;
+        ackRef.current = { ...ackRef.current, until: Date.now() + ACK_ECHO_TAIL_MS };
+      };
+      utt.onend = settleAck;
+      utt.onerror = settleAck;
+      synth.speak(utt);
+    } catch {
+      ackRef.current = null;
+    }
+  };
+
+  /**
+   * Remove the acknowledgement from text the recognizer heard back through the
+   * speakers, before the wake word is sliced off. Returns null when the echo
+   * took over the utterance and the result must be ignored entirely.
+   */
+  const applyAckEcho = (text: string): string | null => {
+    const ack = ackRef.current;
+    if (!ack) return text;
+    if (Date.now() > ack.until) {
+      ackRef.current = null;
+      return text;
+    }
+    if (text.toLowerCase() === ack.text.toLowerCase() && ack.hits < ACK_ECHO_MAX_HITS) {
+      ack.hits += 1;
+      return null;
+    }
+    return stripAckEcho(text, ack.text);
+  };
+
   const fireCommand = (raw: string) => {
     const text = raw.replace(/\s+/g, " ").trim();
     if (!text) return;
@@ -353,6 +450,8 @@ export function useVoiceEngine(opts: {
     lastFireRef.current = { text, at: now };
     armedRef.current = false;
     needsWakeSliceRef.current = false;
+    lastWakeAckRef.current = null;
+    forgetAck();
     accRef.current = emptyResultSnapshot(lastResultLenRef.current);
     if (commandTimer.current) clearTimeout(commandTimer.current);
     commandTimer.current = null;
@@ -392,6 +491,14 @@ export function useVoiceEngine(opts: {
   const collectCommand = (e: any) => {
     accRef.current = accumulateResults(e.results, accRef.current);
     let text = commandText(accRef.current);
+    // The acknowledgement is spoken while the recognizer is live, so drop it
+    // from what the microphone heard back before slicing off the wake word.
+    const heard = applyAckEcho(text);
+    if (heard === null) {
+      setLastHeard(`… ${text}`);
+      return;
+    }
+    text = heard;
     if (needsWakeSliceRef.current) {
       text = sliceAfterLastWake(text, cfgRef.current.wakeWord, cfgRef.current.responseLanguage);
     } else if (!text) {
@@ -440,6 +547,7 @@ export function useVoiceEngine(opts: {
     armedRef.current = true;
     clearFollowUpLangTimer();
     beep();
+    speakAck();
     cfgRef.current.onWake?.();
     syncRecognitionLanguage();
     // Start collecting from the result that contains the wake word; later
@@ -686,6 +794,8 @@ export function useVoiceEngine(opts: {
     if (commandTimer.current) clearTimeout(commandTimer.current);
     if (healthTimer.current) clearInterval(healthTimer.current);
     clearFollowUpLangTimer();
+    forgetAck(true);
+    lastWakeAckRef.current = null;
     pendingCommand.current = "";
   };
 

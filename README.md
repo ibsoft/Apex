@@ -419,6 +419,13 @@ When a preview panel is open:
 The default wake word is `apex`. When Greek is selected, `Άπεξ` / `Απέξ` is
 also recognized as a wake alias.
 
+Every wake is answered with a short beep and one randomly picked short
+confirmation (“I'm listening.”, “APEX online.”, «Σε ακούω», …), never the same
+phrase twice in a row and always in the current response language. The
+confirmation is spoken while the mic stays live, so you can keep talking
+straight away; anything the speaker feeds back into the recognizer is discarded
+before the command is sent.
+
 Sleep phrases end the voice session:
 
 | English | Greek |
@@ -688,7 +695,8 @@ share the same controls. Examples:
 - “Open notepad and add command output” copies the latest available command
   result from this conversation; it does not run a command again.
 - “Run uname -a and put the output in notepad” uses the agent's terminal tool,
-  then writes the actual result (requires an open terminal).
+  then writes the actual result. The agent opens the terminal window itself if
+  none is open, so nothing has to be prepared first.
 - “Replace notepad contents with …”, “rename notepad to Meeting Notes”,
   “open Meeting Notes in notepad”, “show recent documents in notepad”.
 - “Format notepad bold”, “undo in notepad”, “read notepad”,
@@ -716,6 +724,13 @@ both services so the UI and API use the same version:
 cd frontend && npm run build
 sudo systemctl restart apex-backend.service apex-frontend.service
 ```
+
+Terminals are opened automatically. The agent never asks the user to open one:
+the first `terminal_command` of a turn creates a visible PTY window and runs the
+command in it, and `new_terminal=true` / `count=N` open further windows (e.g. for
+parallel jobs). `GET /api/terminal/session` is the equivalent browser route.
+Opening several windows never evicts one the user already has open; the per-user
+cap is reported back to the model instead.
 
 Restarting the backend ends open terminal sessions. Reload the browser after
 restarting. Check `/api/notepad/documents` on the backend and

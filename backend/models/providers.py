@@ -75,6 +75,7 @@ class CompatProvider:
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
+        tool_choice=None,
     ) -> Iterator[dict]:
         kwargs = {
             "model": self.cfg.model,
@@ -86,6 +87,11 @@ class CompatProvider:
         if tools:
             kwargs["tools"] = tools
             kwargs["parallel_tool_calls"] = False
+        if tools and tool_choice:
+            # Ollama and some compat servers reject "required"; only the
+            # OpenAI-compatible names are forwarded.
+            if str(tool_choice) in {"required", "auto", "none"}:
+                kwargs["tool_choice"] = str(tool_choice)
         if self.cfg.extra:
             kwargs["extra_body"] = self.cfg.extra
 
@@ -205,7 +211,7 @@ class ResponsesProvider:
             max_retries=2,
         )
 
-    def chat_stream(self, messages, tools=None) -> Iterator[dict]:
+    def chat_stream(self, messages, tools=None, tool_choice=None) -> Iterator[dict]:
         body = {"chatgpt": True} if self.cfg.use_responses else {}
         body.update(self.cfg.extra)
         tool_schemas = [t["function"] for t in tools] if tools else None
@@ -216,6 +222,7 @@ class ResponsesProvider:
                 tools=tool_schemas,
                 stream=True,
                 temperature=self.cfg.temperature,
+                tool_choice=tool_choice,
                 extra_body=body,
             ) as stream:
                 for event in stream:
@@ -317,7 +324,8 @@ class TorchProvider:
 
     _TOOL_JSON = re.compile(r"\{[\s\S]*?\}", re.M)
 
-    def chat_stream(self, messages, tools=None) -> Iterator[dict]:
+    def chat_stream(self, messages, tools=None, tool_choice=None) -> Iterator[dict]:
+        # tool_choice is ignored: this backend has no function-calling API.
         self._ensure_loaded()
         import threading as _t
 

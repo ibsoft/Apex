@@ -36,7 +36,7 @@ import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
 import { sendNotepadCommand, notepadContext, requestsNotepadOutput } from "../lib/notepad";
 import type { NotepadCommand } from "../lib/notepad";
-import { formatDuration, parseLocalCommand } from "../lib/commands";
+import { formatDuration, parseLocalCommand, parseThinkHard } from "../lib/commands";
 import {
   AppWindow,
   MAX_WINDOWS,
@@ -81,7 +81,7 @@ type ApexContextType = {
   loading: boolean;
   ready: boolean;
   user: User | null;
-  config: { engine: string; provider: string; providers: any; engines: string[]; models: string[]; memory_enabled: boolean; embedding: string | null; wake_word: string; follow_up_seconds: number; voice: string; response_language: string; autonomous_mode: boolean; humor_level: number; sarcasm_level: number; autonomous_voice_budget: number; oauth_configured: boolean; logged_in: boolean } | null;
+  config: { engine: string; provider: string; providers: any; engines: string[]; models: string[]; think_hard_model: string; think_hard_model_enabled: boolean; memory_enabled: boolean; embedding: string | null; wake_word: string; follow_up_seconds: number; voice: string; response_language: string; soul: string; soul_max_chars: number; autonomous_mode: boolean; humor_level: number; sarcasm_level: number; autonomous_voice_budget: number; oauth_configured: boolean; logged_in: boolean } | null;
   settings: Settings;
   conversations: Conversation[];
   activeId: string | null;
@@ -579,28 +579,44 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }, []);
 
-  /* Create a host terminal session and open it in a desktop window. Returns an
-   * error message on failure so executeLocalCommand can speak/echo it. */
-  const openTerminalWindow = useCallback(async (): Promise<string | null> => {
+  /* Show a terminal that already exists server-side (the model opened one for
+   * itself) in a desktop window bound to that PTY session. */
+  const attachTerminalWindow = useCallback((sessionId: string) => {
+    if (!sessionId) return;
+    windowOpen([{ url: terminalUrl(sessionId), title: "Terminal" }], { kind: "terminal" });
+  }, [windowOpen]);
+
+  /* Create host terminal session(s) and open them in desktop windows. Returns
+   * an error message on failure so executeLocalCommand can speak/echo it.
+   * `count` > 1 backs "open 4 terminals": the sessions are created first, so a
+   * failure part-way through does not leave stray windows behind. */
+  const openTerminalWindow = useCallback(async (count = 1): Promise<string | null> => {
     const url = `${BASE.replace(/\/$/, "")}/api/terminal/session`;
+    const wanted = Math.max(1, Math.min(Math.floor(count) || 1, 10));
+    const sessions: string[] = [];
     try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ rows: 24, cols: 80 }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        return (data?.error as string) ?? `Could not open a terminal (${res.status}).`;
+      for (let i = 0; i < wanted; i++) {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ rows: 24, cols: 80 }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          const message = (data?.error as string) ?? `Could not open a terminal (${res.status}).`;
+          if (!sessions.length) return message;
+          break;   // keep the terminals that did open
+        }
+        const data = await res.json();
+        if (data?.terminal_id) sessions.push(data.terminal_id);
       }
-      const data = await res.json();
-      windowOpen([{ url: terminalUrl(data.terminal_id), title: "Terminal" }], { kind: "terminal" });
+      for (const sessionId of sessions) attachTerminalWindow(sessionId);
       return null;
     } catch (err: any) {
       return String(err?.message ?? err);
     }
-  }, [windowOpen]);
+  }, [attachTerminalWindow]);
 
   /* ---------- image browser ---------- */
 
@@ -879,10 +895,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         };
         switch (command.action) {
           case "open": {
+            const wanted = command.count ?? 1;
             if (command.create && command.target == null) {
-              const error = await openTerminalWindow();
+              const error = await openTerminalWindow(wanted);
               if (error) return error;
-              return localize("Opened Terminal.", "Άνοιξε το Τερματικό.");
+              return wanted > 1
+                ? localize(`Opened ${wanted} Terminals.`, `Άνοιξα ${wanted} Τερματικά.`)
+                : localize("Opened Terminal.", "Άνοιξε το Τερματικό.");
             }
             const existing = nth(command.target);
             if (existing) {
@@ -1154,6 +1173,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           convId = conv.id;
         }
 
+        // A leading "think hard:" / "σκέψου καλά:" marker routes this single
+        // turn to THINK_HARD_MODEL. Strip it before anything else so the agent
+        // only ever sees the request itself.
+        const thinkHard = parseThinkHard(clean, commandLanguage());
+        clean = thinkHard.message;
+
         let command = parseLocalCommand(clean, commandLanguage(), skillsRef.current);
         if (command?.type === "skill" && command.rest) {
           setSkill(command.skill);
@@ -1218,9 +1243,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           voice_mode: !!opts.voice,
           ...(windowBlock ? { window_context: windowBlock } : {}),
           ...(focusedTerminalId ? { focused_terminal: focusedTerminalId } : {}),
+          ...(thinkHard.thinkHard ? { think_hard: true } : {}),
         };
         const model = settingsRef.current.model;
-        if (model && stripSystemModel(model)) payload.model = model;
+        // An explicit think-hard turn always uses THINK_HARD_MODEL, so the main
+        // model is deliberately not sent for it.
+        if (model && stripSystemModel(model) && !thinkHard.thinkHard) payload.model = model;
 
         let notepadWork = Promise.resolve();
         const notepadResults: string[] = [];
@@ -1264,6 +1292,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
               ? streamedTools.map((t, i) => i === pendingIndex ? { ...t, output: ev.output, running: false } : t)
               : [...streamedTools, { name: ev.name, output: ev.output, running: false }];
             pushAssistant({ streaming: true, content: spoken, meta: { voice: !!opts.voice, tools: streamedTools } });
+          } else if (ev.type === "terminal_opened") {
+            // The backend opened a PTY session for the model; show it so the
+            // operator sees the commands and can answer sudo/passphrase
+            // prompts by hand.
+            attachTerminalWindow(ev.terminal_id);
           } else if (ev.type === "memory") {
             void refreshMemory();
           } else if (ev.type === "skills_changed") {

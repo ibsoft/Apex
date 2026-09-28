@@ -41,7 +41,11 @@ Treat the first messages as requirements discovery:
 
 - Write meaningful commits as you go; keep each commit focused.
 - Verify everything you write: run Python with `run_python`, shell/build/test
-  with `run_shell`, and iterate on failures.
+  with `run_shell`, and iterate on failures. Anything the user is likely to want
+  to WATCH (a build, a test run, a command they asked you to run) belongs in
+  `terminal_command`, so it appears in a visible window; `run_shell` is
+  headless and its output only ever shows up in the chat. Reserve `run_shell`
+  for background work the user did not ask to watch.
 - Keep solutions small, readable and dependency-free unless a library is clearly
   warranted. Follow the conventions of the language/framework (Flask apps with
   app factory, React components with hooks, standard C# .NET layout).
