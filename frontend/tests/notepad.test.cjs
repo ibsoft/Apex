@@ -9,7 +9,7 @@ const compiled = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../com
 }).outputText;
 const flush = async () => { for (let i = 0; i < 15; i++) await Promise.resolve(); };
 
-function harness() {
+function harness({ source, load = async () => "" } = {}) {
   const slots = [], effects = [], listeners = new Map(), requests = [], downloads = [];
   let cursor = 0, tree, resolveSave;
   const editor = { innerHTML: '', innerText: '', focus() {} };
@@ -25,9 +25,11 @@ function harness() {
   };
   const exports = {};
   vm.runInNewContext(compiled, {
-    exports,
+    exports, AbortController,
     require(name) {
       if (name === 'react') return react;
+      if (name === '../lib/notepad') return { loadNotepadText: load };
+      if (name === './FileDownloads') return { backendFileHref: url => url.startsWith('/api/') ? '/be' + url : null };
       if (name === 'react/jsx-runtime') return { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) };
       if (name.endsWith('.css')) return { default: {} };
       if (name === '../lib/api') return { BASE: '', api: { notepad: {
@@ -51,7 +53,7 @@ function harness() {
   }
   function render() {
     cursor = 0;
-    tree = exports.default({ focused: true, windowId: 'pad1' });
+    tree = exports.default({ focused: true, windowId: 'pad1', source });
     nodes(tree).find((n) => n.props?.['aria-label'] === 'Document content').props.ref.current = editor;
     effects.splice(0).forEach((run) => run());
   }
@@ -102,4 +104,17 @@ test('recent documents panel starts closed and opens on request', () => {
   assert.equal(h.find('＋ NEW DOCUMENT'), undefined);
   h.find('RECENT DOCUMENTS').props.onClick(); h.render();
   assert.ok(h.find('＋ NEW DOCUMENT'));
+});
+
+
+test('opening a signed text file populates Notepad through the authenticated URL', async () => {
+  const calls = [];
+  const h = harness({ source: { url: '/api/shell/download/token', title: 'df-manual.txt', kind: 'text' }, load: async (...args) => { calls.push(args); return 'DF manual\n<script>inert text</script>'; } });
+  await flush(); h.render();
+  assert.equal(calls[0][0], '/be/api/shell/download/token');
+  assert.equal(calls[0][1], true);
+  assert.equal(calls.length, 1, 'rerenders must not reload and erase edits');
+  assert.equal(h.find('Document content').props.ref.current.innerText, 'DF manual\n<script>inert text</script>');
+  assert.equal(h.find('Document title').props.value, 'df-manual');
+  assert.equal(h.find('Document content').props.contentEditable, true);
 });

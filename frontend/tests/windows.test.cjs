@@ -163,3 +163,13 @@ test('file-manager signed download links are treated as backend downloads', () =
   assert.ok(items.some((i) => i.url === '/api/fm/download/abc123' && i.title === 'Bundle'));
   assert.ok(items.some((i) => i.url === '/api/images/file/def456' && i.title === 'Photo'));
 });
+
+test('text windows use Notepad controls while other preview kinds remain unchanged', () => {
+  for (const extension of ['txt', 'md', 'log', 'json', 'py', 'html']) {
+    const item = { title: 'file.' + extension, url: '/api/files/download/token' };
+    assert.equal(moduleExports.isNotepadWindow({ kind: kindForName(item.title), items: [item], index: 0 }), true, extension);
+  }
+  for (const kind of ['pdf', 'docx', 'image']) {
+    assert.equal(moduleExports.isNotepadWindow({ kind, items: [{ title: 'file', url: '/file', kind }], index: 0 }), false);
+  }
+});

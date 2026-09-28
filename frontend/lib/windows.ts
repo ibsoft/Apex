@@ -99,7 +99,10 @@ export function isFilesWindow(window: AppWindow): boolean {
 
 /** True when a window hosts the built-in rich-text Notepad app. */
 export function isNotepadWindow(window: AppWindow): boolean {
-  return window.kind === "notepad" || (window.items[window.index] ?? window.items[0])?.url?.startsWith("notepad:") === true;
+  const item = window.items[window.index] ?? window.items[0];
+  return window.kind === "notepad" || window.kind === "text"
+    || item?.url?.startsWith("notepad:") === true
+    || (!!item && kindForItem(item) === "text");
 }
 
 /** React StrictMode (Next dev default) double-mounts effects: an unmount within

@@ -975,7 +975,7 @@ export default function FileManagerWindow({ focused }: { focused: boolean }) {
           <>
             {settings.view === "grid" ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: 10, alignItems: "flex-start", alignContent: "flex-start" }}>
-                {rows.map(gridRow)}
+                {!loading && rows.map(gridRow)}
               </div>
             ) : (
               <>
@@ -986,7 +986,7 @@ export default function FileManagerWindow({ focused }: { focused: boolean }) {
                   <div style={{ textAlign: "right" }}><SortHeader label="SIZE" sortKey="size_bytes" /></div>
                   <SortHeader label="MODIFIED" sortKey="mtime_ns" />
                 </div>
-                {rows.map(listRow)}
+                {!loading && rows.map(listRow)}
               </>
             )}
             {newFolder && (
@@ -1013,7 +1013,7 @@ export default function FileManagerWindow({ focused }: { focused: boolean }) {
               <div style={{ padding: 26, textAlign: "center", color: C.dim, fontSize: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.1em" }}>
                 {query ? "NO MATCHES" : "EMPTY FOLDER"}
               </div>
-            ) : rows.map(settings.view === "grid" ? gridRow : listRow)}
+            ) : null}
           </>
         )}
       </div>
