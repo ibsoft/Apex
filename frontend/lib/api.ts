@@ -10,25 +10,155 @@ export const BASE =
 
 const CRED: RequestInit["credentials"] = "include";
 
+/* CSRF ------------------------------------------------------------------
+   The session cookie is the only thing identifying the caller, and a browser
+   will attach it to a cross-site POST. The backend therefore requires a token
+   that only same-origin code can read, sent as X-APEX-CSRF on every
+   state-changing request. It is minted by GET /api/auth/status and refreshed
+   after login, unlock and lock, because the server rotates the session id at
+   those points. */
+
+let csrfToken = "";
+
+export function setCsrfToken(token: string | null | undefined): void {
+  csrfToken = typeof token === "string" ? token : "";
+}
+
+export function getCsrfToken(): string {
+  return csrfToken;
+}
+
+/* A session can be locked from another tab or window, and the server is what
+   decides. The API layer is the one place that sees the 423, so it notifies
+   here instead of every caller having to recognise the status. */
+type SessionLockedHandler = () => void;
+let sessionLockedHandler: SessionLockedHandler | null = null;
+
+export function onSessionLocked(handler: SessionLockedHandler | null): void {
+  sessionLockedHandler = handler;
+}
+
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function requestHeaders(init: RequestInit = {}): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init.headers as Record<string, string>) ?? {}),
+  };
+  const method = (init.method ?? "GET").toUpperCase();
+  if (csrfToken && UNSAFE_METHODS.has(method)) headers["X-APEX-CSRF"] = csrfToken;
+  return headers;
+}
+
+/* Ask the server for the current token. The server is the only place a valid
+   token exists: it is derived from the session id, which rotates on lock,
+   unlock, login and on every backend restart. */
+let refreshing: Promise<string> | null = null;
+
+export function refreshCsrfToken(): Promise<string> {
+  if (!refreshing) {
+    refreshing = (async () => {
+      try {
+        const resp = await fetch(`${BASE}/api/auth/status`, { credentials: CRED });
+        if (!resp.ok) return csrfToken;
+        const body: any = await resp.json().catch(() => null);
+        if (typeof body?.csrf_token === "string" && body.csrf_token) {
+          setCsrfToken(body.csrf_token);
+        }
+      } catch {
+        /* keep whatever we had */
+      }
+      return csrfToken;
+    })().finally(() => {
+      refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
+/* The one place a state-changing request is allowed to happen.
+
+   Every browser API that mutates something must go through this (or send
+   requestHeaders), because the server has no other way to tell it apart from a
+   cross-site POST. Hand-rolled fetch() calls that skipped this were rejected
+   with invalid_csrf_token - the file manager could not open a file and the
+   terminal could not take input.
+
+   A token can go stale between the caller building the request and the server
+   checking it: the session id rotates on lock/unlock/login, and it is gone
+   after a backend restart, which silently invalidates every token. So one
+   403 invalid_csrf_token is retried once with a freshly minted token instead of
+   being surfaced as a failure that also leaves the app holding no token at all.
+   The retry is not recursive: a second rejection is a real rejection. */
+export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const send = () =>
+    fetch(`${BASE}${url}`, {
+      ...init,
+      credentials: init.credentials ?? CRED,
+      headers: requestHeaders(init),
+    });
+  const resp = await send();
+  if (resp.status !== 403 || !UNSAFE_METHODS.has((init.method ?? "GET").toUpperCase())) {
+    return resp;
+  }
+  const body: any = await resp.clone().json().catch(() => null);
+  if (body?.error !== "invalid_csrf_token") return resp;
+  const fresh = await refreshCsrfToken();
+  if (!fresh || fresh === csrfToken) return resp;
+  return send();
+}
+
 async function json<T = any>(url: string, init: RequestInit = {}): Promise<T> {
-  const resp = await fetch(`${BASE}${url}`, {
-    ...init,
-    credentials: CRED,
-    headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
-  });
+  const resp = await apiFetch(url, init);
   if (resp.status === 401) throw new ApiError("unauthorized", 401);
+  if (resp.status === 403) {
+    const body: any = await resp.json().catch(() => null);
+    if (body?.error === "invalid_csrf_token") {
+      // A second rejection after the retry: keep the token empty so the next
+      // request re-mints rather than failing forever with a known-bad one.
+      setCsrfToken("");
+      throw new ApiError("invalid_csrf_token", 403);
+    }
+    throw new ApiError(body?.error ?? "forbidden", 403, retryAfterFrom(body));
+  }
+  if (resp.status === 423) {
+    // The session is locked server-side. The client may not know yet - another
+    // tab or window can have locked it - so the error carries enough detail to
+    // show the lock screen instead of a bare failure.
+    const body: any = await resp.json().catch(() => null);
+    try {
+      sessionLockedHandler?.();
+    } catch {
+      // A notification failure must not replace the real error.
+    }
+    throw new ApiError(body?.error ?? "session_locked", 423);
+  }
   if (!resp.ok) {
     const body: any = await resp.json().catch(() => null);
-    throw new ApiError(body?.error ?? `${resp.status} ${resp.statusText}`, resp.status);
+    throw new ApiError(
+      body?.error ?? `${resp.status} ${resp.statusText}`,
+      resp.status,
+      retryAfterFrom(body),
+    );
   }
   return resp.json();
 }
 
+/* The throttle's countdown travels in the body, and the UI needs it to tell the
+   operator how long to wait. A thrown Error that drops the field means the
+   screen can only say "wrong password" and the user retries into the lockout. */
+function retryAfterFrom(body: any): number {
+  const value = body?.retry_after ?? body?.retryAfter;
+  return Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0;
+}
+
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  retryAfter: number;
+  constructor(message: string, status: number, retryAfter = 0) {
     super(message);
     this.status = status;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -130,6 +260,80 @@ export type MemoryEntry = {
 };
 
 /* ---------- endpoints ---------- */
+/* ---------- system-user auth ---------- */
+export type SystemUserLite = { username: string; name: string; initials: string; shell: string };
+
+export type AuthStatus = {
+  ok: boolean;
+  system_login_enabled: boolean;
+  lock_enabled: boolean;
+  authenticated: boolean;
+  locked: boolean;
+  oauth_available: boolean;
+  csrf_token: string;
+};
+
+export type LoginResult = { ok: boolean; user: User; csrf_token: string };
+export type LoginError = { error: string; retry_after?: number };
+
+/* The token is cached by the module, so a page that never calls status()
+   (impossible in practice, but cheap to be safe about) still fails closed
+   rather than sending a request with no protection and no explanation. */
+function adoptToken(token: string | undefined): void {
+  if (token) setCsrfToken(token);
+}
+
+export const auth = {
+  status: async (): Promise<AuthStatus> => {
+    const data = await json<AuthStatus>("/api/auth/status");
+    adoptToken(data.csrf_token);
+    return data;
+  },
+
+  systemUsers: () =>
+    json<{ ok: boolean; enabled: boolean; users: SystemUserLite[] }>("/api/auth/system-users"),
+
+  login: async (username: string, password: string): Promise<LoginResult> => {
+    const data = await json<LoginResult>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    adoptToken(data.csrf_token);
+    return data;
+  },
+
+  unlock: async (password: string): Promise<{ ok: boolean; csrf_token: string }> => {
+    const data = await json<{ ok: boolean; csrf_token: string }>("/api/auth/unlock", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    });
+    adoptToken(data.csrf_token);
+    return data;
+  },
+
+  lock: async (): Promise<{ ok: boolean; csrf_token: string }> => {
+    /* The cached token has to travel *with* this request: the server checks it
+       before it will lock anything. The response carries the replacement token
+       because the server rotates the session id, and the very next call the
+       lock screen makes is the unlock POST, which is itself protected. Clearing
+       the token first, or not adopting the new one, makes unlock impossible. */
+    const data = await json<{ ok: boolean; csrf_token: string }>("/api/auth/lock", { method: "POST" });
+    adoptToken(data.csrf_token);
+    return data;
+  },
+
+  logout: async () => {
+    /* Same ordering rule as lock: send the token, then forget it. Dropping it
+       first turns every logout into a 403 and leaves the server session alive,
+       so a refresh would sign the operator straight back in. */
+    try {
+      return await json<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
+    } finally {
+      setCsrfToken("");
+    }
+  },
+};
+
 export const api = {
   me: () => json<{ ok: boolean; user: User | null; settings: Record<string, any>; engine: string; provider: string }>("/api/me"),
 
@@ -231,7 +435,14 @@ export const api = {
     upload: async (files: FileList | File[]) => {
       const form = new FormData();
       for (const f of files) form.append("files", f);
-      const resp = await fetch(`${BASE}/api/memory/upload`, { method: "POST", credentials: CRED, body: form });
+      const resp = await fetch(`${BASE}/api/memory/upload`, {
+        method: "POST",
+        credentials: CRED,
+        // FormData sets its own multipart Content-Type boundary, so only the
+        // CSRF header is added here.
+        headers: csrfToken ? { "X-APEX-CSRF": csrfToken } : {},
+        body: form,
+      });
       if (resp.status === 401) throw new ApiError("unauthorized", 401);
       if (!resp.ok) {
         const body: any = await resp.json().catch(() => null);
@@ -256,7 +467,7 @@ export const api = {
     const resp = await fetch(`${BASE}/api/chat`, {
       method: "POST",
       credentials: CRED,
-      headers: { "Content-Type": "application/json" },
+      headers: requestHeaders({ method: "POST" }),
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {

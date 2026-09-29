@@ -3,6 +3,7 @@
 Every value can be overridden with environment variables (see .env.example).
 """
 import os
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,13 +26,98 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+# DATA_DIR is needed at module level, not only as a Config attribute: the secret
+# key is derived from a file inside it, and class bodies do not create closures
+# for the methods defined inside them.
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
+
+
+def _secret_key() -> str:
+    """Resolve the Flask session secret.
+
+    A per-boot random key silently logs everyone out on every restart, so an
+    unset SECRET_KEY is persisted next to the database instead. SYSTEM_LOGIN
+    depends on this: rotating it would invalidate every login session.
+    """
+    env = os.getenv("SECRET_KEY", "").strip()
+    if env:
+        return env
+    if _bool("DEV_MODE", False):
+        return "dev-change-me-" + os.urandom(8).hex()
+    key_file = DATA_DIR / "session.key"
+    try:
+        if key_file.exists():
+            existing = key_file.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        key_file.parent.mkdir(parents=True, exist_ok=True)
+        generated = secrets.token_urlsafe(48)
+        key_file.write_text(generated, encoding="utf-8")
+        key_file.chmod(0o600)
+        return generated
+    except OSError:
+        # Cannot persist: fall back to a process-lifetime key rather than a
+        # hard-coded one. Sessions reset on restart, but nothing is forgeable.
+        return "ephemeral-" + os.urandom(16).hex()
+
+
 class Config:
     # --- Server -------------------------------------------------------------
     HOST = os.getenv("HOST", "0.0.0.0")
     PORT = _int("PORT", 5001)
-    SECRET_KEY = os.getenv(
-        "SECRET_KEY", "dev-change-me-" + os.urandom(8).hex()
+    # A per-boot random key silently logs everyone out on every restart, so an
+    # unset SECRET_KEY is persisted next to the database instead (see
+    # _secret_key). SYSTEM_LOGIN depends on this: rotating it would log
+    # everybody out.
+    SECRET_KEY = _secret_key()
+    # Only set when APEX is actually served over HTTPS; a Secure cookie sent over
+    # plain HTTP is silently dropped, which would log the user out every reload.
+    SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+    SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "apex_session")
+    # Off, unlike Flask's default. Refreshing the cookie on every response means
+    # a response another tab had in flight re-sends the whole session, so a
+    # sign-out in one tab is undone and takes a second attempt to stick.
+    SESSION_REFRESH_EACH_REQUEST = _bool("SESSION_REFRESH_EACH_REQUEST", False)
+    SESSION_LIFETIME_HOURS = _int("SESSION_LIFETIME_HOURS", 720)
+    # Only trust X-Forwarded-For when APEX really sits behind a reverse proxy.
+    # Trusting it unconditionally would let any client spoof the address the
+    # login throttle keys on.
+    TRUST_PROXY = _bool("TRUST_PROXY", False)
+    # Additional CORS origins, comma separated. Empty in a normal single-user
+    # install, because the allowlist should stay exactly as small as it needs
+    # to be.
+    EXTRA_ALLOWED_ORIGINS = os.getenv("EXTRA_ALLOWED_ORIGINS", "")
+    # --- System-user login (PAM) --------------------------------------------
+    # APEX has no user table: who may use it is decided by /etc/passwd and
+    # /etc/shadow, so desktop and web share one account lifecycle and one
+    # password policy. The password is only ever handled by libpam.
+    SYSTEM_LOGIN_ENABLED = os.getenv("SYSTEM_LOGIN_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    # PAM service name. "login" matches what the console and sshd use, so
+    # password policy, lockout and expiry behave identically.
+    SYSTEM_LOGIN_PAM_SERVICE = os.getenv("SYSTEM_LOGIN_PAM_SERVICE", "login")
+    # Throttle per user+address. N attempts per window, then locked out.
+    SYSTEM_LOGIN_MAX_ATTEMPTS = _int("SYSTEM_LOGIN_MAX_ATTEMPTS", 5)
+    SYSTEM_LOGIN_WINDOW_SECONDS = _int("SYSTEM_LOGIN_WINDOW_SECONDS", 300)
+    SYSTEM_LOGIN_LOCKOUT_SECONDS = _int("SYSTEM_LOGIN_LOCKOUT_SECONDS", 300)
+    SYSTEM_LOGIN_AUDIT_LOG = os.getenv("SYSTEM_LOGIN_AUDIT_LOG", str(DATA_DIR / "auth-audit.log"))
+    # Optional: comma-separated group names. Empty means "any login-capable user".
+    # The login screen lists the machine's human accounts. That is a desktop
+    # convention (SDDM/GDM do it), but it does disclose account names to anyone
+    # who can reach the page, so it can be turned off to show a plain field.
+    SYSTEM_LOGIN_SHOW_USERS = _bool("SYSTEM_LOGIN_SHOW_USERS", True)
+    SYSTEM_LOGIN_GROUPS = tuple(
+        g.strip() for g in os.getenv("SYSTEM_LOGIN_GROUPS", "").split(",") if g.strip()
     )
+    # While system login is on, OpenAI OAuth is a way *around* the machine's
+    # account list: anyone with an OpenAI account could sign in and get a session
+    # no local user has. It stays off unless it is deliberately turned on, in
+    # which case the login screen offers it as a second button.
+    SYSTEM_LOGIN_ALLOW_OAUTH = _bool("SYSTEM_LOGIN_ALLOW_OAUTH", False)
+    # Re-authentication to leave the lock screen, and idle auto-lock.
+    LOCK_SCREEN_ENABLED = os.getenv("LOCK_SCREEN_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    LOCK_IDLE_SECONDS = _int("LOCK_IDLE_SECONDS", 0)  # 0 = only on explicit command
+    # --- CSRF ---------------------------------------------------------------
+    CSRF_ENABLED = os.getenv("CSRF_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     # Public backend address used for ALL hosted file/media links and OAuth callbacks.
     BASE_URL = os.getenv("BASE_URL", f"http://localhost:{PORT}").strip().rstrip("/")
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -254,14 +340,26 @@ class Config:
     # stack (chat, memory, settings) runs against local/KO providers.
     # DEV_AUTO_LOGIN=<name> signs in as that name; DEV_MODE=true auto-enables
     # only while OAuth is not configured.
+    #
+    # Neither may switch itself on while system login is enabled. This is a
+    # dev convenience and system login is a security control: if both are set,
+    # the auto-login wins and silently re-authenticates every empty session as
+    # a fixed user, which means the sign-in screen is bypassed, "sign out"
+    # cannot log anyone out (the next request signs them straight back in), and
+    # the lock screen asks PAM about the dev user rather than the human at the
+    # keyboard. The opt-out exists only for a deliberate local test run.
     DEV_MODE = _bool("DEV_MODE", False)
     DEV_AUTO_LOGIN = os.getenv("DEV_AUTO_LOGIN", "").strip()
+    DEV_AUTO_LOGIN_WITH_SYSTEM_LOGIN = _bool("DEV_AUTO_LOGIN_WITH_SYSTEM_LOGIN", False)
 
     @property
     def dev_auto_login(self) -> bool:
-        return bool(self.DEV_AUTO_LOGIN) or (
+        wants = bool(self.DEV_AUTO_LOGIN) or (
             self.DEV_MODE and not self.oauth_configured and not self.OPENAI_API_KEY
         )
+        if wants and self.SYSTEM_LOGIN_ENABLED and not self.DEV_AUTO_LOGIN_WITH_SYSTEM_LOGIN:
+            return False
+        return wants
 
     @property
     def agent_engines_available(self) -> list:

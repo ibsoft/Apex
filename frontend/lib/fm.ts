@@ -5,7 +5,7 @@
  * node test suite can exercise them without the DOM.
  */
 
-import { BASE } from "./api";
+import { apiFetch, getCsrfToken, refreshCsrfToken, BASE } from "./api";
 import { kindForName } from "./windows";
 import type { WindowKind } from "./windows";
 
@@ -93,13 +93,14 @@ export class FmApiError extends Error {
 
 /* ---------- http ---------- */
 
+/* apiFetch, not a local fetch: the file manager mutates the filesystem, so it
+   needs the CSRF token and the one-shot retry after a stale one. A hand-rolled
+   fetch here meant every POST - opening a file, renaming, trashing, zipping -
+   was answered with invalid_csrf_token. */
 async function fmJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const resp = await fetch(`${BASE}${url}`, {
-    ...init,
-    credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init.headers ?? {}) },
-  });
+  const resp = await apiFetch(url, init);
   if (resp.status === 401) throw new FmApiError("unauthorized", 401);
+  if (resp.status === 423) throw new FmApiError("session_locked", 423);
   if (!resp.ok) {
     const body: any = await resp.json().catch(() => null);
     throw new FmApiError(body?.error ?? `${resp.status} ${resp.statusText}`, resp.status, body?.conflicts);
@@ -180,27 +181,51 @@ export function fmUpload(opts: {
     form.append("destination", opts.destination);
     form.append("on_conflict", opts.onConflict);
     for (const file of opts.files) form.append("files", file, file.webkitRelativePath || file.name);
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${BASE}/api/fm/upload`);
-    xhr.withCredentials = true;
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) opts.onProgress?.(event.loaded, event.total);
+
+    /* XHR is needed for upload.onprogress, so it cannot use apiFetch and the
+       token plus the stale-token retry are done by hand. Re-sending the same
+       FormData is safe: it holds references to the files, not a consumed
+       stream. */
+    let retried = false;
+    const send = () => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BASE}/api/fm/upload`);
+      xhr.withCredentials = true;
+      /* A multipart body must not get a Content-Type; only the token. */
+      const token = getCsrfToken();
+      if (token) xhr.setRequestHeader("X-APEX-CSRF", token);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) opts.onProgress?.(event.loaded, event.total);
+      };
+      xhr.onload = async () => {
+        let body: any = null;
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          /* non-JSON error page */
+        }
+        if (xhr.status === 403 && body?.error === "invalid_csrf_token" && !retried) {
+          retried = true;
+          const fresh = await refreshCsrfToken();
+          if (fresh) {
+            send();
+            return;
+          }
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(body as { ok: boolean; results: UploadResult[] });
+        } else if (xhr.status === 401) {
+          reject(new FmApiError("unauthorized", 401));
+        } else if (xhr.status === 423) {
+          reject(new FmApiError("session_locked", 423));
+        } else {
+          reject(new FmApiError(body?.error ?? `upload failed (${xhr.status})`, xhr.status));
+        }
+      };
+      xhr.onerror = () => reject(new FmApiError("Network error during upload.", 0));
+      xhr.send(form);
     };
-    xhr.onload = () => {
-      let body: any = null;
-      try {
-        body = JSON.parse(xhr.responseText);
-      } catch {
-        /* non-JSON error page */
-      }
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(body as { ok: boolean; results: UploadResult[] });
-      } else {
-        reject(new FmApiError(body?.error ?? `upload failed (${xhr.status})`, xhr.status));
-      }
-    };
-    xhr.onerror = () => reject(new FmApiError("Network error during upload.", 0));
-    xhr.send(form);
+    send();
   });
 }
 

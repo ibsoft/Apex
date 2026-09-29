@@ -9,6 +9,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useApex, Message } from "./ApexProvider";
 import { api } from "../lib/api";
+import { CHAT_INPUT_EVENT, PANEL_EVENT, type PanelTabName } from "../lib/panelBridge";
 import FileDownloads, { backendFileHref } from "./FileDownloads";
 import AppsPanel from "./AppsPanel";
 
@@ -367,9 +368,84 @@ function Empty({ label }: { label: string }) {
   return <div style={{ color: C.dim, fontSize: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.1em", textAlign: "center", padding: "18px 8px" }}>{label}</div>;
 }
 
+/* The command layer speaks the tab names shown in the UI; this component's own
+   state uses short keys. Keeping the mapping in one place means adding a tab
+   later cannot silently make one spelling work and the other not. */
+/* The avatar menu. Sign out and Lock live here because they are the two actions
+   an operator reaches for when someone else is at the machine, and burying
+   logout in settings means the previous user's session stays open on a shared
+   desktop. Rendered as a real menu so Escape and outside clicks close it. */
+function ProfileMenu({
+  name, email, onClose, onLock, onLogout,
+}: {
+  name: string;
+  email: string;
+  onClose: () => void;
+  onLock: () => void;
+  onLogout: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const away = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) onClose();
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [onClose]);
+
+  const item: React.CSSProperties = {
+    display: "block", width: "100%", textAlign: "left", padding: "7px 10px",
+    background: "none", border: "none", cursor: "pointer",
+    fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase",
+    fontFamily: "var(--font-mono)", color: C.text,
+  };
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      style={{
+        position: "absolute", right: 14, top: 46, zIndex: 60, minWidth: 190,
+        background: C.bg, border: `1px solid ${C.line}`,
+        boxShadow: "0 18px 40px rgba(0,0,0,0.55)", padding: 4,
+      }}
+    >
+      <div style={{ padding: "7px 10px 8px", borderBottom: `1px solid ${C.line}`, marginBottom: 3 }}>
+        <div style={{ fontSize: 11, color: C.text, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+        <div style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{email}</div>
+      </div>
+      <button role="menuitem" onClick={onLock} style={item}>Lock screen</button>
+      <button
+        role="menuitem"
+        onClick={onLogout}
+        style={{ ...item, color: C.gold, borderTop: `1px solid ${C.line}`, marginTop: 3 }}
+      >
+        Sign out
+      </button>
+    </div>
+  );
+}
+
+const TAB_FROM_COMMAND: Record<PanelTabName, "chat" | "hist" | "settings" | "memory" | "apps"> = {
+  chat: "chat",
+  history: "hist",
+  settings: "settings",
+  memory: "memory",
+  apps: "apps",
+};
+
 export default function ChatUI() {
   const a = useApex();
   const [tab, setTab] = useState<"chat" | "hist" | "settings" | "memory" | "apps">("chat");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [collapsed, setCollapsed] = useState(a.chatCollapsed);
   useEffect(() => {
@@ -414,6 +490,86 @@ export default function ChatUI() {
       setSendDisabled(false);
     }
   }, [a, draft]);
+
+  /* Panel and chat-input command consumers.
+
+     A window listener, not an effect on shared state: the command arrives
+     whenever it arrives, and `preventDefault` is what marks it accepted so the
+     bridge stops retrying. Reading the panel state through functional updates
+     keeps a close followed by a "go to chat" in the same tick correct.
+   */
+  useEffect(() => {
+    const onPanel = (event: Event) => {
+      const detail = (event as CustomEvent).detail as {
+        action: "open" | "close" | "toggle";
+        tab?: PanelTabName;
+        respond: (message: string) => void;
+      };
+      if (detail.action === "close") setCollapsed(true);
+      else setCollapsed(false);
+      if (detail.tab) setTab(TAB_FROM_COMMAND[detail.tab] ?? "chat");
+      event.preventDefault();
+      detail.respond(
+        detail.tab
+          ? `Opening ${detail.tab}.`
+          : detail.action === "close" ? "Closing the panel." : "Opening the panel.",
+      );
+    };
+    window.addEventListener(PANEL_EVENT, onPanel);
+    return () => window.removeEventListener(PANEL_EVENT, onPanel);
+  }, []);
+
+  const draftRef = useRef(draft);
+  const busyRef = useRef(a.busy);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+  useEffect(() => { busyRef.current = a.busy; }, [a.busy]);
+
+  useEffect(() => {
+    const onChatInput = (event: Event) => {
+      const detail = (event as CustomEvent).detail as {
+        action: "write" | "send";
+        text?: string;
+        respond: (message: string) => void;
+      };
+      // Both commands imply the chat tab: writing anywhere else is not
+      // something the user can see, and neither is the box they are filling.
+      setCollapsed(false);
+      setTab("chat");
+
+      if (detail.action === "write") {
+        const text = (detail.text ?? "").trim();
+        if (!text) {
+          detail.respond("Nothing to write. Say it like: write in chat, then the words.");
+          return;
+        }
+        setDraft(text);
+        event.preventDefault();
+        // Focus only after the textarea exists and the panel is open.
+        requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+        detail.respond("Written in the chat box.");
+        return;
+      }
+
+      // "send chat" delivers the pending text, or whatever is already typed.
+      const body = (detail.text || draftRef.current).trim();
+      if (!body) {
+        detail.respond("The chat box is empty.");
+        return;
+      }
+      if (busyRef.current) {
+        // Not accepted: the caller is told to try again rather than the
+        // message being silently dropped.
+        detail.respond("Still working on the previous message. Try again in a moment.");
+        return;
+      }
+      event.preventDefault();
+      setDraft("");
+      void send(body);
+      detail.respond("Sending.");
+    };
+    window.addEventListener(CHAT_INPUT_EVENT, onChatInput);
+    return () => window.removeEventListener(CHAT_INPUT_EVENT, onChatInput);
+  }, [send]);
 
   const uploadMemoryFiles = useCallback(async () => {
     if (!memFiles || memFiles.length === 0) return;
@@ -497,14 +653,32 @@ export default function ChatUI() {
             </div>
             <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
               {a.user && (
-                <span title={a.user.email} style={{
-                  width: 24, height: 24, borderRadius: "50%", overflow: "hidden",
-                  border: `1px solid ${C.line}`,
-                }}>
-                  {a.user.picture ? <img src={a.user.picture} alt="" width={24} height={24} style={{ display: "block" }} /> : (
-                    <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, background: `${C.cyan}22`, color: C.cyan, fontSize: 11 }}>{a.user.name?.[0] ?? "A"}</span>
+                <>
+                  <button
+                    onClick={() => setMenuOpen((v) => !v)}
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    title={a.user.email}
+                    style={{
+                      width: 24, height: 24, borderRadius: "50%", overflow: "hidden", padding: 0,
+                      cursor: "pointer", border: `1px solid ${menuOpen ? C.cyan : C.line}`,
+                      background: "none",
+                    }}
+                  >
+                    {a.user.picture ? <img src={a.user.picture} alt="" width={24} height={24} style={{ display: "block" }} /> : (
+                      <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, background: `${C.cyan}22`, color: C.cyan, fontSize: 11 }}>{a.user.name?.[0] ?? "A"}</span>
+                    )}
+                  </button>
+                  {menuOpen && (
+                    <ProfileMenu
+                      name={a.user.name ?? a.user.email}
+                      email={a.user.email}
+                      onClose={() => setMenuOpen(false)}
+                      onLock={() => { setMenuOpen(false); void a.lock(); }}
+                      onLogout={() => { setMenuOpen(false); void a.logout(); }}
+                    />
                   )}
-                </span>
+                </>
               )}
               <button onClick={() => setCollapsed(true)} aria-label="Collapse"
                 style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>

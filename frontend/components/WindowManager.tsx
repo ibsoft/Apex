@@ -134,7 +134,13 @@ function HtmlDocBody({ item, htmlSrc }: HtmlDocBodyProps) {
     );
   }
   return (
-    <iframe title={item.title} srcDoc={cache[htmlSrc]}
+    // Sandboxed with no allow-scripts and no allow-same-origin: a srcDoc
+    // iframe without them runs on the parent's origin, so anything the
+    // renderer fails to escape (a filename, a cell value, a future bug) would
+    // become script execution with access to the session cookie. The document
+    // here is static, generated HTML, so it needs neither capability.
+    <iframe title={item.title} srcDoc={cache[htmlSrc]} sandbox=""
+      referrerPolicy="no-referrer"
       style={{ width: "100%", height: "100%", border: "none", background: "#eceff3", display: "block" }} />
   );
 }

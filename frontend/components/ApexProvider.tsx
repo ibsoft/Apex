@@ -24,9 +24,12 @@ import {
 import {
   api,
   ApiError,
+  apiFetch,
+  auth,
   BASE,
   Conversation,
   MemoryEntry,
+  onSessionLocked,
   Skill,
   User,
   ChatEvent,
@@ -36,7 +39,14 @@ import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
 import { sendNotepadCommand, notepadContext, requestsNotepadOutput } from "../lib/notepad";
 import type { NotepadCommand } from "../lib/notepad";
-import { formatDuration, parseLocalCommand, parseTerminalTarget, parseThinkHard } from "../lib/commands";
+import { sendChatInputCommand, sendPanelCommand } from "../lib/panelBridge";
+import {
+  formatDuration,
+  parseLocalCommand,
+  parseTerminalTarget,
+  parseThinkHard,
+  type PanelTabName,
+} from "../lib/commands";
 import {
   AppWindow,
   MAX_WINDOWS,
@@ -96,6 +106,14 @@ type ApexContextType = {
   voiceActive: boolean;
   voiceEnabled: boolean;
   voiceError: string | null;
+  /* Auth state consumed by AppShell to decide which screen to mount. */
+  locked: boolean;
+  lockEnabled: boolean;
+  systemLoginEnabled: boolean;
+  oauthAvailable: boolean;
+  lock: () => Promise<void>;
+  unlock: (password: string) => Promise<boolean>;
+  afterAuth: () => Promise<void>;
   forceVoiceAwake: () => void;
   voiceLastHeard: string;
   error: string | null;
@@ -177,6 +195,27 @@ const mkMsg = (role: Message["role"], content: string, extra: Partial<Message> =
 export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
+  /* Lock screen. `locked` is a *client* mirror of the server's session flag:
+     the server is what actually refuses work, this is what decides whether the
+     overlay is shown. `voiceAllowed` is the single gate every voice code path
+     checks, so an unauthenticated or locked machine can never listen. */
+  const [locked, setLocked] = useState(false);
+  const [lockEnabled, setLockEnabled] = useState(true);
+  /* Assume the machine's own sign-in until the server says otherwise. This flag
+     decides which screen an unauthenticated user gets, so defaulting it to
+     false means one failed /auth/status hands them the OAuth screen instead -
+     a dead end when OAuth is disabled, and the one screen that cannot work
+     without a network round trip that has already failed. */
+  const [systemLoginEnabled, setSystemLoginEnabled] = useState(true);
+  const [oauthAvailable, setOauthAvailable] = useState(false);
+  /* The user's microphone preference, kept separately from the effective state
+     so locking can force the mic off and unlocking can put it back exactly as it
+     was, rather than guessing from settings. */
+  const voiceWantedRef = useRef(true);
+  /* The voice engine itself, reachable from the auth callbacks that are
+     defined before it. Only cancelSpeech is used, and it is safe to call when
+     the engine is idle. */
+  const voiceRef = useRef<{ cancelSpeech: () => void } | null>(null);
   const [cfg, setCfg] = useState<ApexContextType["config"] | null>(null);
   const [settings, setSettings] = useState<Settings>({});
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -284,10 +323,37 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     try {
       await refreshConfig();
+      // Read auth state first: it carries the CSRF token every later
+      // state-changing request needs, and it says which sign-in screen to show.
+      let status = await auth.status().catch(() => null);
+      if (!status) {
+        // The backend may still be coming up. One retry costs nothing and
+        // avoids stranding the user on the wrong sign-in screen.
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        status = await auth.status().catch(() => null);
+      }
+      if (status) {
+        setSystemLoginEnabled(status.system_login_enabled);
+        setLockEnabled(status.lock_enabled);
+        setOauthAvailable(status.oauth_available);
+        setLocked(status.locked);
+      }
       const me = await api.me().catch(() => null);
       if (me?.ok && me.user) {
         setUser(me.user);
         setSettings(me.settings ?? {});
+        /* Re-read the auth status *after* /api/me. A dev session (and any
+           session this request just established) gets its session id from
+           that call, so the first status read had no token to hand back.
+           Without this the app would look signed in and then fail every write
+           with a 403 until the next page load. */
+        const after = await auth.status().catch(() => null);
+        if (after) {
+          setSystemLoginEnabled(after.system_login_enabled);
+          setLockEnabled(after.lock_enabled);
+          setOauthAvailable(after.oauth_available);
+          setLocked(after.locked);
+        }
       } else {
         setUser(null);
       }
@@ -308,18 +374,79 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   /* ---------- auth ---------- */
 
   const login = useCallback(() => api.login(), []);
+
+  /* Everything a lock has to do locally: remember the microphone preference,
+     cover the screen, and stop listening *before* any network call, so there is
+     no window in which a locked screen is still recording. */
+  const applyLocked = useCallback(() => {
+    voiceWantedRef.current = voiceEnabled;
+    setLocked(true);
+    setVoiceEnabledState(false);
+    if (voiceRef.current) voiceRef.current.cancelSpeech();
+  }, [voiceEnabled]);
+
+  const lock = useCallback(async () => {
+    applyLocked();
+    // The server call then marks the session locked; if it fails we still stay
+    // locked locally, because a lock that depends on a round trip is not a lock.
+    await auth.lock().catch(() => {});
+  }, [applyLocked]);
+
+  /* Another tab or window can lock the same session. The server answers the next
+     request with 423 and the API layer reports it here, so this tab locks too
+     instead of quietly carrying on. */
+  useEffect(() => {
+    onSessionLocked(applyLocked);
+    return () => onSessionLocked(null);
+  }, [applyLocked]);
+
+  /* Called by the login and lock screens once the server has accepted the
+     password. Re-reads identity and settings rather than reloading the page:
+     a full reload would tear down the voice engine and lose the desktop. */
+  const afterAuth = useCallback(async () => {
+    const me = await api.me().catch(() => null);
+    if (me?.ok && me.user) {
+      setUser(me.user);
+      setSettings(me.settings ?? {});
+      void Promise.all([refreshConvos(me.user), refreshMemory(me.user)]);
+    } else {
+      setUser(null);
+    }
+  }, [refreshConvos, refreshMemory]);
+
+  const unlock = useCallback(async (password: string) => {
+    await auth.unlock(password);
+    setLocked(false);
+    // Restore the microphone only to the state the user had chosen, and only
+    // if they are still signed in; the gate in voiceAllowed still applies.
+    setVoiceEnabledState(voiceWantedRef.current);
+    return true;
+  }, []);
+
   const logout = useCallback(async () => {
-    await api.logout().catch(() => {});
+    // Clear locally first: a failed logout must never leave the previous user's
+    // conversation, memory and windows on screen.
     setUser(null);
+    setLocked(false);
     setConversations([]);
     setByConv({});
     setActiveId(null);
     setMemory([]);
     setSudoPrompt(null);
-    void api.vapt.clear().catch(() => {});
-    if (voice) voice.cancelSpeech();
+    setWindows([]);
+    setTimers([]);
+    setReminders([]);
+    setSkill("general");
+    setRoutedSkill(null);
+    if (voiceRef.current) voiceRef.current.cancelSpeech();
+    /* Drop the cached sudo/VAPT secret *before* the session ends. Afterwards the
+       server has no user to attribute it to and the call is rejected, which
+       would leave a privileged credential cached on a machine someone else is
+       about to sign in to. */
+    await api.vapt.clear().catch(() => {});
+    await auth.logout().catch(() => {});
     await refresh();
-  }, []);
+  }, [refresh]);
 
   const setSudoPassword = useCallback(async (password: string, save: boolean) => {
     await api.vapt.password({ password, save });
@@ -592,15 +719,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
    * `count` > 1 backs "open 4 terminals": the sessions are created first, so a
    * failure part-way through does not leave stray windows behind. */
   const openTerminalWindow = useCallback(async (count = 1): Promise<string | null> => {
-    const url = `${BASE.replace(/\/$/, "")}/api/terminal/session`;
+    /* Path only: apiFetch prepends BASE and owns the CSRF token. */
+    const url = "/api/terminal/session";
     const wanted = Math.max(1, Math.min(Math.floor(count) || 1, 10));
     const sessions: string[] = [];
     try {
       for (let i = 0; i < wanted; i++) {
-        const res = await fetch(url, {
+        const res = await apiFetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
           body: JSON.stringify({ rows: 24, cols: 80 }),
         });
         if (!res.ok) {
@@ -747,8 +873,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const sendRef = useRef<any>(null);
   const speakRef = useRef<(text: string) => void>(() => {});
 
+  /* One gate for every voice path. Voice is a microphone that is open at all
+     times, so it must be off whenever the app is not actually in a trusted,
+     unlocked, signed-in state - not just when the user toggled it off. */
+  const voiceAllowed = voiceEnabled && !!user && !locked;
+
   const voice = useVoiceEngine({
-    enabled: voiceEnabled,
+    enabled: voiceAllowed,
     wakeWord: settings.wake_word ?? cfg?.wake_word ?? "apex",
     followUpSeconds: Number(settings.follow_up_seconds ?? cfg?.follow_up_seconds ?? 30),
     voiceName: settings.voice ?? cfg?.voice ?? "",
@@ -761,6 +892,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   });
 
   speakRef.current = voice.speak;
+  voiceRef.current = voice;
 
   const setVoiceEnabled = useCallback((on: boolean) => {
     setVoiceEnabledState(on);
@@ -1143,7 +1275,40 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         return ""; // The browser reports the search result itself.
       case "skill":
         setSkill(command.skill);
-        return localize(`Switched to ${command.skill} skill.`, `Ενεργοποιήθηκε η δεξιότητα ${command.skill}.`);
+        return localize(`Switched to ${command.skill} skill.`, `Ενεργοποιήθηκη η δεξιότητα ${command.skill}.`);
+
+      /* Panel and chat-input commands are executed by ChatUI, which owns the
+         visible state (which tab is showing, what is in the box). The provider
+         only records the intent in a ref; ChatUI's effect below performs it and
+         acknowledges. Keeping it out of the provider is what lets the command
+         drive real UI state instead of a second, divergent copy of it. */
+      case "panel": {
+        // A tab change is meaningless while the panel is collapsed, so opening
+        // is part of the intent, not a separate step the caller has to know.
+        if (command.action === "open") setChatCollapsedState(false);
+        return await sendPanelCommand({ action: command.action, tab: command.tab });
+      }
+
+      case "chatinput": {
+        if (command.action === "write") setChatCollapsedState(false);
+        return await sendChatInputCommand({
+          action: command.action,
+          text: command.text ?? "",
+        });
+      }
+
+      case "lock":
+        await lock();
+        // No spoken confirmation: the mic is already off by the time the lock
+        // screen appears, and speaking here would leak the last words through.
+        return "";
+
+      case "signout":
+        await logout();
+        // The mic is still on here, so this confirms the words were heard as a
+        // command. The session id is revoked server-side, so a second tab cannot
+        // put the old cookie back and undo this.
+        return localize("Signed out.", "Αποσυνδεθήκατε.");
     }
   }
 
@@ -1484,7 +1649,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   const lastActivityAt = useActivityTracker();
   const autonomousEnabled = !!(settings.autonomous_mode ?? cfg?.autonomous_mode) && Date.now() >= silencedUntil;
-  const autonomousVoiceEnabled = voiceEnabled && !!user && settings.tts_enabled !== false
+  const autonomousVoiceEnabled = voiceAllowed && !!user && settings.tts_enabled !== false
     && typeof window !== "undefined" && !!window.speechSynthesis;
   const autonomousDeliveryRef = useRef({ busy, orb, voiceEnabled: autonomousVoiceEnabled });
   autonomousDeliveryRef.current = { busy, orb, voiceEnabled: autonomousVoiceEnabled };
@@ -1597,6 +1762,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       deleteSkill,
       updateSettings,
       setVoiceEnabled,
+      locked,
+      lockEnabled,
+      systemLoginEnabled,
+      oauthAvailable,
+      lock,
+      unlock,
+      afterAuth,
       addMemory,
       removeMemory,
       searchMemory,
