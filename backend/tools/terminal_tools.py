@@ -149,7 +149,23 @@ def _resolve_terminal(sessions: list, terminal: object, ctx) -> tuple:
     still wins: it is unambiguous regardless of any ordering.
     """
     if isinstance(terminal, str) and terminal.strip():
-        return _pick_session(sessions, terminal.strip())
+        wanted = terminal.strip()
+        # An exact session id is unambiguous and always wins, digits or not.
+        exact = next((s for s in sessions if s.id == wanted), None)
+        if exact is not None:
+            return exact, ""
+        # A digit string is a *spoken window number*, not an id. A model that
+        # passes "2" as text must reach the same terminal as the integer 2, or
+        # the command lands wherever the id-prefix lookup happens to land -
+        # the backend orders sessions most-recently-active-first, which is not
+        # what the operator sees.
+        if wanted.isdigit():
+            ordered = [s for sid in getattr(ctx, "terminal_map", ()) or ()
+                       for s in sessions if s.id == sid]
+            index = int(wanted)
+            if ordered and 1 <= index <= len(ordered):
+                return ordered[index - 1], ""
+        return _pick_session(sessions, wanted)
     if terminal not in (None, "", 0, "0"):
         ordered = [s for sid in getattr(ctx, "terminal_map", ()) or ()
                    for s in sessions if s.id == sid]

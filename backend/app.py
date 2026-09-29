@@ -27,6 +27,7 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, redirect, request, send_file, session
@@ -46,6 +47,31 @@ from auth import (
     verify_subscription,
 )
 from config import config
+from security import (
+    CSRF_HEADER,
+    SAFE_METHODS,
+    clean_name,
+    clean_username,
+    csrf_protect,
+    csrf_token,
+    new_session_id,
+)
+from system_auth import SystemAuth
+
+# The only API paths a locked session may reach: what the lock screen needs to
+# render itself and to let the user back in. Everything else under /api/ is
+# refused with 423 while locked.
+LOCK_ALLOWED_PATHS = frozenset(
+    {
+        "/api/auth/status",
+        "/api/auth/unlock",
+        "/api/auth/lock",
+        "/api/auth/logout",
+        "/api/auth/login",
+        "/api/auth/system-users",
+        "/api/health",
+    }
+)
 
 
 def _clamp_int(value, lo: int, hi: int) -> int:
@@ -136,6 +162,49 @@ _summary_locks: dict[tuple[str, str], threading.Thread] = {}
 _summary_locks_guard = threading.Lock()
 
 
+# --- session revocation -----------------------------------------------------
+# Flask's default session is a stateless signed cookie, so `session.clear()` is
+# only a request for the browser to forget it. The cookie itself stays valid
+# until it expires, and with SESSION_REFRESH_EACH_REQUEST on (Flask's default)
+# the server re-sends it on *every* response. So a sign-out in one tab is undone
+# by any request another tab had already issued: that response carries a fresh
+# copy of the session and re-arms the cookie, and the next request from the tab
+# that just signed out is authenticated again. The symptom is signing out
+# needing two clicks, which looks like a UI bug and is really a revoked session
+# that was never revoked.
+#
+# A revoked session id is therefore recorded here and refused in current_user().
+# Entries expire with the session they invalidate, so the set stays bounded.
+_REVOKED_SIDS: dict[str, float] = {}
+_REVOKED_SIDS_GUARD = threading.Lock()
+
+
+def revoke_session_id(sid: str, ttl_seconds: int) -> None:
+    """Make a signed-out session unusable even if its cookie is replayed."""
+    if not sid:
+        return
+    expires = time.time() + max(ttl_seconds, 60)
+    with _REVOKED_SIDS_GUARD:
+        _REVOKED_SIDS[sid] = expires
+        now = time.time()
+        for gone, when in list(_REVOKED_SIDS.items()):
+            if when <= now:
+                del _REVOKED_SIDS[gone]
+
+
+def session_is_revoked(sid: str) -> bool:
+    if not sid:
+        return False
+    with _REVOKED_SIDS_GUARD:
+        expires = _REVOKED_SIDS.get(sid)
+        if expires is None:
+            return False
+        if expires <= time.time():
+            del _REVOKED_SIDS[sid]
+            return False
+        return True
+
+
 def run_conversation_summary(uid: str, conv_id: str):
     """Daemon: write a conversation summary into memory; always clears its slot."""
     try:
@@ -212,20 +281,45 @@ def create_app() -> Flask:
         SECRET_KEY=config.SECRET_KEY,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
-        SESSION_COOKIE_SECURE=False,
+        SESSION_COOKIE_SECURE=config.SESSION_COOKIE_SECURE,
+        SESSION_COOKIE_NAME=config.SESSION_COOKIE_NAME,
+        # Flask's default re-sends the session cookie on every response, which
+        # is how a cookie from a signed-out session gets re-armed by a response
+        # another tab had in flight. The cookie is minted at sign-in instead.
+        SESSION_REFRESH_EACH_REQUEST=config.SESSION_REFRESH_EACH_REQUEST,
         MAX_CONTENT_LENGTH=1024 * 1024 * 1024,
     )
 
     # ---- CORS ---------------------------------------------------------------
+    # An allowlist, never a reflection. Echoing back whatever Origin the caller
+    # sent, together with Allow-Credentials, hands any website on the internet
+    # a credentialed channel to this API. SameSite=Lax on the cookie stops the
+    # session from riding along today, but that is one setting away from a full
+    # account takeover, so the allowlist is the control that actually holds.
+    def allowed_origins() -> set[str]:
+        origins = {config.FRONTEND_URL.rstrip("/"), config.BASE_URL.rstrip("/")}
+        extra = str(getattr(config, "EXTRA_ALLOWED_ORIGINS", "") or "").strip()
+        for item in extra.split(","):
+            if item.strip():
+                origins.add(item.strip().rstrip("/"))
+        return {o for o in origins if o}
+
     @app.after_request
     def cors(resp):
-        origin = request.headers.get("Origin") or config.FRONTEND_URL
-        if origin == "null":
-            origin = config.FRONTEND_URL
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        origin = (request.headers.get("Origin") or "").rstrip("/")
+        if origin and origin in allowed_origins():
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            # Additive, never an assignment: Flask's session handling appends to
+            # Vary itself, and overwriting it here left the response marked
+            # "Cookie" only, so a shared cache could hand one origin's response
+            # to another.
+            resp.headers.add("Vary", "Origin")
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-APEX-CSRF"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        # Stop a rendered document/JSON from being sniffed into something else.
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")
         return resp
 
     @app.before_request
@@ -233,8 +327,61 @@ def create_app() -> Flask:
         if request.method == "OPTIONS":
             return ("", 204)
 
+    @app.before_request
+    def csrf_guard():
+        """Reject cross-origin state changes.
+
+        The session cookie is the only thing that identifies the caller, and
+        a browser will attach it to a form POST from anywhere. Requiring a token
+        that only same-origin code can read means such a request is rejected
+        before it can do anything, rather than relying on SameSite alone.
+        """
+        if not config.CSRF_ENABLED:
+            return None
+        unsafe = request.method.upper() not in SAFE_METHODS
+        if not unsafe:
+            return None
+        expected_sid = session.get("sid", "")
+        if not expected_sid:
+            # No session yet: a login POST is the only legitimate case, and it
+            # is exempted below because there is nothing to forge against.
+            return None
+        header = request.headers.get(CSRF_HEADER) or ""
+        if not csrf_protect(config.SECRET_KEY, expected_sid, header, unsafe=True):
+            return jsonify({"error": "invalid_csrf_token"}), 403
+        return None
+
+    @app.before_request
+    def locked_session_guard():
+        """A locked screen has to mean locked, not just covered by an overlay.
+
+        The frontend hides the app behind the lock screen, but that is client
+        state: a stale tab, a curl call or another window can still reach the
+        API with a valid cookie. The server is the only place this can be
+        enforced, so while the session is locked the API is closed to everything
+        except what the lock screen itself needs.
+        """
+        if not config.LOCK_SCREEN_ENABLED or not session.get("locked"):
+            return None
+        if request.method == "OPTIONS":
+            return None
+        path = request.path or ""
+        # Static assets and pages must stay reachable or the lock screen cannot
+        # render at all; the auth endpoints are how the user gets out.
+        if not path.startswith("/api/"):
+            return None
+        if path in LOCK_ALLOWED_PATHS:
+            return None
+        return jsonify({"error": "session_locked", "locked": True}), 423
+
     # ---- helpers ------------------------------------------------------------
     def current_user():
+        # A revoked session is refused before its user is read. The cookie of a
+        # signed-out session is still cryptographically valid - that is the point
+        # of this check - so without it a replayed cookie walks straight back in.
+        if session_is_revoked(session.get("sid", "")):
+            session.clear()
+            return None
         uid = session.get("user_id")
         if uid:
             return uid
@@ -260,6 +407,12 @@ def create_app() -> Flask:
             )
             session["user_id"] = uid
             session["name"] = name
+            # A dev session is a real session: it gets a session id so the CSRF
+            # guard covers it exactly as it covers a password login. A mode that
+            # disabled CSRF would also disable it for OAuth and system users.
+            if not session.get("sid"):
+                session["sid"] = new_session_id()
+                session.permanent = True
         except Exception:
             app.logger.exception("dev auto-login failed")
 
@@ -374,9 +527,25 @@ def create_app() -> Flask:
         return None
 
     # ---- auth: oauth ---------------------------------------------------------
+    def oauth_signin_allowed() -> bool:
+        """Whether OAuth is offered as a way to sign in at all.
+
+        With system login on it is off by default: an OpenAI account is not a
+        local account, and letting one in would hand out a session that the
+        machine's own user list never approved.
+        """
+        if not config.oauth_configured:
+            return False
+        if config.SYSTEM_LOGIN_ENABLED and not config.SYSTEM_LOGIN_ALLOW_OAUTH:
+            return False
+        return True
+
     @app.get("/api/oauth/start")
     def oauth_start():
         from auth import OAuthSession
+
+        if not oauth_signin_allowed():
+            return jsonify({"error": "oauth_signin_disabled"}), 403
 
         payload = OAuthSession.start(session)
         url = build_authorize_url(payload["state"], payload["challenge"])
@@ -420,6 +589,11 @@ def create_app() -> Flask:
         save_tokens(profile["sub"], tokens, config.OPENAI_OAUTH_SCOPE)
         session["user_id"] = profile["sub"]
         session["name"] = profile["name"] or "Apex user"
+        # OAuth establishes the session just like a password login, so it needs
+        # a session id. Without one the CSRF guard has nothing to check against
+        # and would exempt every state-changing request for OAuth users.
+        session["sid"] = new_session_id()
+        session.permanent = True
         intent = session.pop("apex_intent", None) or config.FRONTEND_URL
         return redirect(intent)
 
@@ -439,6 +613,200 @@ def create_app() -> Flask:
                 "provider": rt.get("provider") or config.PROVIDER_DEFAULT,
             }
         )
+
+    # ---- auth: system users (/etc/passwd + PAM) -------------------------------
+    def _client_address() -> str:
+        """Best-effort source address for the login throttle.
+
+        X-Forwarded-For is only honoured when the request actually came through
+        a configured proxy; otherwise any client could forge a header and
+        escape the per-address limit.
+        """
+        remote = request.remote_addr or "-"
+        if getattr(config, "TRUST_PROXY", False):
+            forwarded = request.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()[:64]
+        return remote[:64]
+
+    def _system_auth() -> SystemAuth:
+        """One instance for the life of the app, not one per request.
+
+        The throttle lives inside SystemAuth, so building a new one per request
+        would hand every caller a fresh set of attempt counters and the lockout
+        after N wrong passwords would never trigger.
+        """
+        auth = app.extensions.get("apex_system_auth")
+        if auth is None:
+            auth = SystemAuth(
+                service=config.SYSTEM_LOGIN_PAM_SERVICE,
+                max_attempts=config.SYSTEM_LOGIN_MAX_ATTEMPTS,
+                window_seconds=config.SYSTEM_LOGIN_WINDOW_SECONDS,
+                lockout_seconds=config.SYSTEM_LOGIN_LOCKOUT_SECONDS,
+                audit_path=config.SYSTEM_LOGIN_AUDIT_LOG,
+                allowed_groups=config.SYSTEM_LOGIN_GROUPS,
+            )
+            app.extensions["apex_system_auth"] = auth
+        return auth
+
+    def _establish_session(user_id: str, name: str, email: str = "", picture: str = "") -> dict:
+        """Create the APEX identity for a verified system account.
+
+        The APEX user id is the system account name. Passwords never reach the
+        database; only the account name, so every object APEX stores is scoped
+        to a real system user and deleting the system user revokes access.
+        """
+        row = get_db().upsert_user(
+            user_id=user_id,
+            name=name,
+            email=email or f"{user_id}@localhost",
+            picture=picture,
+            tokens=None,
+            token_scopes="",
+        )
+        session.clear()
+        session["user_id"] = user_id
+        session["name"] = name
+        session["sid"] = new_session_id()
+        session.permanent = True
+        app.permanent_session_lifetime = timedelta(hours=config.SESSION_LIFETIME_HOURS)
+        return row
+
+    @app.get("/api/auth/system-users")
+    def auth_system_users():
+        """Accounts offered on the login screen. Passwords are never involved."""
+        if not config.SYSTEM_LOGIN_ENABLED:
+            return jsonify({"ok": True, "enabled": False, "users": []})
+        if not config.SYSTEM_LOGIN_SHOW_USERS:
+            return jsonify({"ok": True, "enabled": True, "users": []})
+        try:
+            users = _system_auth().list_users()
+        except Exception:
+            app.logger.exception("system user lookup failed")
+            users = []
+        return jsonify({
+            "ok": True,
+            "enabled": True,
+            "users": [
+                {"username": u.username, "name": clean_name(u.display_name, max_length=120),
+                 "initials": u.initials, "shell": u.shell}
+                for u in users
+            ],
+        })
+
+    @app.post("/api/auth/login")
+    def auth_login():
+        """Sign in with a system account."""
+        if not config.SYSTEM_LOGIN_ENABLED:
+            return jsonify({"error": "system_login_disabled"}), 404
+        payload = request.get_json(silent=True) or {}
+        username = clean_username(payload.get("username"))
+        password = payload.get("password")
+        # Not cleaned: sanitizing a password would silently change a valid one.
+        # It is a str, capped, and handed straight to PAM.
+        password = password if isinstance(password, str) else ""
+        if not password or len(password) > 1024:
+            return jsonify({"error": "Enter your username and password."}), 400
+
+        auth = _system_auth()
+        result = auth.authenticate(username, password, _client_address())
+        if not result.ok or not result.user:
+            body = {"error": result.error or "Incorrect username or password."}
+            if result.locked:
+                body["retry_after"] = auth.retry_after(username, _client_address())
+            return jsonify(body), 401
+
+        user = result.user
+        row = _establish_session(user.username, user.display_name)
+        return jsonify({
+            "ok": True,
+            "user": summary(row),
+            "csrf_token": csrf_token(config.SECRET_KEY, session["sid"]),
+        })
+
+    @app.post("/api/auth/unlock")
+    def auth_unlock():
+        """Leave the lock screen.
+
+        Re-checks the password rather than trusting a flag in the client, so a
+        locked machine is genuinely locked even if the tab was left open.
+        """
+        if not config.LOCK_SCREEN_ENABLED:
+            return jsonify({"error": "lock_disabled"}), 404
+        user_id = session.get("user_id")
+        if not user_id:
+            return jsonify({"error": "unauthorized"}), 401
+        payload = request.get_json(silent=True) or {}
+        password = payload.get("password")
+        password = password if isinstance(password, str) else ""
+        if not password or len(password) > 1024:
+            return jsonify({"error": "Enter your password."}), 400
+
+        auth = _system_auth()
+        address = _client_address()
+        result = auth.authenticate(user_id, password, address)
+        if not result.ok:
+            body = {"error": result.error or "Incorrect password."}
+            if result.locked:
+                body["retry_after"] = auth.retry_after(user_id, address)
+            return jsonify(body), 401
+
+        # Rotate the session id (new CSRF token, same signed-in user) and clear
+        # the lock flag server-side. Clearing it only in the browser would leave
+        # the API refusing every request with 423 for the rest of the session.
+        session["sid"] = new_session_id()
+        session.pop("locked", None)
+        session["unlocked_at"] = int(time.time())
+        return jsonify({
+            "ok": True,
+            "csrf_token": csrf_token(config.SECRET_KEY, session["sid"]),
+        })
+
+    @app.post("/api/auth/lock")
+    def auth_lock():
+        if not session.get("user_id"):
+            return jsonify({"error": "unauthorized"}), 401
+        session["locked"] = True
+        # A new session id invalidates any CSRF token the locked client cached,
+        # so the replacement token has to travel back in this response: the
+        # client cannot compute it, and the very next request it makes is the
+        # unlock POST.
+        session["sid"] = new_session_id()
+        return jsonify({
+            "ok": True,
+            "csrf_token": csrf_token(config.SECRET_KEY, session["sid"]),
+        })
+
+    @app.post("/api/auth/logout")
+    def auth_logout():
+        # Revoking the session id is what actually ends it: session.clear() only
+        # asks the browser to drop a cookie that stays valid until it expires,
+        # and SESSION_REFRESH_EACH_REQUEST is off precisely so no response
+        # re-arms it. Without the revoke, signing out in one tab is undone by
+        # whatever another tab had in flight, and it takes two attempts.
+        revoke_session_id(
+            session.get("sid", ""), config.SESSION_LIFETIME_HOURS * 3600
+        )
+        session.clear()
+        return jsonify({"ok": True})
+
+    @app.get("/api/auth/status")
+    def auth_status():
+        """What the client needs to render the right screen.
+
+        Carries the CSRF token, so a page load is enough to obtain one and no
+        state-changing request has to run without protection.
+        """
+        sid = session.get("sid", "")
+        return jsonify({
+            "ok": True,
+            "system_login_enabled": bool(config.SYSTEM_LOGIN_ENABLED),
+            "lock_enabled": bool(config.LOCK_SCREEN_ENABLED),
+            "authenticated": bool(session.get("user_id")),
+            "locked": bool(session.get("locked")),
+            "oauth_available": oauth_signin_allowed(),
+            "csrf_token": csrf_token(config.SECRET_KEY, sid) if sid else "",
+        })
 
     @app.get("/api/health")
     def health():

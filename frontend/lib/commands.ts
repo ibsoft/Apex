@@ -24,7 +24,15 @@ export type LocalCommand =
   | { type: "autonomy"; enabled: boolean }
   | { type: "silence" }
   | { type: "images"; query: string; source: "web" | "local" }
+  /* The chat panel itself: open/close, which tab is showing, and the two
+     input commands. `write` only fills the box, `send` only delivers it, so
+     the operator can compose first and commit second. */
+  | { type: "panel"; action: "open" | "close" | "toggle"; tab?: PanelTabName }
+  | { type: "chatinput"; action: "write" | "send"; text?: string }
+  | { type: "lock"; action: "lock" }
+  | { type: "signout" }
   | { type: "skill"; skill: string; rest: string };
+
 
 const isGreek = (language: string) => /^el(?:-|$)/i.test(language);
 const normalize = (text: string) => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/ς/g, "σ");
@@ -607,6 +615,181 @@ function parseDesktopNumber(token: string): number | null {
   return Math.max(1, Math.min(4, n)); // there are exactly DESKTOPS desktops
 }
 
+/* Panel, chat input and lock commands.
+ *
+ * These act on the UI shell, so they must be recognised before anything can
+ * fall through to the agent: "close panel" is not a question, and routing it to
+ * the model would spend a turn (and a token) to accomplish nothing.
+ */
+/* Panel, chat-input and lock commands.
+ *
+ * These act on the UI shell, so they are recognised before anything can fall
+ * through to the agent: "close panel" is not a question, and routing it to the
+ * model would spend a turn (and tokens) to accomplish nothing.
+ */
+export type PanelTabName = "chat" | "history" | "settings" | "memory" | "apps";
+
+/* Ordered, most specific first. "chat history" contains "chat", so a naive
+   scan would open the chat tab when the operator asked for the history; and the
+   whole list is a subset check, not equality, so "chat history" and "tools"
+   still resolve. */
+const PANEL_TAB_PATTERNS: Array<[PanelTabName, RegExp]> = [
+  ["history", /history|chat\s*history|archive|past\s*chats?|ιστορικ|αρχειοθετημ/],
+  ["settings", /settings|preference|config|options|ρυθμισ|προτιμησ/],
+  ["memory", /memor|memories|μνημ|ισχνομνι/],
+  ["apps", /app|application|tool|widget|εφαρμογ|εργαλει/],
+  ["chat", /chat|conversation|message|συνομιλ|μηνυμ|συνομιλι/],
+];
+
+function tabFromWords(words: string): PanelTabName | null {
+  const norm = normalize(words);
+  for (const [tab, pattern] of PANEL_TAB_PATTERNS) {
+    if (pattern.test(norm)) return tab;
+  }
+  return null;
+}
+
+function parsePanelCommand(text: string, greek: boolean): LocalCommand | null {
+  const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
+  if (!clean) return null;
+  const norm = normalize(clean);
+
+  if (/^(?:open|show|expand|unhide)(?:\s+the)?(?:\s+chat)?\s+panel$/.test(norm)
+      || /^(?:toggle|switch)(?:\s+the)?(?:\s+chat)?\s+panel$/.test(norm)) {
+    return /toggle|switch/.test(norm) ? { type: "panel", action: "toggle" } : { type: "panel", action: "open" };
+  }
+  if (/^(?:close|hide|collapse|minimi[sz]e|fold)(?:\s+the)?(?:\s+chat)?\s+panel$/.test(norm)) {
+    return { type: "panel", action: "close" };
+  }
+  if (greek) {
+    if (/^(?:ανοιξε|δειξε|εμφανισε)(?:\s+το)?\s*πανελ$/.test(norm)) return { type: "panel", action: "open" };
+    if (/^(?:κλεισε|κρυψε|συμπτυξε|παραθεσε)\s*(?:το|την|τη)?\s*πανελ$/.test(norm)) return { type: "panel", action: "close" };
+    if (/^(?:εναλλαξε|αλλαξε|τροπε)\s*(?:το|την|τη)?\s*πανελ$/.test(norm)) return { type: "panel", action: "toggle" };
+  }
+
+  // "go to <anything>" - the destination is captured as free text and mapped,
+  // so synonyms work and a non-tab destination is left to the agent.
+  const goEn = /^(?:go|switch|jump|navigate|take\s+me)\s+to\s+(?:the\s+)?(.{1,40}?)(?:\s+(?:panel|tab|page|screen))?$/.exec(norm);
+  const goEl = greek
+    /* Both sigma spellings are listed: normalize() folds a final U+03C2 into
+       U+03C3, so "στις" reaches the matcher as "στισ" and "τους" as "τουσ".
+       Writing only the accented-original form silently fails to match. */
+    ? /^(?:πηγαινε|παμε|μεταβαινε|οδηγησε)\s+(?:σ(?:τ(?:η|ην|ο|ισ|ις|α|ου|εσ|ες)|τη|την|το|τουσ|τους|των))\s*(.{1,40}?)(?:\s*(?:πανελ|νομα)?)$/.exec(norm)
+    : null;
+  const go = goEn ?? goEl;
+  if (go) {
+    const tab = tabFromWords(go[1]);
+    return tab ? { type: "panel", action: "open", tab } : null;
+  }
+
+  /* Bare-noun form: "open settings", "show me memory", "view history". Only a
+     short phrase counts, and the word limit is the whole point: "show me the
+     history of the Roman empire" is a question for the agent, not a request to
+     switch tabs, and without the limit the first tab keyword in a long sentence
+     would silently swallow it. */
+  const bare = /^(?:open|show|view|display|bring\s+up)(?:\s+me)?\s+(?:the\s+)?((?:[\p{L}\p{N}_-]+\s*){1,3})$/u.exec(norm);
+  if (bare) {
+    const tab = tabFromWords(bare[1]);
+    if (tab) return { type: "panel", action: "open", tab };
+  }
+  return null;
+}
+
+function parseChatInputCommand(text: string, greek: boolean): LocalCommand | null {
+  /* The *raw* text, not the caller's punctuation-stripped copy. "write in
+     chat: what is the time?" must keep its question mark - stripping trailing
+     punctuation is right for a command phrase and wrong for a message the
+     operator dictated. */
+  const raw = text.trim();
+  if (!raw) return null;
+  const norm = normalize(raw);
+
+  const CHAT_NOUN = String.raw`(?:chat|chat\s*box|chatbox|input|message\s*box|box|prompt|συνομιλι(?:α|εσ)|πλαισιο)`;
+
+  /* Both forms capture the spoken text as an explicit group and derive its
+     position from `match.index` plus that group's own length. Deriving the
+     position from the end of the whole match is wrong for the second form,
+     where the text sits in the middle and the tail ("in the chat") follows it.
+   */
+  // "write in chat: hello" / "type into the chatbox, hi"
+  const lead = new RegExp(
+    String.raw`^(?:(?:write|type|put|add|enter|set|γραψε|προσθεσε|βαλε)\s+(?:in|into|to|on|στο|στην|στη|στα|στις)?\s*(?:the\s*)?${CHAT_NOUN}(?:\s*box|\s*field|\s*input)?\s*(?::|,|-|–|\s)?\s*)((?:.|\n)*)$`,
+  ).exec(norm);
+  // "write hello in the chat" - the text sits in the middle.
+  const mid = new RegExp(
+    /* Three groups so the text's position is exact: 1 = verb, 2 = the text,
+       3 = the trailing "in the chat". Deriving the offset from the end of the
+       whole match is wrong for this form, where the tail follows the text. */
+    String.raw`^((?:write|type|put|add|enter|γραψε|προσθεσε|βαλε)\s+)(.{1,500}?)(\s+(?:in|into|to|σ(?:το|την|τη|τα|τις|του))\s+(?:the\s*)?${CHAT_NOUN}(?:\s*box)?\s*[.!;·;]*)$`,
+  ).exec(norm);
+
+  if (lead) {
+    // The capture runs to the end of the match, so its start is its length back.
+    const len = lead[1].length;
+    const value = originalSlice(raw, lead.index + lead[0].length - len, lead.index + lead[0].length).trim();
+    return { type: "chatinput", action: "write", text: value };
+  }
+  if (mid) {
+    // Group 2 starts right after the verb (group 1) and ends where group 3
+    // begins, so its offset is exact and independent of the tail.
+    const start = mid.index + mid[1].length;
+    const value = originalSlice(raw, start, start + mid[2].length).trim();
+    return { type: "chatinput", action: "write", text: value };
+  }
+
+  const send = /^(?:send|submit)(?:\s+(?:the|my|it))?(?:\s+(?:chat|message|text|prompt))?$/.test(norm)
+    || /^(?:send|submit)(?:\s+(?:chat|message|text|prompt))\s+now$/.test(norm)
+    || (greek && /^(?:στελ(?:ε|λε)|αποστελ(?:ε|λε))\s*(?:το|την|τη|το)?\s*(?:μηνυμα|κειμενο|συνομιλι(?:α|εσ))?$/.test(norm));
+  if (send) return { type: "chatinput", action: "send" };
+  return null;
+}
+
+function parseLockCommand(text: string, greek: boolean): LocalCommand | null {
+  const norm = normalize(text.trim().replace(/[.!?;·;]+$/, "").trim());
+  if (!norm) return null;
+  // Guard against "unlock"/"ξεκλείδωσε": a bare "lock" must not match them, or
+  // the operator would re-lock the screen while trying to get in.
+  if (/^(?:unlock|un\s*lock|ξεκλειδωσε|ανοιξε)/.test(norm)) return null;
+  if (/^lock$/.test(norm)) return { type: "lock", action: "lock" };
+  if (/^(?:lock|secure|enable)\s+(?:the\s+)?(?:screen|apex|system|desktop|session)$/.test(norm)) {
+    return { type: "lock", action: "lock" };
+  }
+  if (/^(?:go|switch)\s+to\s+(?:sleep|lock)(?:\s+mode)?$/.test(norm)) {
+    return { type: "lock", action: "lock" };
+  }
+  if (greek && /^κλειδωσε(?:\s+τ(?:ην|ο))?(?:\s+οθονη|\s+το\s+apex|\s+συστημα|\s+οθονη\s+κλειδωμο)?$/.test(norm)) {
+    return { type: "lock", action: "lock" };
+  }
+  return null;
+}
+
+
+function parseSignOutCommand(text: string, greek: boolean): LocalCommand | null {
+  /* Ending the session is consequential, so every pattern is anchored to the
+     whole utterance. A question about signing out ("how do I log out of this")
+     has words in front of it and must reach the agent as a question - matching
+     a phrase anywhere in the sentence would end the session because someone was
+     talking about it. */
+  const norm = normalize(text.trim().replace(/[.!?;·]+$/, "").trim());
+  if (!norm) return null;
+  if (/^(?:sign|log)\s*out$/.test(norm)) return { type: "signout" };
+  if (/^(?:sign|log)\s*out\s+of\s+(?:apex|the\s+app|this\s+app|the\s+system)$/.test(norm)) {
+    return { type: "signout" };
+  }
+  if (/^(?:please\s+)?(?:end|terminate|close)\s+(?:the\s+)?(?:session|sign\s*in)$/.test(norm)) {
+    return { type: "signout" };
+  }
+  if (/^(?:log|get)\s+me\s+out$/.test(norm)) return { type: "signout" };
+  /* `normalize()` folds a final sigma, so "βγες" arrives as "βγεσ". Both the
+     imperative and the noun form are accepted for the same reason the lock
+     parser accepts both spellings. */
+  if (greek && /^(?:αποσυνδε(?:σ|θε)|βγεσ(?:\s+εξω)?|κανε\s+(?:εξοδο|αποσυνδεσ|αποσυνδεσμο)|τελοσ\s+συνεδριασ)/.test(norm)) {
+    return { type: "signout" };
+  }
+  return null;
+}
+
+
 function parseDesktopCommand(text: string, greek: boolean): LocalCommand | null {
   const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
   if (!clean) return null;
@@ -697,6 +880,16 @@ export function parseLocalCommand(text: string, language: string, skills: Array<
   const normalized = normalize(clean);
   const notepad = parseNotepadCommand(text.trim(), greek);
   if (notepad) return notepad;
+  // Shell commands first: "close panel" and "lock" are actions, not requests.
+  const panel = parsePanelCommand(clean, greek);
+  if (panel) return panel;
+  const chatInput = parseChatInputCommand(text, greek);
+  if (chatInput) return chatInput;
+  const lock = parseLockCommand(clean, greek);
+  if (lock) return lock;
+  // After lock, so "lock" is never read as a sign-out and vice versa.
+  const signOut = parseSignOutCommand(clean, greek);
+  if (signOut) return signOut;
   const terminal = parseTerminalCommand(clean, greek);
   if (terminal) return terminal;
   const files = parseFilesCommand(clean, greek);

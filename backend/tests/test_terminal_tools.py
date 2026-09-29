@@ -429,6 +429,37 @@ class TerminalToolsTests(unittest.TestCase):
         self.assertIn("onscreen-one-C33", self.drain_until(second, "onscreen-one-C33"))
         self.assertNotIn("onscreen-one-C33", self.peek_text(first))
 
+    def test_a_number_sent_as_text_means_the_same_window(self):
+        """Models send both 2 and "2" for the same thing.
+
+        A digit string used to go straight to the id-prefix lookup, so "2" ran
+        in whatever session happened to sort first instead of the window the
+        operator is looking at. Both spellings must land in the same place.
+        """
+        first = self.create_session()
+        second = self.create_session()
+        reply = self.invoke("terminal_command", {"command": "echo text-two-F66", "terminal": "2"},
+                            terminal_map=(second, first))
+        self.assertNotIn("No terminal session", reply)
+        self.assertIn("text-two-F66", self.drain_until(first, "text-two-F66"))
+        self.assertNotIn("text-two-F66", self.peek_text(second))
+
+        reply = self.invoke("terminal_command", {"command": "echo text-one-G77", "terminal": "1"},
+                            terminal_map=(second, first))
+        self.assertIn("text-one-G77", self.drain_until(second, "text-one-G77"))
+        self.assertNotIn("text-one-G77", self.peek_text(first))
+
+    def test_a_full_session_id_still_wins_over_the_number(self):
+        """The exact-id check runs first, so a digit-looking id is not
+        mistaken for a window number."""
+        first = self.create_session()
+        second = self.create_session()
+        # `second` sits at on-screen position 1 but is asked for by its id.
+        self.invoke("terminal_command", {"command": "echo exact-id-H88", "terminal": second},
+                    terminal_map=(second, first))
+        self.assertIn("exact-id-H88", self.drain_until(second, "exact-id-H88"))
+        self.assertNotIn("exact-id-H88", self.peek_text(first))
+
     def test_an_explicit_session_id_beats_the_on_screen_number(self):
         first = self.create_session()
         second = self.create_session()

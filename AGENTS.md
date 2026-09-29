@@ -117,6 +117,79 @@ cd frontend && npm run build
 A green backend test run, a green `node --test frontend/tests` run and a
 successful `npm run build` are required before finishing any feature.
 
+## Sign-in, lock screen and the session (security-critical)
+
+APEX authenticates against the machine's own accounts. `backend/system_auth.py`
+lists login-capable users from `/etc/passwd` and checks the password with PAM
+(`libpam.so.0`) through `ctypes`. No password is stored, logged or sent to a
+provider, and `/etc/shadow` is never read.
+
+- `backend/auth.py` is the OpenAI OAuth module. It predates the system login
+  and is a *different* thing: do not create a `backend/auth/` package, it
+  shadows this file and the import fails.
+- `SystemAuth` instances hold the login throttle, so `app.py::_system_auth()`
+  caches one in `app.extensions["apex_system_auth"]`. Building one per request
+  resets the counters and the lockout never fires.
+- `AuthResult` is a dataclass: build it with keywords (`AuthResult(ok=True,
+  user=...)`). Positionally the second field is `username`, not `user`.
+- The throttle is keyed by username **and** source address, so failures from one
+  host cannot lock a colleague out. `TRUST_PROXY` must only be true behind a
+  proxy you control, or anyone can forge `X-Forwarded-For` and escape the limit.
+
+Session rules, all of which have a test in `backend/tests/test_auth_routes.py`:
+
+- Every session - system login, OAuth callback and `DEV_AUTO_LOGIN` - must set
+  `session["sid"]`. The CSRF guard keys off it, so a session without one exempts
+  every state-changing request from CSRF protection.
+- Anything that rotates `sid` (lock, unlock, login) must return the new
+  `csrf_token` in its response. The client cannot compute it, and the next
+  request it makes is itself protected.
+- `session["locked"]` is enforced in `before_request`: while locked, every
+  `/api/` path except `LOCK_ALLOWED_PATHS` answers `423`. The overlay is client
+  state; the server is the control. Unlocking must clear the flag server-side.
+- `SYSTEM_LOGIN_ALLOW_OAUTH` is off by default. With system login on, an OAuth
+  account is a way *around* `/etc/passwd`, so `/api/oauth/start` answers 403 and
+  the sign-in screen shows no OpenAI button.
+- `frontend/lib/api.ts` owns the CSRF token for the whole app. `auth.lock` and
+  `auth.logout` must send the current token and only clear it afterwards;
+  clearing first turns both into 403s. A `423` is surfaced through
+  `onSessionLocked` so a tab locked from another window locks this one too.
+- A new browser API that mutates state must go through `lib/api.ts` (or send
+  `requestHeaders`); the server has no other way to tell it apart from a
+  cross-site POST.
+
+Object access: the session is the only source of identity. No route may accept a
+client-supplied `user_id`, and a resource owned by someone else must answer `404`,
+not `403` - a wrong owner has to be indistinguishable from an id that does not
+exist.
+
+## Panel and chat voice/text commands
+
+`frontend/lib/commands.ts::parseLocalCommand` is the single dispatcher; it
+tries the shell parsers first and returns `null` for anything that is a request
+for the agent. `frontend/lib/panelBridge.ts` then hands the parsed command to
+the React tree over a cancelable `CustomEvent`, retrying until a consumer calls
+`preventDefault()`, and returns the consumer's spoken answer.
+
+- Two traps, both already hit once. `normalize()` folds a final sigma
+  (`ς` → `σ`), so Greek patterns must accept both spellings or "στις" silently
+  fails. And a `write ... in the chat` command is matched against the *raw*
+  text, never the punctuation-stripped copy, so a dictated "what is the time?"
+  keeps its question mark.
+- `write in chat` fills the draft and focuses the box; `send chat` sends. They
+  are separate on purpose - dictating a message and sending it are two
+  decisions.
+- Ending a session is consequential, so `sign out` / `log out` (and `αποσύνδεση`,
+  `βγες έξω`, `κάνε έξοδο`) is **anchored to the whole utterance**. "how do I
+  log out" has words in front of the phrase and must reach the agent as a
+  question; matching the phrase anywhere in the sentence would end the session
+  because someone was talking about it. It speaks a confirmation (unlike `lock`,
+  where the mic is already off) and it is a real revocation - see the session
+  section, because a stateless cookie makes sign-out advisory unless the session
+  id is refused server-side.
+- The command phrase is stripped of trailing punctuation; the captured message
+  is not.
+
 ## Window manager (desktop media layer)
 
 Voice/text can open up to `MAX_WINDOWS` (10) floating windows holding images,

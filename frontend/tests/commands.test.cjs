@@ -636,3 +636,68 @@ test('terminals move between virtual desktops by their own number', () => {
   assert.deepEqual(parse('move window 2 to desktop 1', 'en'),
     { type: 'desktop', action: 'move', target: 2, desktop: 0 });
 });
+
+/* --- sign out ------------------------------------------------------------
+   Ending a session is consequential, so these tests pin both halves: the
+   phrases that must act, and - just as important - the questions about signing
+   out that must NOT. "how do I log out" reaching the agent as a question is the
+   difference between answering someone and ending their session. */
+
+const SIGNOUT_ACT = [
+  ['sign out', 'en'], ['Sign out.', 'en'], ['signout', 'en'], ['log out', 'en'],
+  ['Log out!', 'en'], ['log me out', 'en'], ['get me out', 'en'],
+  ['log out of apex', 'en'], ['sign out of the app', 'en'],
+  ['please end the session', 'en'], ['close the sign in', 'en'],
+  ['αποσύνδεση', 'el'], ['Αποσύνδεση.', 'el'], ['αποσυνδέσου', 'el'],
+  ['βγες έξω', 'el'], ['βγες', 'el'], ['κάνε αποσύνδεση', 'el'],
+  ['κάνε έξοδο', 'el'], ['τέλος συνεδρίας', 'el'],
+];
+
+for (const [text, language] of SIGNOUT_ACT) {
+  test(`sign out: ${JSON.stringify(text)} (${language})`, () => {
+    assert.deepEqual(parse(text, language), { type: 'signout' });
+  });
+}
+
+const SIGNOUT_MUST_NOT_ACT = [
+  'how do I log out of this app',
+  'what does sign out mean',
+  'can you log out the other user',
+  'log out and then open the file manager',
+  'tell me how to sign out',
+  // "lock" is a different command and must not be read as a sign out.
+  'lock the screen',
+  'unlock',
+  'close the window',
+  // A sign-out phrase inside a longer instruction is that instruction.
+  'search the web for how to log out of gmail',
+];
+
+for (const text of SIGNOUT_MUST_NOT_ACT) {
+  test(`must NOT sign out: ${JSON.stringify(text)}`, () => {
+    const command = parse(text, 'en');
+    assert.ok(
+      !command || command.type !== 'signout',
+      `${JSON.stringify(text)} ended the session`,
+    );
+  });
+}
+
+test('a sign-out question reaches the agent instead of ending the session', () => {
+  // It must still parse as *something* (a skill/agent request) rather than a
+  // local command, so the model can answer it.
+  const command = parse('how do I log out of this app', 'en');
+  assert.notEqual(command && command.type, 'signout');
+});
+
+test('sign out is distinct from lock', () => {
+  assert.deepEqual(parse('lock', 'en'), { type: 'lock', action: 'lock' });
+  assert.deepEqual(parse('sign out', 'en'), { type: 'signout' });
+});
+
+test('the greek imperative survives sigma folding', () => {
+  // normalize() folds a final sigma, so "βγες" reaches the parser as "βγεσ".
+  // This is the trap that has already silently broken one parser.
+  assert.deepEqual(parse('βγες έξω'), { type: 'signout' });
+  assert.deepEqual(parse('βγεσ'), { type: 'signout' });
+});

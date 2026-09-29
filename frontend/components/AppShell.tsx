@@ -11,6 +11,7 @@ import SudoPromptModal from "./SudoPromptModal";
 import GithubTokenModal from "./GithubTokenModal";
 import WindowManager from "./WindowManager";
 import { useApex } from "./ApexProvider";
+import { LoginScreen, LockScreen } from "./LoginScreen";
 
 const C = {
   cyan: "#00e5ff",
@@ -18,7 +19,9 @@ const C = {
   line: "rgba(0,229,255,0.16)",
 };
 
-function LoginOverlay() {
+/* Fallback for installs that have turned system login off
+   (SYSTEM_LOGIN_ENABLED=false) and still authenticate over OAuth. */
+function OAuthLoginOverlay() {
   const a = useApex();
   const oauthReady = a.config?.oauth_configured ?? true;
   return (
@@ -35,16 +38,8 @@ function LoginOverlay() {
         background: "rgba(6,10,20,0.9)", border: `1px solid ${C.line}`,
         boxShadow: "0 0 60px rgba(0,229,255,0.12), 0 18px 50px rgba(0,0,0,0.6)",
       }}>
-        <div style={{ width: 64, height: 64, margin: "0 auto 18px", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-          background: "radial-gradient(circle, rgba(0,229,255,0.25) 0%, rgba(0,229,255,0.05) 60%)",
-          border: `1px solid ${C.line}` }}>
-          <div style={{ width: 26, height: 26, borderRadius: "50%", background: C.cyan, boxShadow: "0 0 22px rgba(0,229,255,0.9)" }} />
-        </div>
         <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: "0.24em", color: "#f0f6ff", fontFamily: "var(--font-mono)" }}>APEX</div>
-        <div style={{ fontSize: 11, color: "rgba(170,192,215,0.7)", marginTop: 10, lineHeight: 1.8, fontFamily: "var(--font-mono)" }}>
-          YOUR AI CO-WORKER<br />VOICE · TOOLS · SKILLS · MEMORY
-        </div>
-        <div style={{ marginTop: 26, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ marginTop: 22 }}>
           {oauthReady ? (
             <button onClick={() => a.login()}
               style={{
@@ -60,17 +55,16 @@ function LoginOverlay() {
               BACKEND OAUTH NOT CONFIGURED —<br />SET OPENAI_CLIENT_ID / SECRET ON THE SERVER
             </div>
           )}
-          <div style={{ fontSize: 9.5, color: "rgba(170,192,215,0.5)", fontFamily: "var(--font-mono)", letterSpacing: "0.08em", marginTop: 4 }}>
-            ALSO WORKS WITH LOCALLY-RUN MODELS — OLLAMA / GPU
-          </div>
+        </div>
+        <div style={{ marginTop: 14, fontSize: 9, color: "rgba(170,192,215,0.42)", fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
+          MICROPHONE IS OFF UNTIL YOU SIGN IN
         </div>
       </div>
     </div>
   );
 }
 
-function ErrorToast() {
-  const a = useApex();
+function ErrorToast() {  const a = useApex();
   const err = a.error;
   useEffect(() => {
     if (!err) return;
@@ -129,7 +123,21 @@ export default function AppShell() {
     <div style={{ position: "relative", height: "100vh", minHeight: 620 }}>
       <ApexWorld state={a.orb} onTap={handleTap} />
 
-      {a.loading ? <LoadingSplash /> : !a.user ? <LoginOverlay /> : <ChatUI />}
+      {a.loading ? (
+        <LoadingSplash />
+      ) : !a.user ? (
+        /* No user means no microphone: LoginScreen is the only thing mounted,
+           and the voice engine is gated on `!!user` in ApexProvider. */
+        a.systemLoginEnabled ? (
+          <LoginScreen onSignedIn={a.afterAuth} oauthAvailable={a.oauthAvailable} />
+        ) : (
+          <OAuthLoginOverlay />
+        )
+      ) : a.locked ? (
+        <LockScreen userName={a.user?.name ?? ""} onUnlock={a.unlock} />
+      ) : (
+        <ChatUI />
+      )}
 
       <WindowManager />
       <SudoPromptModal />

@@ -18,6 +18,7 @@ import React, { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { shouldReleaseTerminal } from "../lib/windows";
+import { apiFetch } from "../lib/api";
 
 type Props = {
   sessionId: string;
@@ -41,7 +42,16 @@ export default function TerminalWindow({ sessionId, base, focused, onClosed }: P
   const focusedRef = useRef(focused);
   focusedRef.current = focused;
 
-  const api = (path: string) => `${base.replace(/\/$/, "")}/api/terminal/session/${encodeURIComponent(sessionId)}${path}`;
+  const apiPath = (path: string) =>
+    `/api/terminal/session/${encodeURIComponent(sessionId)}${path}`;
+  const api = (path: string) => `${base.replace(/\/$/, "")}${apiPath(path)}`;
+
+  /* Input, resize and release all change state, so they need the CSRF token and
+     the retry after a stale one. `base` is always lib/api's BASE, so going
+     through apiFetch addresses the same origin - it just adds the token, which
+     these three used to omit and the server answered with invalid_csrf_token. */
+  const apiPost = (path: string, body: unknown) =>
+    apiFetch(apiPath(path), { method: "POST", body: JSON.stringify(body) });
 
   const onClosedRef = useRef(onClosed);
   onClosedRef.current = onClosed;
@@ -78,12 +88,7 @@ export default function TerminalWindow({ sessionId, base, focused, onClosed }: P
       if (!chunk || disconnectedRef.current) return;
       inputQueueRef.current = inputQueueRef.current
         .then(async () => {
-          const res = await fetch(api("/input"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ data: btoa(chunk) }),
-          });
+          const res = await apiPost("/input", { data: btoa(chunk) });
           if (!res.ok && res.status === 410) {
             disconnectedRef.current = true;
             closeWindow();
@@ -135,12 +140,9 @@ export default function TerminalWindow({ sessionId, base, focused, onClosed }: P
       if (!ft || !instance) return;
       try {
         ft.fit();
-        void fetch(api("/resize"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ cols: instance.cols, rows: instance.rows }),
-        }).catch(() => undefined);
+        void apiPost("/resize", { cols: instance.cols, rows: instance.rows }).catch(
+          () => undefined
+        );
       } catch {
         /* container not measurable yet */
       }
@@ -179,7 +181,7 @@ export default function TerminalWindow({ sessionId, base, focused, onClosed }: P
       // React StrictMode double-mounts effects, so a spurious unmount right after
       // mount must not DELETE a fresh session (the second mount reuses it).
       if (shouldReleaseTerminal(mountedAtRef.current)) {
-        void fetch(api(""), { method: "DELETE", credentials: "include" }).catch(() => undefined);
+        void apiFetch(apiPath(""), { method: "DELETE" }).catch(() => undefined);
       }
       try {
         term.dispose();
