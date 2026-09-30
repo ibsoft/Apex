@@ -386,6 +386,15 @@ def force_host_skill(user_text: str, skills: list[Skill]) -> str | None:
     return HOST_STATE_SKILL if _fuzzy_host_hit(text) else None
 
 
+def force_visio_skill(user_text: str, skills: list[Skill]) -> str | None:
+    if not any(s.name == "VISIO" for s in skills) or _CODEISH_RE.search(user_text or ""):
+        return None
+    text = _strip_accents(user_text).lower()
+    if re.search(r"\bwhat (?:do|can) you see(?: now)?\b|\b(?:look|see) through (?:the |my )?camera\b|\b(?:camera|webcam) (?:snapshot|attached|connected|available)\b|\b(?:take|capture) (?:a )?(?:snapshot|photo)\b|τι βλεπεις|κοιτα (?:απο |με )?την καμερα", text):
+        return "VISIO"
+    return None
+
+
 def route_skill(
     user_text: str,
     skills: list[Skill],
@@ -404,7 +413,7 @@ def route_skill(
 
     # Deterministic first: live-host questions always go to the skill that
     # actually runs commands, no matter what the classifier decides (or caches).
-    forced = force_host_skill(user_text, skills)
+    forced = force_visio_skill(user_text, skills) or force_host_skill(user_text, skills)
     if forced:
         return forced
 

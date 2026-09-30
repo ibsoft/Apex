@@ -202,6 +202,10 @@ export type AppConfig = {
   think_hard_model: string;
   /** Whether the think-hard switch is armed (env THINK_HARD_MODEL_ENABLED). */
   think_hard_model_enabled: boolean;
+  visio_enabled: boolean;
+  visio_provider: string;
+  visio_model: string;
+  visio_camera: string;
   memory_enabled: boolean;
   embedding: string | null;
   wake_word: string;
@@ -386,6 +390,10 @@ export const api = {
     remove: (id: string) => json(`/api/conversations/${id}`, { method: "DELETE" }),
     summarize: (id: string) =>
       json<{ ok: boolean; status: string }>(`/api/conversations/${id}/summarize`, { method: "POST" }),
+  },
+
+  visio: {
+    cameras: () => json<{ cameras: { device: string; name: string; accessible: boolean }[]; ffmpeg_available: boolean }>("/api/visio/cameras"),
   },
 
   settings: {

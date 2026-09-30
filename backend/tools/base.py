@@ -111,7 +111,10 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.terminal_tools import build_terminal_tools
     from tools.notepad_tools import build_notepad_tools
     from tools.task_tools import build_task_tools
+    from tools.visio_tools import build_visio_tools
 
+    for tool in build_visio_tools(config):
+        registry.register(tool)
     for tool in build_core_tools(registry, config):
         registry.register(tool)
     if memory is not None:
