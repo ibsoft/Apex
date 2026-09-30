@@ -236,6 +236,10 @@ export type ChatEvent =
   | { type: "memory"; action: string; detail: any }
   | { type: "terminal_opened"; terminal_id: string }
   | { type: "skills_changed" }
+  /* A task tool changed the schedule: created, edited or deleted one. The event
+     carries no row on purpose - the client re-reads the list, so a partial
+     payload can never render a task that does not exist. */
+  | { type: "task_changed"; action: string; task_id: number; title?: string }
   | { type: "sudo_password"; reason?: string }
   | { type: "github_token"; reason?: string }
   | { type: "done"; usage?: any }
@@ -410,6 +414,32 @@ export const api = {
       json<{ ok: boolean; name: string; title: string; modified_at: number; download_url: string; directory: string }>("/api/notepad/documents", {
         method: "POST",
         body: JSON.stringify(payload),
+      }),
+  },
+
+  tasks: {
+    list: () => json<{ tasks: import("./tasks").Task[] }>("/api/tasks"),
+    create: (draft: import("./tasks").TaskDraft) =>
+      json<import("./tasks").Task>("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify(draft),
+      }),
+    update: (id: number, patch: import("./tasks").TaskPatch) =>
+      json<import("./tasks").Task>(`/api/tasks/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    remove: (id: number) =>
+      json<{ ok: boolean }>(`/api/tasks/${id}`, { method: "DELETE" }),
+    runNow: (id: number) =>
+      json<{ ok: boolean; id: number; status: string }>(`/api/tasks/${id}/run`, { method: "POST" }),
+    /* Called after the browser has actually shown a completion, so an unacked
+       run is still there on the next reload and the operator is not told about a
+       result they never saw. */
+    ack: (ids: number[]) =>
+      json<{ ok: boolean }>("/api/tasks/ack", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
       }),
   },
 

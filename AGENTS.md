@@ -341,6 +341,52 @@ If you add new element types or chart types, update the skill prompt in
 `backend/skills/definitions/EDITOR.md` and add tests in
 `backend/tests/test_editor_tools.py`.
 
+## Scheduled tasks (TASKS tab)
+
+Tasks are created either by hand in the TASKS tab or by the agent, and run by a
+background thread whether or not anyone is looking at the page.
+
+- `backend/tools/cron.py` is a dependency-free five-field cron parser plus a
+  phrasing fallback. The phrasing layer is a safety net for a model that wrote
+  "every morning" instead of converting, and it is where the sharp edges are:
+  - **A schedule that is silently wrong is the one failure this must not have.**
+    `_clock_parts` reads the meridiem from a captured group. It used to test
+    `"am" in match.group(0)`, which reports *no* meridiem for `6:30 pm`, so the
+    task was set for 06:30 in the morning with no error anywhere.
+  - **`datetime.weekday()` counts Monday as 0; a cron day-of-week counts Sunday
+    as 0.** "every week" has to be expressed as a weekday, and shifting it by
+    one is the difference between a Monday run and a Tuesday run.
+  - "every week" means once a week. It used to resolve to `0 0 * * *`, so a
+    weekly summary ran every single day.
+  - A phrase that opens with a word no cron field can be is phrasing, however
+    many digits follow: the token-shape heuristic read "every weekday at 5 pm"
+    as a mistyped expression and answered "'every' is not a valid minute value".
+    `_LOOSE_START` decides the routing first.
+- An ISO string carrying `Z` or an offset is an aware datetime and is converted.
+  The browser's `toISOString()` always has a `Z`, and reading that as
+  machine-local moved a one-off by the machine's offset. `oneOffLabel()` in
+  `frontend/lib/tasks.ts` writes the local wall clock instead, which is both
+  exact and readable in the editor.
+- `backend/tools/tasks.py` holds the `TaskRunner`, the autonomous run (its own
+  conversation, normal agent tools, `TASKS_TIMEOUT_SECONDS`), the prompt context
+  and the REST routes. A run that produced a reply leaves the task `unread` until
+  it has been shown in chat, and the frontend clears that through
+  `POST /api/tasks/ack`.
+- Ownership is a SQL predicate. Another user's task must answer 404, never 403 -
+  a 403 tells a stranger the id is real.
+- `TASKS_ENABLED=false` is a real off switch: no tools, and
+  `register_task_routes` does not start the runner thread, so tasks created
+  before the flag was flipped stop firing.
+- Task tools are force-included for every skill through `ALWAYS_ON_TOOLS`, for
+  the same reason `terminal_command` is: creating a job is something the user
+  should never have to set up.
+- Local voice/text commands (list/show/run/pause/resume/delete) live in
+  `frontend/lib/commands.ts::parseTaskCommand`; anything else falls through to the
+  agent. Spoken numbers resolve against `sortTasks`, the same order the tab
+  renders. The `tasks` tab pattern yields to a destination phrase, because Greek
+  "εικονική επιφάνεια εργασίας" (virtual desktop) contains the word for task.
+- Tests: `backend/tests/test_tasks.py`, `frontend/tests/tasks.test.cjs`.
+
 ## Common extension points
 
 - New search source: add a tool in `core_tools.py` (or a new module) and expose

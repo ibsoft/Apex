@@ -110,6 +110,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.code_tools import build_code_tools
     from tools.terminal_tools import build_terminal_tools
     from tools.notepad_tools import build_notepad_tools
+    from tools.task_tools import build_task_tools
 
     for tool in build_core_tools(registry, config):
         registry.register(tool)
@@ -129,5 +130,9 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     for tool in build_terminal_tools(config):
         registry.register(tool)
     for tool in build_notepad_tools(config):
+        registry.register(tool)
+    # Empty when TASKS_ENABLED is false, which is also what removes the task
+    # tools from AgentContext.ACTIVE_TOOLS for that deployment.
+    for tool in build_task_tools(config):
         registry.register(tool)
     return registry

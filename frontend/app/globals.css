@@ -100,3 +100,16 @@ body {
 .apex-scroll ::-webkit-scrollbar-thumb:hover { background: rgba(0, 229, 255, 0.42); }
 .apex-scroll::-webkit-scrollbar-corner,
 .apex-scroll ::-webkit-scrollbar-corner { background: transparent; }
+
+/* Slim variant for boxes too small to spare 10px of chrome on: the chat
+   composer is 90px tall at its tallest, so a full-width bar there would be a
+   fifth of the input. Same theme, thinner thumb. */
+.apex-scroll-slim { scrollbar-width: thin; scrollbar-color: rgba(0, 229, 255, 0.35) rgba(10, 16, 30, 0.6); }
+.apex-scroll-slim::-webkit-scrollbar { width: 6px; height: 6px; }
+.apex-scroll-slim::-webkit-scrollbar-track { background: rgba(10, 16, 30, 0.6); }
+.apex-scroll-slim::-webkit-scrollbar-thumb {
+  background: rgba(0, 229, 255, 0.22);
+  border-radius: 3px;
+}
+.apex-scroll-slim::-webkit-scrollbar-thumb:hover { background: rgba(0, 229, 255, 0.42); }
+.apex-scroll-slim::-webkit-scrollbar-corner { background: transparent; }

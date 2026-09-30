@@ -13,6 +13,29 @@ from typing import Iterator, Optional
 from tools.base import Tool, ToolContext, ToolRegistry
 
 
+# Tools available in EVERY skill, whatever its `tools:` list says.
+#
+# notepad_control drives the live editor, terminal_command / terminal_sessions
+# let the model act on the machine, and the task tools let it schedule its own
+# future work. None of them is a specialist capability: a skill that "cannot
+# create a task" would answer "I can't schedule that" to an ordinary request,
+# and asking the operator to open a terminal first is not an acceptable answer
+# either. A deployment turns the task tools off with TASKS_ENABLED, which
+# unregisters them, so this constant is a floor and not a grant.
+ALWAYS_ON_TOOLS = frozenset({
+    "notepad_control",
+    "terminal_command",
+    "terminal_sessions",
+    "task_schedule",
+    "task_list",
+    "task_status",
+    "task_update",
+    "task_delete",
+    "task_run_now",
+    "task_index",
+})
+
+
 @dataclass
 class AgentContext:
     user_id: str
@@ -60,16 +83,7 @@ class AgentContext:
             if banned:
                 return [t for t in pool if t.name not in banned]
             return pool
-        # notepad_control drives the live editor, and the terminal tools let the
-        # model act on the machine. Both are available in EVERY skill: asking
-        # the user to open a terminal first (or a skill that simply cannot run
-        # anything) is not an acceptable answer, so terminal_command /
-        # terminal_sessions are force-included alongside notepad_control.
-        names = set(self.skill_tools) | {
-            "notepad_control",
-            "terminal_command",
-            "terminal_sessions",
-        }
+        names = set(self.skill_tools) | ALWAYS_ON_TOOLS
         return [
             t for t in self.tools.active()
             if t.name in names and t.name not in banned

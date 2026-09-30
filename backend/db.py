@@ -68,6 +68,32 @@ class Database:
                     value        TEXT,
                     updated_at   REAL
                 );
+
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id              TEXT PRIMARY KEY,
+                    user_id         TEXT NOT NULL,
+                    title           TEXT NOT NULL,
+                    prompt          TEXT NOT NULL,
+                    plan            TEXT,      -- commands the model agreed to run
+                    skill           TEXT,
+                    schedule        TEXT NOT NULL,  -- 'cron' | 'once'
+                    cron            TEXT,
+                    run_at          REAL,      -- for 'once'
+                    next_run        REAL,
+                    last_run        REAL,
+                    last_status     TEXT,      -- running | ok | error | NULL (never ran)
+                    last_output     TEXT,
+                    last_error      TEXT,
+                    runs            INTEGER DEFAULT 0,
+                    failures        INTEGER DEFAULT 0,
+                    enabled         INTEGER DEFAULT 1,
+                    unread          INTEGER DEFAULT 0,  -- a finished run the user has not seen
+                    conversation_id TEXT,      -- where the task's own turns are stored
+                    created_at      REAL,
+                    updated_at      REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
+                CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(enabled, next_run);
                 """
             )
 
@@ -214,6 +240,110 @@ class Database:
             d["meta"] = json.loads(d.get("meta") or "{}")
             out.append(d)
         return out
+
+    # ---- tasks -------------------------------------------------------------
+    # Scheduled jobs the agent runs on its own (see tools/tasks.py). `next_run`
+    # is indexed because the runner's whole job is "which rows are due", and
+    # `unread` is what lets the browser be told about a finished run exactly
+    # once, however many tabs are open.
+    TASK_COLUMNS = (
+        "title", "prompt", "plan", "skill", "schedule", "cron", "run_at",
+        "next_run", "last_run", "last_status", "last_output", "last_error",
+        "runs", "failures", "enabled", "unread", "conversation_id",
+    )
+
+    def create_task(self, user_id: str, **fields) -> dict:
+        task_id = uuid.uuid4().hex
+        now = time.time()
+        row = {
+            "id": task_id,
+            "user_id": user_id,
+            "title": (fields.get("title") or "Task").strip() or "Task",
+            "prompt": (fields.get("prompt") or "").strip(),
+            "plan": fields.get("plan") or "",
+            "skill": fields.get("skill") or "",
+            "schedule": fields.get("schedule") or "cron",
+            "cron": fields.get("cron") or "",
+            "run_at": fields.get("run_at"),
+            "next_run": fields.get("next_run"),
+            "last_run": None,
+            "last_status": None,
+            "last_output": "",
+            "last_error": "",
+            "runs": 0,
+            "failures": 0,
+            "enabled": 1 if fields.get("enabled", True) else 0,
+            "unread": 0,
+            "conversation_id": fields.get("conversation_id") or "",
+            "created_at": now,
+            "updated_at": now,
+        }
+        cols = ", ".join(row)
+        marks = ", ".join("?" for _ in row)
+        with self._lock, self._connect() as conn:
+            conn.execute(f"INSERT INTO tasks ({cols}) VALUES ({marks})", tuple(row.values()))
+        return self.get_task(task_id)
+
+    def get_task(self, task_id: str, user_id: str | None = None) -> dict | None:
+        with self._lock, self._connect() as conn:
+            if user_id is None:
+                row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            else:
+                # Ownership is a filter, not a check the caller does afterwards:
+                # a task owned by someone else must be indistinguishable from an
+                # id that does not exist (404, never 403).
+                row = conn.execute(
+                    "SELECT * FROM tasks WHERE id = ? AND user_id = ?", (task_id, user_id)
+                ).fetchone()
+        return dict(row) if row else None
+
+    def list_tasks(self, user_id: str) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE user_id = ? ORDER BY enabled DESC, next_run ASC, created_at ASC",
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_all_tasks(self) -> list[dict]:
+        """Every task regardless of owner. Only the scheduler thread uses this,
+        to re-arm rows that came due while the process was not running."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT * FROM tasks ORDER BY next_run ASC").fetchall()
+        return [dict(r) for r in rows]
+
+    def due_tasks(self, now: float, limit: int = 20) -> list[dict]:
+        """Enabled tasks whose next_run has passed. Disabled and never-scheduled
+        rows can never come out of here."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM tasks WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= ? "
+                "ORDER BY next_run ASC LIMIT ?",
+                (now, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_task(self, task_id: str, **fields) -> dict | None:
+        if not fields:
+            return self.get_task(task_id)
+        cols, vals = [], []
+        for key in self.TASK_COLUMNS:
+            if key in fields:
+                cols.append(f"{key} = ?")
+                vals.append(fields[key])
+        if not cols:
+            return self.get_task(task_id)
+        cols.append("updated_at = ?")
+        vals.append(time.time())
+        vals.append(task_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(f"UPDATE tasks SET {', '.join(cols)} WHERE id = ?", vals)
+        return self.get_task(task_id)
+
+    def delete_task(self, task_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        return bool(cur.rowcount)
 
 
 # ---- settings --------------------------------------------------------
