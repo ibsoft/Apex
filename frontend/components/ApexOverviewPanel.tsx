@@ -182,6 +182,17 @@ export default function ApexOverviewPanel() {
       {/* clock + weather inside the lit cone */}
       <div style={{ paddingLeft: 14, paddingTop: 6, width: "fit-content", pointerEvents: "auto" }}>
         <Clock />
+        <div style={{
+          marginTop: 14, paddingTop: 10, width: "fit-content", maxWidth: "calc(100vw - 48px)",
+          borderTop: `1px solid ${ACCENT}33`,
+          fontFamily: "var(--font-mono)", fontSize: "clamp(10px, 2.6vw, 12px)",
+          letterSpacing: "0.08em", lineHeight: 1.6,
+          color: "rgba(165,243,252,0.8)", textShadow: `0 0 16px ${ACCENT}44`,
+        }}>
+          <span style={{ fontWeight: 700, letterSpacing: "0.2em", color: "#e0fbff", textShadow: `0 0 12px ${ACCENT}88` }}>APEX</span>
+          <span style={{ color: `${ACCENT}88` }}> - </span>
+          <span style={{ fontStyle: "italic" }}>Ghost in a shell</span>
+        </div>
 
         {/* tiles - appear when the lamp is lit */}
         {open && (

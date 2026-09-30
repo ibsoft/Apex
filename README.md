@@ -763,7 +763,7 @@ in general chat, or select the **VISIO** skill. Each request captures one fresh
 frame from a camera attached to the Linux APEX host, releases the device, and
 sends the frame to the selected provider for scene/object description.
 Availability queries only enumerate devices. There is no continuous capture.
-APEX keeps frames in memory and does not save them to files or conversation
+For scene descriptions, APEX keeps frames in memory and does not save them to files or conversation
 history; descriptions are ordinary chat/tool results. The selected provider's
 data handling still applies to frames it receives.
 
@@ -777,3 +777,16 @@ request cannot be recalled.
 VISIO describes visible features but does not identify people, store biometric
 templates, or recognize faces on later visits. It can use the existing text
 memory tools to remember names or notes explicitly supplied by the user.
+
+
+To save photos, ask **“Take a snapshot and save it to Pictures”** or **“Take 3
+snapshots and save them to Picture folder.”** VISIO's `save` action captures
+1–10 fresh frames and writes uniquely named JPEGs to the signed-in local system
+account's Pictures folder. It respects `XDG_PICTURES_DIR` in that account's
+`~/.config/user-dirs.dirs` when the folder resolves inside their home; otherwise
+the default is `~/Pictures`. An external or home-root Pictures destination is
+rejected. The backend needs write access to this folder. Unknown/nonlocal
+accounts cannot save into the service account's home. Saved photos are retained
+until you delete them; existing files are never overwritten. Saving requires
+VISIO enabled but does not require a vision model or upload frames. Responses
+include the exact saved paths and count, including any partial success.

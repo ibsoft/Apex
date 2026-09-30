@@ -56,6 +56,6 @@ export default function VisioSettings() {
     </label>
     <button type="button" style={control} disabled={busy} onClick={() => void detect()}>{busy ? "Detecting…" : "Detect cameras"}</button>
     {status && <span role="status">{status}</span>}
-    <span style={{ fontSize: 11, lineHeight: 1.5 }}>Uses a camera attached to the APEX server. Ask “What do you see now?” to capture one frame and send it to the selected provider. APEX does not save snapshots. Face identification and face memory are not supported.</span>
+    <span style={{ fontSize: 11, lineHeight: 1.5 }}>Uses a camera attached to the APEX server. Ask “What do you see now?” to capture one frame and send it to the selected provider. To save JPEGs to your Pictures folder, ask “Take 3 snapshots and save them to Pictures.” Saving does not use a vision model. Face identification and face memory are not supported.</span>
   </SettingsCard>;
 }
