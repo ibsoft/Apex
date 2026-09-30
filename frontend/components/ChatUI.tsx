@@ -12,6 +12,7 @@ import { api } from "../lib/api";
 import { CHAT_INPUT_EVENT, PANEL_EVENT, type PanelTabName } from "../lib/panelBridge";
 import FileDownloads, { backendFileHref } from "./FileDownloads";
 import AppsPanel from "./AppsPanel";
+import TasksPanel from "./TasksPanel";
 
 const C = {
   cyan: "#00e5ff",
@@ -434,17 +435,20 @@ function ProfileMenu({
   );
 }
 
-const TAB_FROM_COMMAND: Record<PanelTabName, "chat" | "hist" | "settings" | "memory" | "apps"> = {
+type Tab = "chat" | "hist" | "settings" | "memory" | "apps" | "tasks";
+
+const TAB_FROM_COMMAND: Record<PanelTabName, Tab> = {
   chat: "chat",
   history: "hist",
   settings: "settings",
   memory: "memory",
   apps: "apps",
+  tasks: "tasks",
 };
 
 export default function ChatUI() {
   const a = useApex();
-  const [tab, setTab] = useState<"chat" | "hist" | "settings" | "memory" | "apps">("chat");
+  const [tab, setTab] = useState<Tab>("chat");
   const [menuOpen, setMenuOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [collapsed, setCollapsed] = useState(a.chatCollapsed);
@@ -453,6 +457,7 @@ export default function ChatUI() {
   }, [collapsed, a.setChatCollapsed]);
   const [histOpen, toggleHist] = useState(false);
   const [memSearch, setMemSearch] = useState("");
+  const unreadTasks = a.tasks.filter((t) => t.unread).length;
   const [memNote, setMemNote] = useState("");
   const [memResults, setMemResults] = useState<null | any[]>(null);
   const [memFiles, setMemFiles] = useState<FileList | null>(null);
@@ -689,7 +694,7 @@ export default function ChatUI() {
 
           {/* tabs */}
           <nav style={{ display: "flex", borderBottom: `1px solid ${C.line}` }}>
-            {(["chat", "hist", "settings", "memory", "apps"] as const).map((t) => (
+            {(["chat", "hist", "tasks", "settings", "memory", "apps"] as const).map((t) => (
               <button key={t} onClick={() => setTab(t)}
                 style={{
                   flex: 1, padding: "9px 4px", fontSize: 9.5, letterSpacing: "0.14em", cursor: "pointer",
@@ -699,6 +704,11 @@ export default function ChatUI() {
                   border: "none", borderBottom: tab === t ? `2px solid ${C.cyan}` : "2px solid transparent",
                 }}>
                 {t === "hist" ? "history" : t}
+                {/* An unread count on the tab itself: a run that finished at
+                    03:00 has to be visible before the panel is even opened. */}
+                {t === "tasks" && unreadTasks > 0 && (
+                  <span style={{ marginLeft: 4, color: C.gold }}>({unreadTasks})</span>
+                )}
               </button>
             ))}
           </nav>
@@ -775,6 +785,7 @@ export default function ChatUI() {
                   <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
                     <textarea
                       ref={inputRef}
+                      className="apex-scroll-slim"
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => {
@@ -1015,6 +1026,8 @@ export default function ChatUI() {
             )}
 
             {tab === "apps" && <AppsPanel />}
+
+            {tab === "tasks" && <TasksPanel />}
           </div>
         </aside>
       )}

@@ -21,7 +21,7 @@
    signed-out session, a crash in the panel) the caller gets a truthful message
    instead of hanging.
  */
-export type PanelTabName = "chat" | "history" | "settings" | "memory" | "apps";
+export type PanelTabName = "chat" | "history" | "settings" | "memory" | "apps" | "tasks";
 
 export type PanelCommand = { action: "open" | "close" | "toggle"; tab?: PanelTabName };
 export type ChatInputCommand = { action: "write" | "send"; text?: string };

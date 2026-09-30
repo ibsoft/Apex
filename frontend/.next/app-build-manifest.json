@@ -12,7 +12,7 @@
       "static/chunks/4bd1b696-bc828aaa2d7dacea.js",
       "static/chunks/684-2ab9f3bd227e075a.js",
       "static/chunks/main-app-626937ad4b993850.js",
-      "static/css/5f82303f59fb5e0a.css",
+      "static/css/2fc1d9e87069c273.css",
       "static/chunks/app/layout-8e0e54ac52fff843.js"
     ],
     "/api/weather/route": [
@@ -29,7 +29,7 @@
       "static/chunks/main-app-626937ad4b993850.js",
       "static/css/d9387b9eabd1a637.css",
       "static/chunks/e868780c-7e5d3ebb849681ea.js",
-      "static/chunks/app/page-c2b39fa7bb325245.js"
+      "static/chunks/app/page-f2fc515e331d84ee.js"
     ]
   }
 }

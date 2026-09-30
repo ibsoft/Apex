@@ -31,6 +31,14 @@ export type LocalCommand =
   | { type: "chatinput"; action: "write" | "send"; text?: string }
   | { type: "lock"; action: "lock" }
   | { type: "signout" }
+  /* Scheduled tasks. `list`/`show`/`run`/`pause`/`resume`/`delete` are
+     deterministic - the operator asked for one of five things to happen to a
+     numbered row, so spending a model turn on it is pure latency. `target` is
+     the number as spoken (or -1 for "the last one"), which is the same index
+     the TASKS tab shows. Creation is deliberately NOT here: "every morning
+     check the disk" has to reach the agent, which turns it into a schedule. */
+  | { type: "task"; action: "list" | "show" | "run" | "pause" | "resume" | "delete" | "open";
+      target?: number; filter?: "all" | "running" | "paused" | "enabled" | "error" }
   | { type: "skill"; skill: string; rest: string };
 
 
@@ -627,23 +635,50 @@ function parseDesktopNumber(token: string): number | null {
  * through to the agent: "close panel" is not a question, and routing it to the
  * model would spend a turn (and tokens) to accomplish nothing.
  */
-export type PanelTabName = "chat" | "history" | "settings" | "memory" | "apps";
+/* The tab list is defined once, in panelBridge, and re-exported here. It used to
+   be spelled out in both files, which is how the TASKS tab ended up missing
+   from the panel while the parser knew the word: the parser and the panel that
+   renders the tabs are the same concept and must be the same union. */
+export type { PanelTabName } from "./panelBridge";
+import type { PanelTabName } from "./panelBridge";
 
 /* Ordered, most specific first. "chat history" contains "chat", so a naive
    scan would open the chat tab when the operator asked for the history; and the
    whole list is a subset check, not equality, so "chat history" and "tools"
-   still resolve. */
+   still resolve.
+   "εργασι" is in the tasks pattern, which is why the desktop phrases that also
+   contain it are excluded from the tasks pattern below: Greek "εικονικη
+   επιφανεια εργασιας" is a VIRTUAL DESKTOP, and matching it as a tab request
+   would stop "πήγαινε στην εικονικη επιφανεια εργασιας 2" from ever reaching
+   the desktop parser. Desktop wins for that phrase; the two are genuinely
+   ambiguous in Greek and the pre-existing behaviour is the safer one. */
 const PANEL_TAB_PATTERNS: Array<[PanelTabName, RegExp]> = [
   ["history", /history|chat\s*history|archive|past\s*chats?|ιστορικ|αρχειοθετημ/],
   ["settings", /settings|preference|config|options|ρυθμισ|προτιμησ/],
   ["memory", /memor|memories|μνημ|ισχνομνι/],
+  // A virtual desktop IS a workspace, and the Greek word for it (εικονικη επιφανεια
+  // εργασιας) contains the word for task. "go to virtual desktop 1" must reach
+  // the desktop parser, so the tab patterns yield to an explicit destination
+  // phrase - see tabFromWords.
+  ["tasks", /task|job|schedul|εργασι|εργασιων/],
   ["apps", /app|application|tool|widget|εφαρμογ|εργαλει/],
   ["chat", /chat|conversation|message|συνομιλ|μηνυμ|συνομιλι/],
 ];
 
+/* Destinations that are NOT tabs. The panel parser's "go to <destination>" arm
+   captures free text and maps it through tabFromWords, so without this guard
+ * "go to virtual desktop 1" resolves to the TASKS tab (επιφανεια εργασιας
+   contains εργασι) and the desktop parser never sees it. Everything listed here
+ * is a real destination the window/desktop layer owns. */
+const PANEL_DESTINATION_WORDS = /desktop|workspace|παραθυρ|window|εικονικ|επιφανει|εργασι/;
+
 function tabFromWords(words: string): PanelTabName | null {
   const norm = normalize(words);
   for (const [tab, pattern] of PANEL_TAB_PATTERNS) {
+    // Skip tabs whose keyword is also part of a non-tab destination. Only the
+    // bare form reaches the panel ("open tasks"), never "go to ... tasks ..."
+    // where the trailing words carry the real meaning.
+    if (tab === "tasks" && PANEL_DESTINATION_WORDS.test(norm)) continue;
     if (pattern.test(norm)) return tab;
   }
   return null;
@@ -873,6 +908,162 @@ function parseDesktopCommand(text: string, greek: boolean): LocalCommand | null 
   return null;
 }
 
+/* ---- scheduled tasks ----
+ *
+ * Every pattern here is anchored at BOTH ends. That is the whole safety story
+ * of this parser: it runs on every utterance the operator types or says, and
+ * the ones that must reach the agent are exactly the ones containing the word
+ * "task" ("every morning check the disk, make it a task", "what would you
+ * schedule?"). A substring match would swallow all of them and the agent would
+ * never see a task request at all, so creation is left to the model on purpose
+ * and only the closed-class verbs (list, run, pause, resume, delete) are
+ * handled here.
+ */
+const TASK_NUMBER_WORDS: Record<string, number> = {
+  one: 1, first: 1, two: 2, second: 2, three: 3, third: 3, four: 4, fourth: 4,
+  five: 5, fifth: 5, six: 6, sixth: 6, seven: 7, seventh: 7, eight: 8, eighth: 8,
+  nine: 9, ninth: 9, ten: 10, tenth: 10,
+  ενα: 1, ενασ: 1, πρωτο: 1, πρωτη: 1, δυο: 2, δευτερο: 2, δευτερη: 2,
+  τρια: 3, τρεις: 3, τριτο: 3, τριτη: 3, τεσσερα: 4, τεσσερις: 4, τεταρτο: 4, τεταρτη: 4,
+  πεντε: 5, πεμπτο: 5, εξι: 6, εκτο: 6, επτα: 7, εβδομο: 7, οκτω: 8, ογδο: 8,
+  εννεα: 9, ενατο: 9, δεκα: 10, δεκατο: 10,
+};
+
+/* "the last one" is -1: the provider resolves it against the loaded list, which
+   is the only place that knows how many tasks there are. */
+const TASK_LAST_WORDS = /(?:last|latest|final|τελευται|τελευταιο)/;
+const TASK_NUM = `(?:\\d+|${Object.keys(TASK_NUMBER_WORDS).join("|")})`;
+
+function taskNumber(token: string | undefined): number | null {
+  if (!token) return null;
+  const t = token.trim().toLowerCase();
+  if (/^\d+$/.test(t)) return Number(t);
+  if (TASK_NUMBER_WORDS[t] !== undefined) return TASK_NUMBER_WORDS[t];
+  return null;
+}
+
+/** "running", "broken", "paused" -> the badge filter the tab renders.
+ *
+ * Leading filler is stripped first: the adjective-first pattern captures
+ * whatever sits between the verb and the noun, so "show the paused tasks"
+ * arrives here as "the paused", and an article left in place would turn a
+ * real filter into "all" - the operator would be told about every task. */
+function taskFilter(word: string | undefined): "all" | "running" | "paused" | "enabled" | "error" {
+  const w = (word || "").toLowerCase()
+    .replace(/^(?:the|my|all|of|that|are|is|τα|τη|την|τισ|μου)\s+/, "")
+    .trim();
+  if (/^(?:running|active|going|busy|current)|^(?:τρεχ|ενεργ|ισχυρα|τωρα)/.test(w)) return "running";
+  if (/^(?:paused|on\s+hold|suspended|stopped)|^(?:παυ|σταματημεν|αναστολ)/.test(w)) return "paused";
+  if (/^(?:broken|failing|failed|error|errors)|^(?:σφαλμ|χαλασμ|αποτυχ)/.test(w)) return "error";
+  if (/^(?:enabled|scheduled|upcoming|planned)|^(?:ενεργοποιημεν|προγραμματισμεν)/.test(w)) return "enabled";
+  return "all";
+}
+
+/* Verb alternations, English and Greek side by side so a new action is one line
+   instead of two. Greek is matched in its normalized form (accents stripped,
+   final sigma folded), so it is written without accents and with the accented
+   form spelled out for final-sigma positions. The noun is open-ended because
+   Greek inflects it freely: "εργασια", "εργασιεσ", "εργασιων", "εργασιασ". */
+const TASK_VERBS = {
+  list: "list|show|display|see|view|browse|read|open|give|tell|which|what(?:'s| is| are)?|ποια|ποιεσ|ποιο|τι\\s+(?:ειναι|εχει)|δειξε|δειξου|εμφανισε|λιστα",
+  open: "open|show|view|browse|go\\s+to|switch\\s+to|jump\\s+to|navigate\\s+to|take\\s+me\\s+to|ανοιξε|δειξε|πηγαινε\\s+στ",
+  run: "run|start|execute|trigger|fire|launch|τρεξε|τρεξτου|ξεκινα|εκτελεσε",
+  pause: "pause|stop|hold|suspend|freeze|disable|παυση|παυσε|σταματα|σταματησε|κρυψε|αναστολη",
+  resume: "resume|unpause|enable|activate|restart|re-?enable|unsuspend|συνεχισε|συνεχιση|ενεργοποιησε|ξαναενεργοποιησε",
+  delete: "delete|remove|cancel|drop|get\\s+rid\\s+of|forget|διαγραψε|διεγραψε|αφαιρεσε|καταργησε",
+  show: "what(?:'s| is| are)?|which|tell\\s+me\\s+about|show|check|describe|read|τι\\s+(?:ειναι|κανει|εκανε|εχει)|δειξε|πες\\s+μου|εξηγησε",
+} as const;
+
+const TASK_NOUN = "(?:tasks?|jobs?|εργασι[\\p{L}]*)";
+/* "the task", "my second task", "η εργασία" - all optional filler. */
+const TASK_OBJ = "(?:the\\s+|my\\s+|τ(?:η|ο|ην|ησ|οσ|ων|εσ|ια)ς?\\s+|μου\\s+|η\\s+|ο\\s+)?";
+/* The number can sit on either side of the noun, because a dictated "run the
+   last task" is far more natural than "run task last", and "run task 2" is the
+   natural form of the same request. Three branches, three named groups; the
+   caller reads whichever one matched. */
+const TASK_REF = `(?:${[
+  `(?:(?<before>${TASK_NUM}|${TASK_LAST_WORDS.source})\\s+${TASK_NOUN})`,
+  `(?:${TASK_NOUN}\\s+(?<after>${TASK_NUM}|${TASK_LAST_WORDS.source}))`,
+  `(?:(?<bare>${TASK_NUM}|${TASK_LAST_WORDS.source}))`,
+].join("|")})`;
+
+/** The one number a reference matched, whichever order the words came in. */
+function taskRefNumber(m: RegExpMatchArray): number {
+  const groups = m.groups ?? {};
+  return taskNumber(groups.before ?? groups.after ?? groups.bare) ?? -1;
+}
+
+function alt(key: keyof typeof TASK_VERBS): string {
+  return `(?:${TASK_VERBS[key]})`;
+}
+
+export function parseTaskCommand(text: string, greek: boolean): LocalCommand | null {
+  const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
+  if (!clean) return null;
+  const norm = normalize(clean);
+  // Greek-only alternations are always tried: `normalize()` has folded the
+  // accents away, so a Greek utterance is recognisable whatever the UI
+  // language is set to, which is the same rule the rest of this file follows.
+  void greek;
+
+  // A filter narrows the list: "what tasks are running" must not answer with
+  // the six paused ones, because that is a different question.
+  // Every Greek literal below is written in its NORMALIZED spelling: normalize()
+  // folds U+03C2 to U+03C3 everywhere, not only word-finally, so "τις" reaches
+  // the matcher as "τισ" and the accented-original form silently fails.
+  const filtered = norm.match(new RegExp(
+    `^(?:${alt("list")})\\s+(?:me\\s+)?(?:my\\s+|the\\s+|τισ\\s+|την\\s+|τ\\s+)?${TASK_NOUN}\\s+(?:that\\s+are\\s+|currently\\s+|are\\s+|που\\s+(?:τρεχουν|εχουν|ειναι)\\s+)?([\\p{L}\\s-]+?)$`, "u"));
+  if (filtered) {
+    const filter = taskFilter(filtered[1]);
+    if (filter !== "all") return { type: "task", action: "list", filter };
+  }
+
+  // The same question with the filter in front of the noun: "show the paused
+  // tasks", "list broken tasks". The capture is everything between the verb and
+  // the noun, so an unrecognised word ("show my tasks") falls through to the
+  // plain list instead of being answered with the wrong subset.
+  const filteredFirst = norm.match(new RegExp(
+    `^(?:${alt("list")})\\s+(?:me\\s+)?([\\p{L}\\s-]+?)\\s+(?:my\\s+|the\\s+|τισ\\s+|την\\s+)?${TASK_NOUN}$`, "u"));
+  if (filteredFirst) {
+    const filter = taskFilter(filteredFirst[1]);
+    if (filter !== "all") return { type: "task", action: "list", filter };
+  }
+
+  // list everything / open the tab
+  const list = norm.match(new RegExp(
+    `^(?:${alt("list")})?\\s*(?:me\\s+)?(?:my\\s+|the\\s+|all\\s+|all\\s+of\\s+my\\s+|of\\s+my\\s+|τισ\\s+|την\\s+|το\\s+|τ\\s+)?${TASK_NOUN}(?:\\s+(?:list|tab|panel|page|please|λιστα|πινακα))?(?:\\s+μου)?$`, "u"));
+  if (list) {
+    // "show the tasks tab" and "open tasks" are an intent to see the panel;
+    // "show tasks" and a bare "tasks" are a question. The named destination
+    // ("tab", "panel") is the unambiguous signal and a leading open/browse is
+    // the other - "show" alone is deliberately NOT one, because "show tasks"
+    // and "show the tasks tab" are both things an operator says.
+    const first = norm.split(/\s+/)[0] ?? "";
+    const wantsTab = /(?:^|\s)(?:tab|panel|page|πινακα)$/.test(norm)
+      || /^(?:open|browse|view|go|switch|navigate|ανοιξε|πηγαινε)/.test(first);
+    return wantsTab ? { type: "task", action: "open" } : { type: "task", action: "list", filter: "all" };
+  }
+
+  /* The number may sit on either side of the noun ("task 2", "the second
+     task"), so both capture groups are consulted; whichever matched is it. */
+  const act = (action: "run" | "pause" | "resume" | "delete", tail = "") => {
+    const m = norm.match(new RegExp(`^${alt(action)}\\s+${TASK_OBJ}${TASK_REF}${tail}$`, "u"));
+    if (!m) return null;
+    return { type: "task", action, target: taskRefNumber(m) } as LocalCommand;
+  };
+
+  return act("delete") ?? act("pause") ?? act("resume")
+    // "run task 2 now" - the "now" is optional noise, not a different action.
+    ?? act("run", "(?:\\s+(?:now|right\\s+now|immediately|please|τωρα|αμεσα|αμεσως))?")
+    // "status of task 2", "what is task 2", "task 2 status"
+    ?? (() => {
+      const m = norm.match(new RegExp(
+        `^(?:${alt("show")})?\\s*${TASK_OBJ}(?:status\\s+(?:of\\s+)?|κατασταση\\s+(?:της\\s+)?)?${TASK_REF}(?:\\s+(?:status|state|κατασταση))?$`, "u"));
+      if (!m) return null;
+      return { type: "task", action: "show", target: taskRefNumber(m) } as LocalCommand;
+    })();
+}
+
 export function parseLocalCommand(text: string, language: string, skills: Array<{ name: string }>, now = Date.now()): LocalCommand | null {
   const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
   if (!clean) return null;
@@ -880,6 +1071,11 @@ export function parseLocalCommand(text: string, language: string, skills: Array<
   const normalized = normalize(clean);
   const notepad = parseNotepadCommand(text.trim(), greek);
   if (notepad) return notepad;
+  // Before the panel parser: "show tasks" must answer the question, not just
+  // switch tabs (the local handler opens the tab as well), and "run task 2"
+  // would otherwise be read as a request to open something called "2".
+  const task = parseTaskCommand(clean, greek);
+  if (task) return task;
   // Shell commands first: "close panel" and "lock" are actions, not requests.
   const panel = parsePanelCommand(clean, greek);
   if (panel) return panel;

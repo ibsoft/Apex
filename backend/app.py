@@ -153,6 +153,7 @@ from models.embedders import EmbeddingManager
 from models.providers import ProviderError, ProviderManager
 from skills.manager import get_skill_manager, route_skill
 from soul import normalize_soul, soul_prompt_block
+from tools.tasks import task_context_block
 from tools.memory_tools import memory_prompt_block
 
 
@@ -433,6 +434,7 @@ def create_app() -> Flask:
     from tools.terminal_server import register_terminal_routes
     from tools.filebrowser import register_filebrowser_routes
     from tools.notepad import register_notepad_routes
+    from tools.tasks import register_task_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
@@ -444,6 +446,9 @@ def create_app() -> Flask:
     register_terminal_routes(app, require_user, config)
     register_filebrowser_routes(app, require_user, config)
     register_notepad_routes(app, require_user, config)
+    # Registers the Tasks tab's REST surface and starts the runner thread that
+    # fires due tasks. A no-op when TASKS_ENABLED is false.
+    register_task_routes(app, require_user, config)
 
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""
@@ -1364,6 +1369,15 @@ def create_app() -> Flask:
         window_context = str(data.get("window_context") or "").strip()
         if window_context:
             system_prompt = system_prompt.rstrip() + "\n\n" + window_context
+
+        # What the model has scheduled and how the last runs went. The runs
+        # happen on a background thread with no browser attached, so nothing in
+        # this conversation's history mentions them - without this block the
+        # model cannot answer "did the disk check run?" or notice a task that
+        # has been failing every night.
+        task_context = task_context_block(uid, db)
+        if task_context:
+            system_prompt = system_prompt.rstrip() + "\n\n" + task_context
 
         if think_hard_note:
             system_prompt += "\n\n" + think_hard_note

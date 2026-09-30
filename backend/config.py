@@ -192,6 +192,32 @@ class Config:
     RUN_SHELL_TIMEOUT = _int("RUN_SHELL_TIMEOUT", 60)
     MAX_TOOL_STEPS = _int("MAX_TOOL_STEPS", 12)
 
+    # --- Scheduled tasks ----------------------------------------------------
+    # Cron-backed jobs the agent creates and runs on its own (see
+    # tools/tasks.py). TASKS_ENABLED is the master switch: when it is false the
+    # task tools are never registered, the /api/tasks routes answer 403 and the
+    # runner never starts, so a deployment can have none of it.
+    TASKS_ENABLED = _bool("TASKS_ENABLED", True)
+    # How often the runner thread asks the database which tasks are due. Short
+    # enough that "in 2 minutes" fires when the operator expects, long enough
+    # that an idle backend is not asking SQLite questions in a tight loop.
+    TASKS_TICK_SECONDS = _int("TASKS_TICK_SECONDS", 20)
+    # How many task turns may run at the same time process-wide. One by default:
+    # each run is a full agent turn with tools, and a laptop waking from sleep
+    # with a week of backlog must not fire all of them at once.
+    TASKS_MAX_CONCURRENT = _int("TASKS_MAX_CONCURRENT", 1)
+    # Hard ceiling on one task turn. A provider that never answers would
+    # otherwise hold a concurrency slot for ever and the task would sit in
+    # `running` with nobody left to notice.
+    TASKS_TIMEOUT_SECONDS = _int("TASKS_TIMEOUT_SECONDS", 600)
+    # Turns of the task's own conversation replayed as context, so a run can see
+    # what the previous ones found.
+    TASKS_HISTORY_WINDOW = _int("TASKS_HISTORY_WINDOW", 20)
+    TASKS_MAX_PER_USER = _int("TASKS_MAX_PER_USER", 50)
+    # Give a task one run on startup if its moment passed while the backend was
+    # down, instead of silently skipping it. Only ever once per gap.
+    TASKS_CATCH_UP = _bool("TASKS_CATCH_UP", True)
+
     # --- Web search --------------------------------------------------------
     # These are configurable so the search tool does not rely on hardcoded
     # endpoints. Defaults use DuckDuckGo's HTML form endpoint.

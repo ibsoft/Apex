@@ -48,6 +48,17 @@ import {
   type PanelTabName,
 } from "../lib/commands";
 import {
+  describeOneTask,
+  describeTasks,
+  filterTasks,
+  resolveTarget,
+  sortTasks,
+  taskNotification,
+  type Task,
+  type TaskDraft,
+  type TaskPatch,
+} from "../lib/tasks";
+import {
   AppWindow,
   MAX_WINDOWS,
   WindowArrangement,
@@ -127,6 +138,17 @@ type ApexContextType = {
   chatCollapsed: boolean;
   timers: TimerItem[];
   reminders: ReminderItem[];
+  /* Scheduled tasks. The provider owns the list, the poll and the completion
+     notice; the panel is a view over them plus the manual editor. */
+  tasks: Task[];
+  tasksError: string | null;
+  tasksLoading: boolean;
+  loadTasks: () => Promise<void>;
+  createTask: (draft: TaskDraft) => Promise<Task>;
+  updateTask: (id: number, patch: TaskPatch) => Promise<Task>;
+  deleteTask: (id: number) => Promise<void>;
+  runTaskNow: (id: number) => Promise<void>;
+  clearTaskNotice: (id: number) => void;
   operator: { name?: string; declaredAt: number } | null;
   silencedUntil: number;
   sudoPrompt: { reason?: string } | null;
@@ -185,6 +207,10 @@ export const useApex = () => {
 };
 
 let msgSeq = 0;
+/* How often the TASKS tab asks the backend what changed. Kept in step with
+   TASKS_TICK_SECONDS (20s) so the tab shows a run that just became due at
+   roughly the moment it fired, rather than up to a full tick later. */
+const TASKS_POLL_MS = 20000;
 const mkMsg = (role: Message["role"], content: string, extra: Partial<Message> = {}): Message => ({
   id: `m${Date.now().toString(36)}_${msgSeq++}`,
   role,
@@ -244,6 +270,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const [timers, setTimers] = useState<TimerItem[]>([]);
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
+  /* Scheduled tasks. `tasksRef` is the mirror the local command handler reads:
+     executeLocalCommand is called from the voice path and a ref read there must
+     not be a stale closure over a list the last render had. */
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const tasksRef = useRef<Task[]>([]);
+  tasksRef.current = tasks;
+  const [tasksError, setTasksError] = useState<string | null>(null);
+  const [tasksLoading, setTasksLoading] = useState(false);
   const [operator, setOperator] = useState<{ name?: string; declaredAt: number } | null>(null);
   const [silencedUntil, setSilencedUntil] = useState<number>(0);
   const silencedUntilRef = useRef(silencedUntil);
@@ -319,6 +353,128 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setMemory(m.entries ?? []);
   }, []);
 
+  /* ---------- scheduled tasks ----------
+   *
+   * A run happens on a backend thread with no browser attached, so the tab
+   * cannot learn about it from the chat stream. It polls, and the poll is the
+   * only thing that turns a finished run into something the operator sees. That
+   * makes the poll load-bearing rather than a nicety: without it a task could
+   * succeed at 03:00 and the only way to know would be to open the tab.
+   *
+   * Completion is announced once and then acknowledged server-side. `seenRef`
+   * holds the run stamps already reported in this session, so a poll that
+   * overlaps another poll (React re-render, StrictMode double-mount) cannot
+   * post the same result into chat twice - the user would get a duplicate
+   * message and the ack would race the second one. */
+  const seenRunsRef = useRef<Set<number>>(new Set());
+
+  /* Post a finished run into the active conversation. Client-side only: the
+     task's real output is already persisted in the task's own conversation, and
+     writing a second copy into the operator's chat thread would make the
+     database disagree with what is on screen. */
+  const pushSystemMessage = useCallback((content: string) => {
+    const convId = activeIdRef.current;
+    if (!convId) return;
+    setByConv((m) => ({
+      ...m,
+      [convId]: [...(m[convId] ?? []), mkMsg("system", content)],
+    }));
+  }, []);
+
+  const refreshTasks = useCallback(async (knownUser = userRef.current) => {
+    if (!knownUser) return;
+    const data = await api.tasks.list().catch(() => null);
+    if (!data) return;
+    setTasksError(null);
+    setTasks(data.tasks ?? []);
+  }, []);
+
+  /* Report runs the operator has not seen yet, then ack them. The ack is sent
+     after the message is in the conversation, never before: acking first and
+     crashing would lose the result permanently, while acking late at worst
+     repeats a message on the next reload. */
+  const announceFinishedRuns = useCallback((list: Task[]) => {
+    const fresh = list.filter(
+      (t) => t.unread && t.last_run && !seenRunsRef.current.has(t.last_run * 1000 + t.id),
+    );
+    if (!fresh.length) return;
+    for (const task of fresh) seenRunsRef.current.add(task.last_run! * 1000 + task.id);
+    for (const task of fresh) {
+      pushSystemMessage(taskNotification(task, commandLanguage()));
+    }
+    void api.tasks.ack(fresh.map((t) => t.id)).catch(() => {});
+  }, []);
+
+  const loadTasks = useCallback(async () => {
+    setTasksLoading(true);
+    try {
+      const data = await api.tasks.list();
+      setTasksError(null);
+      setTasks(data.tasks ?? []);
+      announceFinishedRuns(data.tasks ?? []);
+    } catch (err) {
+      setTasksError(err instanceof Error ? err.message : "Could not load tasks.");
+    } finally {
+      setTasksLoading(false);
+    }
+  }, [announceFinishedRuns]);
+
+  const createTask = useCallback(async (draft: TaskDraft) => {
+    const task = await api.tasks.create(draft);
+    setTasks((prev) => [...prev, task]);
+    return task;
+  }, []);
+
+  const updateTask = useCallback(async (id: number, patch: TaskPatch) => {
+    const task = await api.tasks.update(id, patch);
+    setTasks((prev) => prev.map((t) => (t.id === id ? task : t)));
+    return task;
+  }, []);
+
+  const deleteTask = useCallback(async (id: number) => {
+    await api.tasks.remove(id);
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const runTaskNow = useCallback(async (id: number) => {
+    await api.tasks.runNow(id);
+    // The result arrives on the next poll, not in this response: the run is a
+    // whole agent turn and the request returns as soon as it is claimed.
+    return loadTasks();
+  }, [loadTasks]);
+
+  const clearTaskNotice = useCallback((id: number) => {
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, unread: false } : t)));
+    void api.tasks.ack([id]).catch(() => {});
+  }, []);
+
+  /* The poll. Only while signed in, and it pauses while the tab is hidden: a
+     backgrounded tab is not a place to spend a request every 20 seconds, and
+     the unread flag is persisted precisely so a result waiting for hours is
+     still there when the tab comes back. */
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled || document.hidden) return;
+      const data = await api.tasks.list().catch(() => null);
+      if (cancelled || !data) return;
+      setTasksError(null);
+      setTasks(data.tasks ?? []);
+      announceFinishedRuns(data.tasks ?? []);
+    };
+    const timer = setInterval(() => void poll(), TASKS_POLL_MS);
+    const onVisible = () => {
+      if (!document.hidden) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [user, announceFinishedRuns]);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -360,12 +516,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       // The shell should not be blocked by optional history or memory data.
       setLoading(false);
       if (me?.ok && me.user) {
-        void Promise.all([refreshConvos(me.user), refreshMemory(me.user)]);
+        void Promise.all([refreshConvos(me.user), refreshMemory(me.user), refreshTasks(me.user)]);
       }
     } catch {
       setLoading(false);
     }
-  }, [refreshConfig, refreshConvos, refreshMemory]);
+  }, [refreshConfig, refreshConvos, refreshMemory, refreshTasks]);
 
   useEffect(() => {
     void refresh();
@@ -408,11 +564,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     if (me?.ok && me.user) {
       setUser(me.user);
       setSettings(me.settings ?? {});
-      void Promise.all([refreshConvos(me.user), refreshMemory(me.user)]);
+      void Promise.all([refreshConvos(me.user), refreshMemory(me.user), refreshTasks(me.user)]);
     } else {
       setUser(null);
     }
-  }, [refreshConvos, refreshMemory]);
+  }, [refreshConvos, refreshMemory, refreshTasks]);
 
   const unlock = useCallback(async (password: string) => {
     await auth.unlock(password);
@@ -1238,6 +1394,60 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         }
         return null;
       }
+      case "task": {
+        const list = sortTasks(tasksRef.current);
+        const noTasks = localize("You have no scheduled tasks.", "Δεν έχεις εργασίες σε αναμονή.");
+        // "show tasks" both answers the question and reveals the tab, because
+        // the spoken answer names rows the operator cannot otherwise see.
+        if (command.action === "open") {
+          setChatCollapsedState(false);
+          return await sendPanelCommand({ action: "open", tab: "tasks" });
+        }
+        if (command.action === "list") {
+          const shown = filterTasks(list, command.filter);
+          setChatCollapsedState(false);
+          await sendPanelCommand({ action: "open", tab: "tasks" });
+          return shown.length ? describeTasks(shown, commandLanguage()) : noTasks;
+        }
+        const target = resolveTarget(list, command.target);
+        if (!target) {
+          const which = command.target === -1
+            ? localize("There are no tasks to do that to.", "Δεν υπάρχουν εργασίες για να το κάνω.")
+            : localize(`There is no task #${command.target}. You have ${list.length}.`,
+              `Δεν υπάρχει εργασία #${command.target}. Έχεις ${list.length}.`);
+          return list.length ? which : noTasks;
+        }
+        const name = target.title;
+        switch (command.action) {
+          case "show":
+            return describeOneTask(target, commandLanguage());
+          case "run": {
+            await runTaskNow(target.id).catch(() => {});
+            return localize(`Running "${name}" now. I will report back when it finishes.`,
+              `Εκτελώ τώρα την «${name}». Θα σας ενημερώσω όταν τελειώσει.`);
+          }
+          case "pause": {
+            if (!target.enabled) {
+              return localize(`"${name}" is already paused.`, `Η «${name}» είναι ήδη σε παύση.`);
+            }
+            await updateTask(target.id, { enabled: false }).catch(() => {});
+            return localize(`Paused "${name}".`, `Η «${name}» σε παύση.`);
+          }
+          case "resume": {
+            if (target.enabled) {
+              return localize(`"${name}" is already scheduled.`, `Η «${name}» είναι ήδη προγραμματισμένη.`);
+            }
+            await updateTask(target.id, { enabled: true }).catch(() => {});
+            return localize(`Resumed "${name}".`, `Η «${name}» συνεχίστηκε.`);
+          }
+          case "delete": {
+            await deleteTask(target.id).catch(() => {});
+            return localize(`Deleted "${name}".`, `Διεγράφη η «${name}».`);
+          }
+        }
+        return null;
+      }
+
       case "cancelTimers":
         setTimers([]);
         return localize("All timers cancelled.", "Ακυρώθηκαν όλα τα χρονόμετρα.");
@@ -1528,6 +1738,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             // operator sees the commands and can answer sudo/passphrase
             // prompts by hand.
             attachTerminalWindow(ev.terminal_id);
+          } else if (ev.type === "task_changed") {
+            // The model created, edited or deleted a task during this turn.
+            // Re-read instead of patching from the event: the event says *that*
+            // something changed, not the row, and a stale cache would show the
+            // tab disagreeing with what the assistant just said it did.
+            void refreshTasks();
           } else if (ev.type === "memory") {
             void refreshMemory();
           } else if (ev.type === "skills_changed") {
@@ -1748,6 +1964,15 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       chatCollapsed,
       timers,
       reminders,
+      tasks,
+      tasksError,
+      tasksLoading,
+      loadTasks,
+      createTask,
+      updateTask,
+      deleteTask,
+      runTaskNow,
+      clearTaskNotice,
       operator,
       silencedUntil,
       sudoPrompt,
