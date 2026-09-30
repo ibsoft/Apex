@@ -103,7 +103,7 @@ type ApexContextType = {
   loading: boolean;
   ready: boolean;
   user: User | null;
-  config: { engine: string; provider: string; providers: any; engines: string[]; models: string[]; think_hard_model: string; think_hard_model_enabled: boolean; memory_enabled: boolean; embedding: string | null; wake_word: string; follow_up_seconds: number; voice: string; response_language: string; soul: string; soul_max_chars: number; autonomous_mode: boolean; humor_level: number; sarcasm_level: number; autonomous_voice_budget: number; oauth_configured: boolean; logged_in: boolean } | null;
+  config: { engine: string; provider: string; providers: any; engines: string[]; models: string[]; think_hard_model: string; think_hard_model_enabled: boolean; visio_enabled: boolean; visio_provider: string; visio_model: string; visio_camera: string; memory_enabled: boolean; embedding: string | null; wake_word: string; follow_up_seconds: number; voice: string; response_language: string; soul: string; soul_max_chars: number; autonomous_mode: boolean; humor_level: number; sarcasm_level: number; autonomous_voice_budget: number; oauth_configured: boolean; logged_in: boolean } | null;
   settings: Settings;
   conversations: Conversation[];
   activeId: string | null;

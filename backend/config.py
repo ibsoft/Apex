@@ -307,6 +307,43 @@ class Config:
     # Generated files are cleaned up after this many seconds.
     EDITOR_FILE_TTL_SECONDS = _int("EDITOR_FILE_TTL_SECONDS", 3600)
 
+    # --- VISIO skill (camera + vision model) ---------------------------------
+    # Off by default: this is the only feature in the repo that opens a
+    # physical device pointed at the room the operator is sitting in. It must be
+    # something a deployment deliberately turns on.
+    VISIO_ENABLED = _bool("VISIO_ENABLED", False)
+    # Explicit image-capable model; the main chat model is independent.
+    VISIO_MODEL = os.getenv("VISIO_MODEL", "").strip()
+    VISIO_PROVIDER = os.getenv("VISIO_PROVIDER", "ollama").strip()
+    VISIO_CAMERA = os.getenv("VISIO_CAMERA", "").strip()
+    # The earlier draft options below are retained for compatibility only.
+    # The snapshot tool does not consume them: it uses VISIO_CAMERA, keeps
+    # frames in memory, and does not implement face recognition.
+    # /dev/video* to try, in order. A numeric or glob-ish value is fine; the
+    # probe also reports whatever else it finds, so an empty value still works
+    # and just scans.
+    VISIO_DEVICE = os.getenv("VISIO_DEVICE", "").strip()
+    VISIO_WIDTH = _int("VISIO_WIDTH", 1280)
+    VISIO_HEIGHT = _int("VISIO_HEIGHT", 960)
+    # How long a captured frame stays on disk. The camera light is only ever on
+    # for a turn that asked for a photo, but the file survives that, so it is
+    # deleted on this TTL unless the operator keeps it.
+    VISIO_SNAPSHOT_TTL_SECONDS = _int("VISIO_SNAPSHOT_TTL_SECONDS", 3600)
+    # Max frames kept per user, oldest swept first, so a chatty session cannot
+    # fill the disk between TTL runs.
+    VISIO_MAX_SNAPSHOTS = _int("VISIO_MAX_SNAPSHOTS", 50)
+    # Face recognition is separate from seeing: it needs local model files and
+    # it stores biometric data, so it is off even when VISIO_ENABLED is on.
+    VISIO_FACES_ENABLED = _bool("VISIO_FACES_ENABLED", False)
+    # Cosine distance at or below which a face is reported as a confident match.
+    # ArcFace on a clean frontal crop sits near 0.3-0.5 for the same person and
+    # 1.0+ for a stranger, so the default is deliberately conservative.
+    VISIO_FACE_THRESHOLD = float(os.getenv("VISIO_FACE_THRESHOLD", "0.45"))
+    # Above the confident threshold but still close, the agent says "possibly"
+    # instead of naming someone. A stranger must never be announced as a known
+    # person just because the embedding drifted.
+    VISIO_FACE_POSSIBLE_THRESHOLD = float(os.getenv("VISIO_FACE_POSSIBLE_THRESHOLD", "0.65"))
+
     # --- On-screen shell output ---------------------------------------------
     # run_shell on_screen=true writes the captured output here for viewing and
     # download in a desktop window; files are cleaned up after this many seconds.

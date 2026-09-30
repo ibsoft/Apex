@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -149,6 +150,7 @@ def resolve_model(
 
 from db import get_db
 from memory.store import get_memory
+from tools.visio_tools import effective_settings as visio_settings
 from models.embedders import EmbeddingManager
 from models.providers import ProviderError, ProviderManager
 from skills.manager import get_skill_manager, route_skill
@@ -939,6 +941,7 @@ def create_app() -> Flask:
                 "providers": provider_status(uid),
                 "engines": engines_available(),
                 "models": model_list(),
+                **visio_settings(config, rt),
                 "think_hard_model": str(rt.get("think_hard_model") or config.THINK_HARD_MODEL or "").strip(),
                 "think_hard_model_enabled": _rt_bool(rt.get("think_hard_model_enabled")) if "think_hard_model_enabled" in rt else config.THINK_HARD_MODEL_ENABLED,
                 "memory_enabled": bool(mem),
@@ -999,6 +1002,14 @@ def create_app() -> Flask:
             return jsonify({"ok": True})
         return jsonify({"error": "could not delete skill"}), 500
 
+    @app.get("/api/visio/cameras")
+    def visio_cameras():
+        if not require_user():
+            return jsonify({"error": "unauthorized"}), 401
+        from tools.visio_tools import camera_devices
+        import shutil
+        return jsonify({"cameras": camera_devices(), "ffmpeg_available": bool(shutil.which("ffmpeg"))})
+
     # ---- settings --------------------------------------------------------------
     @app.get("/api/settings")
     def get_settings():
@@ -1027,7 +1038,15 @@ def create_app() -> Flask:
             "base_url", "torch_model", "model_extra", "autonomous_mode",
             "humor_level", "sarcasm_level", "autonomous_voice_budget", "soul",
             "think_hard_model", "think_hard_model_enabled",
+            "visio_enabled", "visio_provider", "visio_model", "visio_camera",
         }
+        if "visio_provider" in data and data["visio_provider"] not in ("openai", "ollama"):
+            return jsonify({"error": "VISIO provider must be openai or ollama"}), 400
+        for key in ("visio_model", "visio_camera"):
+            if key in data and (not isinstance(data[key], str) or len(data[key]) > 200):
+                return jsonify({"error": f"Invalid {key}"}), 400
+        if data.get("visio_camera") and not re.fullmatch(r"/dev/video[0-9]+", data["visio_camera"]):
+            return jsonify({"error": "VISIO camera must be /dev/videoN or empty"}), 400
         for key, value in data.items():
             if key not in allowed:
                 continue
@@ -1049,7 +1068,7 @@ def create_app() -> Flask:
                 value = normalize_soul(value)
             if key == "think_hard_model":
                 value = str(value or "").strip()
-            if key == "think_hard_model_enabled":
+            if key in {"think_hard_model_enabled", "visio_enabled"}:
                 value = str(value).strip().lower() in {"1", "true", "yes", "on"}
             get_db().set_setting(key, value)
         get_skill_manager().refresh()

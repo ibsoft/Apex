@@ -13,6 +13,8 @@ import { CHAT_INPUT_EVENT, PANEL_EVENT, type PanelTabName } from "../lib/panelBr
 import FileDownloads, { backendFileHref } from "./FileDownloads";
 import AppsPanel from "./AppsPanel";
 import TasksPanel from "./TasksPanel";
+import VisioSettings from "./VisioSettings";
+import SettingsCard from "./SettingsCard";
 
 const C = {
   cyan: "#00e5ff",
@@ -844,121 +846,132 @@ export default function ChatUI() {
 
             {tab === "settings" && (
               <div className="apex-scroll" style={{ padding: 12, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 11 }}>
-                <Row label="Engine">
-                  <select style={selectBase} value={engine} onChange={(e) => void a.updateSettings({ engine: e.target.value })}>
-                    {engines.map((x) => <option key={x} value={x}>{x}</option>)}
-                  </select>
-                </Row>
-                <Row label="Provider">
-                  <select style={selectBase} value={provider} onChange={(e) => void a.updateSettings({ provider: e.target.value })}>
-                    {providerNames.length === 0 ? <option value="">none</option> : providerNames.map((x) => <option key={x} value={x}>{x}{provAvail(x) ? "" : " (needs setup)"}</option>)}
-                  </select>
-                  {(() => {
-                    const hint = needHint(provider);
-                    if (!hint) return null;
-                    return (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 9, color: C.gold, lineHeight: 1.5, flex: 1 }}>{hint}</span>
-                        {provider === "openai" && a.config?.oauth_configured && (
-                          <button onClick={() => a.login()} style={{ ...inputBase, color: C.cyan, cursor: "pointer", flexShrink: 0, padding: "5px 10px" }}>SIGN IN</button>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </Row>
-                <Row label="Model">
-                  <input style={inputBase} list="apex-model-list" placeholder="auto (provider default)"
-                    value={model === "<auto>" ? "" : model}
-                    onChange={(e) => { const v = e.target.value; void a.updateSettings({ model: v || null }); }}
-                    disabled={!!a.settings.model && a.settings.model !== "<auto>" && false}
-                  />
-                  <datalist id="apex-model-list">
-                    {models.concat(a.config?.models ?? []).filter((m, i, arr) => m && arr.indexOf(m) === i).map((m) => <option key={m} value={m} />)}
-                  </datalist>
-                </Row>
-                <Row label="Think hard model">
-                  <input style={inputBase} list="apex-think-hard-model-list"
-                    placeholder="off (uses the main model)"
-                    value={thinkHardModel === "<auto>" ? "" : thinkHardModel}
-                    onChange={(e) => { const v = e.target.value; void a.updateSettings({ think_hard_model: v || null }); }}
-                  />
-                  <datalist id="apex-think-hard-model-list">
-                    {models.concat(a.config?.models ?? []).filter((m, i, arr) => m && arr.indexOf(m) === i).map((m) => <option key={m} value={m} />)}
-                  </datalist>
-                </Row>
-                <Row label="Think hard">
-                  <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="checkbox" checked={!!thinkHardEnabled}
-                      disabled={!thinkHardModel}
-                      onChange={(e) => void a.updateSettings({ think_hard_model_enabled: e.target.checked })} />
-                    Answer “think hard” turns with that model
-                  </label>
-                  <span style={{ fontSize: 9, color: C.dim, lineHeight: 1.5 }}>
-                    {thinkHardModel
-                      ? `One turn only: “think hard: …” (text or voice) is answered by ${thinkHardModel}.`
-                      : "Set a model above (or THINK_HARD_MODEL) to enable it."}
-                  </span>
-                </Row>
-                <Row label="Temperature">
-                  <input type="range" min={0} max={2} step={0.05}
-                    value={Number(a.settings.temperature ?? 0.7)}
-                    onChange={(e) => void a.updateSettings({ temperature: Number(e.target.value) })} />
-                  <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.temperature ?? 0.7).toFixed(2)}</span>
-                </Row>
-                <Row label="Wake word">
-                  <input style={inputBase} value={wake} onChange={(e) => void a.updateSettings({ wake_word: e.target.value })} />
-                </Row>
-                <Row label="Default response language">
-                  <select style={selectBase} value={responseLanguage}
-                    onChange={(e) => void a.updateSettings({ response_language: e.target.value })}>
-                    <option value="en">English</option>
-                    <option value="el">Greek</option>
-                  </select>
-                </Row>
-                <Row label="Follow-up window (sec)">
-                  <input style={inputBase} type="number" min={0} max={120}
-                    value={Number(a.settings.follow_up_seconds ?? 30)}
-                    onChange={(e) => void a.updateSettings({ follow_up_seconds: Number(e.target.value) })} />
-                </Row>
-                <Row label="TTS voice name">
-                  <input style={inputBase} value={a.settings.voice ?? a.config?.voice ?? ""} placeholder="e.g. Google UK English Female"
-                    onChange={(e) => void a.updateSettings({ voice: e.target.value })} />
-                </Row>
-                <Row label="Spoken replies">
-                  <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="checkbox" checked={!!a.settings.tts_enabled}
-                      onChange={(e) => void a.updateSettings({ tts_enabled: e.target.checked })} />
-                    Read responses aloud
-                  </label>
-                </Row>
-                <Row label="Autonomous mode">
-                  <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="checkbox" checked={!!(a.settings.autonomous_mode ?? a.config?.autonomous_mode)}
-                      onChange={(e) => void a.updateSettings({ autonomous_mode: e.target.checked })} />
-                    Let APEX initiate, evolve and play
-                  </label>
-                </Row>
-                <Row label="SOUL.md · personality">
-                  <SoulEditor />
-                </Row>
-                <Row label="Humor level">
-                  <input type="range" min={1} max={100}
-                    value={Number(a.settings.humor_level ?? a.config?.humor_level ?? 30)}
-                    onChange={(e) => void a.updateSettings({ humor_level: Number(e.target.value) })} />
-                  <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.humor_level ?? a.config?.humor_level ?? 30)}</span>
-                </Row>
-                <Row label="Sarcasm level">
-                  <input type="range" min={1} max={100}
-                    value={Number(a.settings.sarcasm_level ?? a.config?.sarcasm_level ?? 20)}
-                    onChange={(e) => void a.updateSettings({ sarcasm_level: Number(e.target.value) })} />
-                  <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.sarcasm_level ?? a.config?.sarcasm_level ?? 20)}</span>
-                </Row>
-                <Row label="Daily voice budget">
-                  <input type="range" min={0} max={100}
-                    value={Number(a.settings.autonomous_voice_budget ?? a.config?.autonomous_voice_budget ?? 50)}
-                    onChange={(e) => void a.updateSettings({ autonomous_voice_budget: Number(e.target.value) })} />
-                  <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.autonomous_voice_budget ?? a.config?.autonomous_voice_budget ?? 50)}%</span>
-                </Row>
+                <SettingsCard title="Model & engine">
+                  <Row label="Engine">
+                    <select style={selectBase} value={engine} onChange={(e) => void a.updateSettings({ engine: e.target.value })}>
+                      {engines.map((x) => <option key={x} value={x}>{x}</option>)}
+                    </select>
+                  </Row>
+                  <Row label="Provider">
+                    <select style={selectBase} value={provider} onChange={(e) => void a.updateSettings({ provider: e.target.value })}>
+                      {providerNames.length === 0 ? <option value="">none</option> : providerNames.map((x) => <option key={x} value={x}>{x}{provAvail(x) ? "" : " (needs setup)"}</option>)}
+                    </select>
+                    {(() => {
+                      const hint = needHint(provider);
+                      if (!hint) return null;
+                      return (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 9, color: C.gold, lineHeight: 1.5, flex: 1 }}>{hint}</span>
+                          {provider === "openai" && a.config?.oauth_configured && (
+                            <button onClick={() => a.login()} style={{ ...inputBase, color: C.cyan, cursor: "pointer", flexShrink: 0, padding: "5px 10px" }}>SIGN IN</button>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </Row>
+                  <Row label="Model">
+                    <input style={inputBase} list="apex-model-list" placeholder="auto (provider default)"
+                      value={model === "<auto>" ? "" : model}
+                      onChange={(e) => { const v = e.target.value; void a.updateSettings({ model: v || null }); }}
+                      disabled={!!a.settings.model && a.settings.model !== "<auto>" && false}
+                    />
+                    <datalist id="apex-model-list">
+                      {models.concat(a.config?.models ?? []).filter((m, i, arr) => m && arr.indexOf(m) === i).map((m) => <option key={m} value={m} />)}
+                    </datalist>
+                  </Row>
+                  <Row label="Temperature">
+                    <input type="range" min={0} max={2} step={0.05}
+                      value={Number(a.settings.temperature ?? 0.7)}
+                      onChange={(e) => void a.updateSettings({ temperature: Number(e.target.value) })} />
+                    <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.temperature ?? 0.7).toFixed(2)}</span>
+                  </Row>
+                </SettingsCard>
+                <SettingsCard title="Think hard">
+                  <Row label="Think hard model">
+                    <input style={inputBase} list="apex-think-hard-model-list"
+                      placeholder="off (uses the main model)"
+                      value={thinkHardModel === "<auto>" ? "" : thinkHardModel}
+                      onChange={(e) => { const v = e.target.value; void a.updateSettings({ think_hard_model: v || null }); }}
+                    />
+                    <datalist id="apex-think-hard-model-list">
+                      {models.concat(a.config?.models ?? []).filter((m, i, arr) => m && arr.indexOf(m) === i).map((m) => <option key={m} value={m} />)}
+                    </datalist>
+                  </Row>
+                  <Row label="Think hard">
+                    <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={!!thinkHardEnabled}
+                        disabled={!thinkHardModel}
+                        onChange={(e) => void a.updateSettings({ think_hard_model_enabled: e.target.checked })} />
+                      Answer “think hard” turns with that model
+                    </label>
+                    <span style={{ fontSize: 9, color: C.dim, lineHeight: 1.5 }}>
+                      {thinkHardModel
+                        ? `One turn only: “think hard: …” (text or voice) is answered by ${thinkHardModel}.`
+                        : "Set a model above (or THINK_HARD_MODEL) to enable it."}
+                    </span>
+                  </Row>
+                </SettingsCard>
+                <VisioSettings />
+                <SettingsCard title="Voice & language">
+                  <Row label="Wake word">
+                    <input style={inputBase} value={wake} onChange={(e) => void a.updateSettings({ wake_word: e.target.value })} />
+                  </Row>
+                  <Row label="Default response language">
+                    <select style={selectBase} value={responseLanguage}
+                      onChange={(e) => void a.updateSettings({ response_language: e.target.value })}>
+                      <option value="en">English</option>
+                      <option value="el">Greek</option>
+                    </select>
+                  </Row>
+                  <Row label="Follow-up window (sec)">
+                    <input style={inputBase} type="number" min={0} max={120}
+                      value={Number(a.settings.follow_up_seconds ?? 30)}
+                      onChange={(e) => void a.updateSettings({ follow_up_seconds: Number(e.target.value) })} />
+                  </Row>
+                  <Row label="TTS voice name">
+                    <input style={inputBase} value={a.settings.voice ?? a.config?.voice ?? ""} placeholder="e.g. Google UK English Female"
+                      onChange={(e) => void a.updateSettings({ voice: e.target.value })} />
+                  </Row>
+                  <Row label="Spoken replies">
+                    <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={!!a.settings.tts_enabled}
+                        onChange={(e) => void a.updateSettings({ tts_enabled: e.target.checked })} />
+                      Read responses aloud
+                    </label>
+                  </Row>
+                </SettingsCard>
+                <SettingsCard title="Personality">
+                  <Row label="SOUL.md · personality">
+                    <SoulEditor />
+                  </Row>
+                  <Row label="Humor level">
+                    <input type="range" min={1} max={100}
+                      value={Number(a.settings.humor_level ?? a.config?.humor_level ?? 30)}
+                      onChange={(e) => void a.updateSettings({ humor_level: Number(e.target.value) })} />
+                    <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.humor_level ?? a.config?.humor_level ?? 30)}</span>
+                  </Row>
+                  <Row label="Sarcasm level">
+                    <input type="range" min={1} max={100}
+                      value={Number(a.settings.sarcasm_level ?? a.config?.sarcasm_level ?? 20)}
+                      onChange={(e) => void a.updateSettings({ sarcasm_level: Number(e.target.value) })} />
+                    <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.sarcasm_level ?? a.config?.sarcasm_level ?? 20)}</span>
+                  </Row>
+                </SettingsCard>
+                <SettingsCard title="Autonomous behavior">
+                  <Row label="Autonomous mode">
+                    <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={!!(a.settings.autonomous_mode ?? a.config?.autonomous_mode)}
+                        onChange={(e) => void a.updateSettings({ autonomous_mode: e.target.checked })} />
+                      Let APEX initiate, evolve and play
+                    </label>
+                  </Row>
+                  <Row label="Daily voice budget">
+                    <input type="range" min={0} max={100}
+                      value={Number(a.settings.autonomous_voice_budget ?? a.config?.autonomous_voice_budget ?? 50)}
+                      onChange={(e) => void a.updateSettings({ autonomous_voice_budget: Number(e.target.value) })} />
+                    <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.autonomous_voice_budget ?? a.config?.autonomous_voice_budget ?? 50)}%</span>
+                  </Row>
+                </SettingsCard>
               </div>
             )}
 

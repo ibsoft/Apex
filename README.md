@@ -748,3 +748,32 @@ Text files opened from File Manager or assistant previews now use Notepad instea
 of the framed document viewer. Signed links retain authenticated access, source
 contents load as plain text, and Save creates a Notepad copy without modifying
 the original. Loading is limited to 2 MB; failed or expired links show an error.
+
+## VISIO camera skill
+
+Enable **VISIO · Camera vision** in Settings, select **Ollama** or **OpenAI**,
+enter an image-capable model ID and click **Save vision model**. This model is
+independent of the main chat model. Ollama must already serve the selected model;
+OpenAI requires the host's `OPENAI_API_KEY` (subscription login is not used).
+Use **Detect cameras** to list video devices, then select the desired camera.
+Some cameras expose multiple video nodes; select a capture node if one fails.
+
+Ask **“What do you see now?”**, **“Take a snapshot”**, or **“Τι βλέπεις τώρα;”**
+in general chat, or select the **VISIO** skill. Each request captures one fresh
+frame from a camera attached to the Linux APEX host, releases the device, and
+sends the frame to the selected provider for scene/object description.
+Availability queries only enumerate devices. There is no continuous capture.
+APEX keeps frames in memory and does not save them to files or conversation
+history; descriptions are ordinary chat/tool results. The selected provider's
+data handling still applies to frames it receives.
+
+Requires `ffmpeg`, a V4L2 camera, and camera device permissions for the backend
+service account (usually membership in the `video` group). A remote browser's
+camera is not used. Defaults: `VISIO_ENABLED=false`, `VISIO_PROVIDER=ollama`,
+`VISIO_MODEL=` and `VISIO_CAMERA=` (automatic). Settings override these defaults.
+Disabling VISIO prevents new captures and uploads; an already submitted provider
+request cannot be recalled.
+
+VISIO describes visible features but does not identify people, store biometric
+templates, or recognize faces on later visits. It can use the existing text
+memory tools to remember names or notes explicitly supplied by the user.
