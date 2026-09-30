@@ -1,16 +1,18 @@
-"""VISIO never captures when disabled and never persists image bytes."""
+"""VISIO captures only when enabled and saves only on explicit request."""
 import base64
+from datetime import datetime
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.base import ToolContext
-from tools.visio_tools import build_visio_tools, capture_frame, describe_frame, effective_settings
+from tools.visio_tools import build_visio_tools, capture_frame, describe_frame, effective_settings, pictures_directory, save_frame
 from skills.manager import SkillManager, force_visio_skill, route_skill
 
 
@@ -85,6 +87,81 @@ class VisioTests(unittest.TestCase):
         self.assertNotIn("sensitive", output)
 
 
+class SaveTests(unittest.TestCase):
+    def setUp(self):
+        VisioTests.setUp(self)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        account = patch("tools.visio_tools.get_passwd_user", return_value=SimpleNamespace(home=str(self.home)))
+        self.account = account.start()
+        self.addCleanup(account.stop)
+        self.settings["visio_enabled"] = True
+        self.settings["visio_model"] = ""
+
+    def test_save_one_and_three_without_model(self):
+        self.capture.side_effect = [b"frame1", b"frame2", b"frame3", b"frame4"]
+        first = json.loads(self.tool.call({"action": "save"}, self.ctx))
+        batch = json.loads(self.tool.call({"action": "save", "count": 3}, self.ctx))
+        self.assertEqual(first["saved_count"], 1)
+        self.assertEqual(batch["saved_count"], 3)
+        paths = [Path(p) for p in first["saved_paths"] + batch["saved_paths"]]
+        self.assertEqual(len(set(paths)), 4)
+        self.assertEqual([p.read_bytes() for p in paths], [b"frame1", b"frame2", b"frame3", b"frame4"])
+        self.assertTrue(all(p.parent == self.home / "Pictures" for p in paths))
+        self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in paths))
+        self.describe.assert_not_called()
+        self.account.assert_called_with("alice")
+
+    def test_partial_capture_failure_reports_saved_files(self):
+        self.capture.side_effect = [b"frame1", ValueError("Camera disconnected")]
+        result = json.loads(self.tool.call({"action": "save", "count": 3}, self.ctx))
+        self.assertEqual(result["saved_count"], 1)
+        self.assertEqual(result["requested_count"], 3)
+        self.assertIn("disconnected", result["error"])
+        self.assertTrue(Path(result["saved_paths"][0]).is_file())
+
+    def test_disabled_bad_counts_and_unknown_accounts_never_capture(self):
+        for count in (0, -1, 11, True, 1.5, "3"):
+            self.assertIn("count", self.tool.call({"action": "save", "count": count}, self.ctx))
+        self.settings["visio_enabled"] = False
+        self.assertIn("disabled", self.tool.call({"action": "save"}, self.ctx))
+        self.settings["visio_enabled"] = True
+        self.account.return_value = None
+        result = json.loads(self.tool.call({"action": "save"}, self.ctx))
+        self.assertIn("local system account", result["error"])
+        self.capture.assert_not_called()
+
+    def test_disabled_during_batch_discards_pending_frame(self):
+        enabled = dict(self.settings)
+        self.runtime.side_effect = [enabled, enabled, enabled, enabled, {**enabled, "visio_enabled": False}]
+        result = json.loads(self.tool.call({"action": "save", "count": 3}, self.ctx))
+        self.assertEqual(result["saved_count"], 1)
+        self.assertEqual(self.capture.call_count, 2)
+        self.assertIn("discarded", result["error"])
+
+    def test_localized_folder_and_symlink_escape(self):
+        (self.home / ".config").mkdir()
+        (self.home / ".config/user-dirs.dirs").write_text('XDG_PICTURES_DIR="$HOME/Εικόνες"\n')
+        self.assertEqual(pictures_directory("alice"), self.home / "Εικόνες")
+        (self.home / ".config/user-dirs.dirs").unlink()
+        with tempfile.TemporaryDirectory() as other:
+            (self.home / "Pictures").symlink_to(other, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "inside your home"):
+                pictures_directory("alice")
+
+    def test_existing_file_is_never_overwritten(self):
+        directory = pictures_directory("alice")
+        with patch("tools.visio_tools.uuid.uuid4") as uid, patch("tools.visio_tools.datetime") as date:
+            uid.return_value.hex = "fixed"
+            date.now.return_value = datetime(2026, 1, 1)
+            path = Path(save_frame(directory, b"first"))
+            with self.assertRaises(FileExistsError):
+                save_frame(directory, b"second")
+            self.assertEqual(path.read_bytes(), b"first")
+
+
+
 class CaptureTests(unittest.TestCase):
     @patch("tools.visio_tools.shutil.which", return_value="/usr/bin/ffmpeg")
     @patch("tools.visio_tools.subprocess.run")
@@ -120,7 +197,7 @@ class RoutingTests(unittest.TestCase):
     def test_live_camera_requests_bypass_llm(self):
         skills = SkillManager(Path(__file__).parents[1] / "skills/definitions").all()
         provider = MagicMock()
-        for text in ("What do you see now?", "take a snapshot", "look through my camera", "Τι βλέπεις τώρα;"):
+        for text in ("What do you see now?", "take a snapshot", "Take 3 snapshots and save them to Picture folder", "take three snapshots", "look through my camera", "Τι βλέπεις τώρα;"):
             self.assertEqual(route_skill(text, skills, provider), "VISIO")
         provider.chat_stream.assert_not_called()
         self.assertIsNone(force_visio_skill("write a python camera function", skills))

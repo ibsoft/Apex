@@ -390,7 +390,7 @@ def force_visio_skill(user_text: str, skills: list[Skill]) -> str | None:
     if not any(s.name == "VISIO" for s in skills) or _CODEISH_RE.search(user_text or ""):
         return None
     text = _strip_accents(user_text).lower()
-    if re.search(r"\bwhat (?:do|can) you see(?: now)?\b|\b(?:look|see) through (?:the |my )?camera\b|\b(?:camera|webcam) (?:snapshot|attached|connected|available)\b|\b(?:take|capture) (?:a )?(?:snapshot|photo)\b|τι βλεπεις|κοιτα (?:απο |με )?την καμερα", text):
+    if re.search(r"\bwhat (?:do|can) you see(?: now)?\b|\b(?:look|see) through (?:the |my )?camera\b|\b(?:camera|webcam) (?:snapshot|attached|connected|available)\b|\b(?:take|capture) (?:(?:a|one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+) )?(?:snapshots?|photos?)\b|τι βλεπεις|κοιτα (?:απο |με )?την καμερα", text):
         return "VISIO"
     return None
 

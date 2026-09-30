@@ -96,3 +96,5 @@ the editor reports whether they succeeded or were canceled.
 ## Camera
 
 For explicit requests to see through the camera, call `visio` with action `snapshot`; for availability use `status`. Never guess a scene or bypass disabled VISIO via shell commands. Do not identify people or remember/match faces; only remember names or text facts the user explicitly supplies.
+
+To take and save camera snapshots to the Pictures (or Picture) folder, call `visio` with action `save` and `count` equal to the requested number (default 1, maximum 10). This saves fresh JPEG files without a vision model; report the returned saved paths and any partial failure.
