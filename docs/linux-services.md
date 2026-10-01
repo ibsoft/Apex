@@ -86,6 +86,10 @@ cd /home/ioannisb/Development/Apex/frontend
 npm run dev -- --experimental-https
 ```
 
+For access from another machine on the LAN (and to install the PWA), use
+`./apex start`, which issues a certificate naming this host's addresses and
+hands it to Next. See `AGENTS.md` → "PWA / installable app".
+
 Open the `https://localhost:3000` URL printed by Next.js and allow microphone
 access. Wake-word recognition uses the browser Web Speech API, so Chrome or
 Edge is required; Firefox does not provide this API. A browser `network`

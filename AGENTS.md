@@ -387,6 +387,79 @@ background thread whether or not anyone is looking at the page.
   "εικονική επιφάνεια εργασίας" (virtual desktop) contains the word for task.
 - Tests: `backend/tests/test_tasks.py`, `frontend/tests/tasks.test.cjs`.
 
+## PWA / installable app
+
+APEX installs as a standalone app (own window, own icon, offline shell). The
+pieces are: `frontend/public/manifest.webmanifest`, `frontend/public/sw.js`,
+`frontend/lib/pwa.ts` and `frontend/components/PwaManager.tsx` (mounted from
+`app/page.tsx`). Icons are generated, not hand-drawn: `node
+frontend/scripts/generate-icons.mjs` (zero deps, PNG encoder included).
+
+- **The service worker caches exactly two things**: `/` (network-first, used
+  only when the network is gone) and `/_next/static/**` (cache-first;
+  content-hashed and immutable). Every other request returns from the fetch
+  handler *without* calling `respondWith`, so the browser handles it on the
+  original code path. That is not a shortcut — it is the requirement. A worker
+  that mediates `POST /be/api/chat` can buffer the SSE turn stream, and one that
+  touches `GET /be/api/terminal/session/<id>/drain` (polled every 160 ms,
+  non-consuming, cursor in the response) makes the terminal look frozen. The
+  `NEVER_CACHE` guard in `sw.js` lists `/be` and `/api` explicitly so a future
+  edit has to delete a line to break the app rather than making a subtle change.
+- **Do not widen the fetch handler** to "just cache the API responses". The API
+  is session-bound, CSRF-protected and full of short-lived signed URLs.
+  `UNCACHEABLE_PATHS` in `lib/pwa.ts` is the data form of that rule.
+- **Bump the version in two places together**: `VERSION` in `public/sw.js`
+  (the cache names derive from it) and `SW_VERSION` in `lib/pwa.ts` (it is the
+  `?v=` on the registration URL that forces the browser to re-read the worker).
+  A mismatch between the two otherwise pins an installed app to an old build.
+- **The worker never calls `self.skipWaiting()`.** An update that takes over
+  mid-session swaps the cache set out from under a page that may be streaming a
+  reply. `PwaManager` shows "update ready", posts `SKIP_WAITING` on the
+  operator's click, and reloads on `controllerchange` — but only if a controller
+  existed *before* registration. `clients.claim()` fires `controllerchange` on
+  the first install too, and reloading there is an infinite loop.
+- **`beforeinstallprompt` is captured before hydration.** Chrome fires it at
+  most once per load and does not re-emit if nothing is listening; React attaches
+  its listener only after hydration, so a heavy first paint can lose the offer
+  and the install button never appears. `INSTALL_CAPTURE_SCRIPT` in `lib/pwa.ts`
+  (installed by `app/layout.tsx` via `next/script strategy="beforeInteractive"`)
+  stores the event on `window.__apexInstallPrompt` and forwards
+  `INSTALL_AVAILABLE_EVENT`; `PwaManager` reads the store on mount. Both are
+  tested by executing the real script, so do not re-inline a copy in the layout.
+- **Installability needs a secure origin on the address the operator uses.**
+  `ensure_https_cert` in `apex` (run by `start`/`restart`) issues
+  `frontend/.apex/https/cert.pem` — gitignored, signed by the mkcert CA, covering
+  `localhost`, the host name, `127.0.0.1`, `0.0.0.0` and every address from
+  `hostname -I` — and hands it to Next via `--experimental-https-key` /
+  `--experimental-https-cert`. Without that, Next's `--experimental-https`
+  regenerates `frontend/certificates/localhost.pem` on every start when
+  `--hostname` is an IP (Node's `checkHost()` does not match IP SANs) and names
+  only loopback, so a LAN browser errors, refuses the service worker, and reports
+  `Page.getInstallabilityErrors` → `not-from-secure-origin` — no install option,
+  however correct the code is. The browser must also *trust* the mkcert CA: on
+  this box it is only in `/etc/ssl/certs` (OpenSSL), while Chromium/Edge use the
+  NSS/Chrome root store and `~/.pki/nssdb` has no entry (`certutil` /
+  `libnss3-tools` absent). Import `~/.local/share/mkcert/rootCA.pem` through the
+  browser's certificate authorities, or install `libnss3-tools` and re-run
+  `mkcert -install`. `http://localhost:3000` needs none of this.
+- **`public/` is scanned once at `next start` startup.** Adding a file there
+  needs `systemctl restart apex-frontend` before it is served; in dev it does
+  not. `next.config.mjs` sets `Cache-Control: no-cache` on `/sw.js` and the
+  manifest content type, so neither needs a `headers()` change.
+- A manifest shortcut deep-links with `?panel=<tab>`. The valid names come from
+  `PANEL_TAB_NAMES` in `lib/panelBridge.ts` (not a copy), and `ApexProvider`
+  strips the query and waits for a signed-in `user` before sending the panel
+  command — on a signed-out launch nothing mounts, and the bridge would
+  otherwise retry every 50 ms for 30 s against a login screen.
+- Safe-area insets live in `app/globals.css` as `--safe-*` custom properties and
+  are read by the fixed chrome; `.apex-stage` uses `100dvh` with a `100vh`
+  fallback. `viewportFit: "cover"` in `app/layout.tsx` is what makes the insets
+  non-zero. Keep them in step with anything new that is pinned to an edge.
+- Tests: `frontend/tests/pwa.test.cjs` executes the real `public/sw.js` in a
+  `vm` with a stubbed CacheStorage, so the "never answers these" cases fail if
+  the worker starts answering them. It also parses the manifest and checks every
+  referenced icon is a real PNG at the declared size.
+
 ## Common extension points
 
 - New search source: add a tool in `core_tools.py` (or a new module) and expose

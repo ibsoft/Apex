@@ -180,6 +180,10 @@ npm run dev -- --experimental-https
 # open the https://localhost:3000 URL printed by Next.js
 ```
 
+To reach the same page from another machine on the LAN (and to install the PWA),
+use `./apex start`, which issues a certificate that names this host's addresses
+and hands it to Next. See `AGENTS.md` → "PWA / installable app".
+
 Allow microphone access when prompted. Browser speech recognition requires the
 browser's speech service to be reachable; `network` recognition errors come
 from that browser service and are separate from the backend or Codex. Firefox

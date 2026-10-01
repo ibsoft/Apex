@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICES=(apex-backend.service apex-frontend.service)
 HTTPS_PID_FILE="$ROOT/.apex/frontend-https.pid"
 HTTPS_LOG_FILE="$ROOT/.apex/frontend-https.log"
+HTTPS_CERT_DIR="$ROOT/.apex/https"
 DATA_DIR="$ROOT/backend/data"
 
 # ─────────────────────────── terminal polish helpers ──────────────────────────
@@ -204,6 +205,43 @@ require_units() {
 
 service_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
 
+# Next's --experimental-https regenerates certificates/localhost.pem on every
+# start when --hostname is an IP (Node's checkHost() does not match IP SANs) and
+# only ever names localhost/127.0.0.1/::1 plus that one hostname. A browser on
+# the LAN has no name it can match, refuses to register the service worker, and
+# the PWA never offers to install. Issue one cert naming every address this host
+# answers on, signed by the mkcert CA (so anything already trusting the CA
+# trusts this too), and pass it to Next explicitly. Sets HTTPS_CERT/HTTPS_KEY.
+ensure_https_cert() {
+  local caroot="${MKCERT_CAROOT:-$HOME/.local/share/mkcert}"
+  local key="$HTTPS_CERT_DIR/key.pem" cert="$HTTPS_CERT_DIR/cert.pem"
+  local csr="$HTTPS_CERT_DIR/cert.csr" ext="$HTTPS_CERT_DIR/cert.ext"
+  local san host ip have missing=0
+  [[ -f "$caroot/rootCA.pem" && -f "$caroot/rootCA-key.pem" ]] || return 1
+  command -v openssl >/dev/null 2>&1 || return 1
+  host="$(hostname 2>/dev/null || true)"
+  san="DNS:localhost,IP:127.0.0.1,IP:0.0.0.0"
+  [[ -n "$host" ]] && san="DNS:localhost,DNS:$host,IP:127.0.0.1,IP:0.0.0.0"
+  for ip in $(hostname -I 2>/dev/null || true); do san="$san,IP:$ip"; done
+  mkdir -p "$HTTPS_CERT_DIR"
+  # Reuse the current cert when it is unexpired and still covers every address.
+  if [[ -f "$key" && -f "$cert" ]] && openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null 2>&1; then
+    have="$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null || true)"
+    for ip in $(hostname -I 2>/dev/null || true) 127.0.0.1 0.0.0.0; do
+      [[ "$have" == *"IP Address:$ip"* ]] || missing=1
+    done
+    [[ -n "$host" && "$have" != *"DNS:$host"* ]] && missing=1
+    if [[ $missing -eq 0 ]]; then HTTPS_CERT="$cert"; HTTPS_KEY="$key"; return 0; fi
+  fi
+  printf 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=%s\n' "$san" >"$ext"
+  openssl req -new -newkey rsa:2048 -nodes -keyout "$key" -out "$csr" -subj "/CN=${host:-localhost}" >/dev/null 2>&1 || return 1
+  openssl x509 -req -in "$csr" -CA "$caroot/rootCA.pem" -CAkey "$caroot/rootCA-key.pem" \
+    -set_serial "0x$(openssl rand -hex 8)" -days 825 -sha256 -extfile "$ext" -out "$cert" >/dev/null 2>&1 || return 1
+  rm -f "$csr"
+  HTTPS_CERT="$cert"; HTTPS_KEY="$key"
+  return 0
+}
+
 start_https() {
   mkdir -p "$ROOT/.apex"
   if [[ -f "$HTTPS_PID_FILE" ]] && kill -0 "$(<"$HTTPS_PID_FILE")" 2>/dev/null; then
@@ -211,9 +249,15 @@ start_https() {
     return
   fi
   rm -f "$HTTPS_PID_FILE"
+  local https_args=(--experimental-https --hostname 0.0.0.0 --port 3001)
+  if ensure_https_cert; then
+    https_args+=(--experimental-https-key "$HTTPS_KEY" --experimental-https-cert "$HTTPS_CERT")
+  else
+    warn "mkcert CA not found under ${MKCERT_CAROOT:-$HOME/.local/share/mkcert}; falling back to Next's localhost-only certificate (LAN access will warn)"
+  fi
   (
     cd "$ROOT/frontend"
-    NEXT_DIST_DIR=.next-https nohup npm run dev -- --experimental-https --hostname 0.0.0.0 --port 3001 \
+    NEXT_DIST_DIR=.next-https nohup npm run dev -- "${https_args[@]}" \
       >"$HTTPS_LOG_FILE" 2>&1 &
     printf '%s\n' "$!" >"$HTTPS_PID_FILE"
   )

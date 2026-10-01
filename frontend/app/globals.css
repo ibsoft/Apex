@@ -1,5 +1,15 @@
 :root {
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Safe-area insets. Zero on a desktop browser, so nothing moves there; on a
+     notched device these keep the fixed chrome clear of the status bar and the
+     home indicator. APEX positions most of its HUD with inline `top/right`
+     values, so these are read as custom properties rather than applied in one
+     place - see app/page.tsx and components/AppShell.tsx. */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
 }
 
 * { box-sizing: border-box; }
@@ -26,13 +36,29 @@ body {
   border: 0;
 }
 
+/* ── The assistant stage ──
+   100dvh, not 100vh: 100vh on a mobile browser is the height with the browser
+   chrome *collapsed*, so the bottom of the chat panel and the window taskbar
+   sat under the address bar. The plain vh declaration stays as the fallback for
+   engines that do not know dvh - which is why this is a class and not a style
+   object. The padding is the home-indicator inset, made non-zero by
+   viewportFit: "cover" in app/layout.tsx. */
+.apex-stage {
+  position: relative;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 620px;
+  padding-bottom: var(--safe-bottom, 0px);
+  box-sizing: border-box;
+}
+
 /* ── Overview lamp panel: pinned to the top-left, out of document flow ──
    Without position:fixed the panel takes layout height and pushes the world
    down (leaving a black band at the top). */
 .apex-overview {
   position: fixed;
-  top: 10px;
-  left: 0;
+  top: calc(10px + var(--safe-top));
+  left: var(--safe-left);
   width: 540px;
   max-width: 92vw;
   z-index: 30;
@@ -40,7 +66,7 @@ body {
 @media (max-width: 1000px) {
   .apex-overview {
     position: absolute;
-    top: 10px;
+    top: calc(10px + var(--safe-top));
     width: 100%;
   }
 }

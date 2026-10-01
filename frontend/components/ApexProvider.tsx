@@ -39,7 +39,7 @@ import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
 import { sendNotepadCommand, notepadContext, requestsNotepadOutput } from "../lib/notepad";
 import type { NotepadCommand } from "../lib/notepad";
-import { sendChatInputCommand, sendPanelCommand } from "../lib/panelBridge";
+import { sendChatInputCommand, sendPanelCommand, PANEL_TAB_NAMES } from "../lib/panelBridge";
 import {
   formatDuration,
   parseLocalCommand,
@@ -526,6 +526,35 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  /* A PWA manifest shortcut deep-links straight into a panel tab
+     ("/?panel=tasks"). The query is stripped on the way past: left in place,
+     every reload would re-issue the command and fight whatever the operator did
+     next.
+
+     The command waits for `user`. Sending it on mount would work - the bridge
+     retries until ChatUI mounts - but on a signed-out launch nothing ever
+     mounts, so it would dispatch a custom event every 50ms for 30 seconds
+     against a login screen that cannot answer. Gating on the session costs one
+     effect and turns that into a no-op. */
+  const [deepLinkTab, setDeepLinkTab] = useState<PanelTabName | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("panel") as PanelTabName | null;
+    if (!requested || !PANEL_TAB_NAMES.includes(requested)) return;
+    setDeepLinkTab(requested);
+    params.delete("panel");
+    const rest = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
+  }, []);
+  useEffect(() => {
+    if (!deepLinkTab || !user) return;
+    // Same ordering as the spoken "show tasks" path: a tab change is
+    // meaningless while the panel is collapsed, so opening is part of the
+    // intent.
+    setChatCollapsedState(false);
+    void sendPanelCommand({ action: "open", tab: deepLinkTab }).catch(() => {});
+  }, [deepLinkTab, user]);
 
   /* ---------- auth ---------- */
 

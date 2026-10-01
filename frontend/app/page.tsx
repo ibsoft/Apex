@@ -1,6 +1,7 @@
 import { ApexProvider } from "@/components/ApexProvider";
 import AppShell from "@/components/AppShell";
 import ApexOverviewPanel from "@/components/ApexOverviewPanel";
+import PwaManager from "@/components/PwaManager";
 
 export default function Home() {
   return (
@@ -17,13 +18,19 @@ export default function Home() {
         <AppShell />
       </ApexProvider>
 
+      {/* Service worker registration, install prompt and offline chip. Outside
+          the provider on purpose: it must keep working while the app is showing
+          the sign-in screen, and it shares no state with it. */}
+      <PwaManager />
+
       {/* Repo link — remove or replace for your own use */}
       <a
         href="https://github.com/ibsoft/Apex.git"
         target="_blank"
         rel="noopener noreferrer"
         style={{
-          position: "absolute", top: 16, right: "clamp(16px,3vw,40px)", zIndex: 40,
+          position: "absolute", top: "calc(16px + var(--safe-top, 0px))",
+          right: "calc(clamp(16px,3vw,40px) + var(--safe-right, 0px))", zIndex: 40,
           fontFamily: "var(--font-mono)", fontSize: "0.66rem", letterSpacing: "0.24em",
           textTransform: "uppercase", color: "rgba(240,237,232,0.7)", textDecoration: "none",
           border: "1px solid rgba(240,237,232,0.2)", borderRadius: 20, padding: "7px 15px",

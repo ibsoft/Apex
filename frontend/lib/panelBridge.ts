@@ -23,6 +23,19 @@
  */
 export type PanelTabName = "chat" | "history" | "settings" | "memory" | "apps" | "tasks";
 
+/** Every name the panel actually renders, for validating a `?panel=` deep link
+ *  (see the manifest shortcut in public/manifest.webmanifest). A hand-kept copy
+ *  of this list would drift, and a drifted one would acknowledge a command it
+ *  cannot perform. */
+export const PANEL_TAB_NAMES: readonly PanelTabName[] = [
+  "chat",
+  "history",
+  "settings",
+  "memory",
+  "apps",
+  "tasks",
+];
+
 export type PanelCommand = { action: "open" | "close" | "toggle"; tab?: PanelTabName };
 export type ChatInputCommand = { action: "write" | "send"; text?: string };
 

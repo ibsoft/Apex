@@ -120,7 +120,10 @@ export default function AppShell() {
   };
 
   return (
-    <div style={{ position: "relative", height: "100vh", minHeight: 620 }}>
+    /* The height and the safe-area padding live in .apex-stage (app/globals.css):
+       100dvh needs a real 100vh fallback declaration, which a style object
+       cannot express. */
+    <div className="apex-stage">
       <ApexWorld state={a.orb} onTap={handleTap} />
 
       {a.loading ? (
