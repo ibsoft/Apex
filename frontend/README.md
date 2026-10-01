@@ -39,6 +39,10 @@ npm run dev -- --experimental-https
 # open the https://localhost:3000 URL printed by Next.js
 ```
 
+To reach the page from another machine on the LAN (and to install the PWA), use
+`./apex start`, which issues a certificate naming this host's addresses. See
+`AGENTS.md` → "PWA / installable app".
+
 Allow microphone access when prompted. Browser speech recognition also needs
 the browser's speech service to be reachable; a `network` recognition error is
 usually a browser/service connectivity issue, not a backend or Codex error.
@@ -46,6 +50,20 @@ Firefox does not provide the Web Speech Recognition API used by Apex; use
 Chrome or Edge for wake-word listening.
 
 Then `npm run build` for a production build, or deploy to Vercel in one click.
+
+## Installable app (PWA)
+
+APEX installs as a standalone window with its own icon. `public/manifest.webmanifest`
+declares it, `public/sw.js` serves the offline shell (network-first for `/`,
+cache-first for the immutable `/_next/static/**` chunks) and `components/PwaManager.tsx`
+handles the install button, the offline chip and "update ready". The worker
+deliberately leaves every `/be/api/*` request alone: the chat turn is an SSE
+stream, the terminal is a 160 ms cursor poll and the API is CSRF-protected, so
+caching any of it corrupts the app rather than speeding it up.
+
+The icons are generated, not hand-drawn — change the palette or composition in
+`scripts/generate-icons.mjs` and re-run it. Note that `next start` scans `public/`
+at boot, so a newly added file needs a server restart before it is served.
 
 ## What's inside
 
