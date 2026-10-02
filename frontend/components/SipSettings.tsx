@@ -33,6 +33,7 @@ export default function SipSettings() {
     displayName: String(a.settings.sip_display_name ?? a.config?.sip_display_name ?? "APEX"),
     domain: String(a.settings.sip_domain ?? a.config?.sip_domain ?? ""),
     proxy: String(a.settings.sip_outbound_proxy ?? a.config?.sip_outbound_proxy ?? ""),
+    notifyTo: String(a.settings.sip_notify_to ?? a.config?.sip_notify_to ?? ""),
     ttsEngine: String(a.settings.sip_tts_engine ?? a.config?.sip_tts_engine ?? "espeak"),
     ttsVoice: String(a.settings.sip_tts_voice ?? a.config?.sip_tts_voice ?? ""),
   };
@@ -48,6 +49,7 @@ export default function SipSettings() {
   useEffect(() => setForm(saved), [
     saved.server, saved.user, saved.transport, saved.port,
     saved.displayName, saved.domain, saved.proxy,
+    saved.notifyTo,
     saved.ttsEngine, saved.ttsVoice,
   ]);
   useEffect(() => setPassword(""), [saved.user, saved.server]);
@@ -84,6 +86,7 @@ export default function SipSettings() {
     sip_display_name: form.displayName.trim() || "APEX",
     sip_domain: form.domain.trim(),
     sip_outbound_proxy: form.proxy.trim(),
+    sip_notify_to: form.notifyTo.trim(),
     sip_tts_engine: form.ttsEngine,
     sip_tts_voice: form.ttsVoice.trim(),
     // Omitted when blank: the server ignores an empty password, which is what
@@ -169,6 +172,14 @@ export default function SipSettings() {
           value={form.proxy} onChange={set("proxy")} />
       </label>
 
+      <label style={label}>Call-me number
+        <input style={control} autoComplete="tel" inputMode="tel" placeholder="+15551234567"
+          value={form.notifyTo} onChange={set("notifyTo")} />
+      </label>
+      <span style={{ fontSize: 11, lineHeight: 1.5 }}>
+        Used only when a scheduled task explicitly says to call you.
+      </span>
+
       <label style={label}>Call voice engine
         <select style={control} value={form.ttsEngine} onChange={set("ttsEngine")}>
           <option value="espeak">eSpeak, local</option>
@@ -180,7 +191,8 @@ export default function SipSettings() {
         <>
           <label style={label}>Edge voice
             <input style={control} autoComplete="off" spellCheck={false}
-              placeholder="Default Edge voice"
+              placeholder={String(a.settings.response_language ?? a.config?.response_language ?? "en") === "el"
+                ? "Automatic Greek neural voice" : "Default Edge voice"}
               value={form.ttsVoice} onChange={set("ttsVoice")} />
           </label>
           <span style={{ fontSize: 11, lineHeight: 1.5 }}>

@@ -27,6 +27,7 @@ class ToolContext:
                                   # terminal_command resolves `terminal=N` against
                                   # this so the number painted in the title bar is
                                   # the number the model types
+    autonomous_call_authorized: bool = False  # Explicit scheduled call request; no chat confirmation needed.
 
 
 @dataclass

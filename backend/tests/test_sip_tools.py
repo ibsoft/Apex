@@ -79,6 +79,7 @@ FULL = {
     "sip_display_name": "APEX",
     "sip_domain": "",
     "sip_outbound_proxy": "",
+    "sip_notify_to": "+306912345678",
 }
 
 
@@ -87,7 +88,7 @@ def env_defaults(**over):
     base = dict(
         SIP_ENABLED=False, SIP_SERVER="", SIP_USER="", SIP_PASSWORD="",
         SIP_TRANSPORT="udp", SIP_PORT="", SIP_DISPLAY_NAME="APEX", SIP_DOMAIN="",
-        SIP_OUTBOUND_PROXY="", SIP_MAX_DURATION_SECONDS=600,
+        SIP_OUTBOUND_PROXY="", SIP_NOTIFY_TO="", SIP_MAX_DURATION_SECONDS=600,
         SIP_LISTEN_TIMEOUT_SECONDS=20, SIP_WHISPER_PYTHON="",
         SIP_WHISPER_MODEL="tiny", SIP_ENV_FILE="",
     )
@@ -112,7 +113,8 @@ class SipGateTestCase(AuthRouteTestCase):
             ("SIP_ENABLED", False), ("SIP_SERVER", ""), ("SIP_USER", ""),
             ("SIP_PASSWORD", ""), ("SIP_TRANSPORT", "udp"), ("SIP_PORT", ""),
             ("SIP_DISPLAY_NAME", "APEX"), ("SIP_DOMAIN", ""),
-            ("SIP_OUTBOUND_PROXY", ""), ("SIP_WHISPER_PYTHON", ""),
+            ("SIP_OUTBOUND_PROXY", ""), ("SIP_NOTIFY_TO", ""),
+            ("SIP_WHISPER_PYTHON", ""),
             ("SIP_WHISPER_MODEL", "tiny"), ("SIP_MAX_DURATION_SECONDS", 600),
             ("SIP_LISTEN_TIMEOUT_SECONDS", 20),
             ("SIP_ENV_FILE", str(self.mirrored_env)),
@@ -255,6 +257,44 @@ class SpeechSynthesisTests(unittest.TestCase):
     def test_rejects_unknown_tts_engine(self):
         with self.assertRaisesRegex(ValueError, "Unsupported SIP TTS engine"):
             synthesize("Hello", Path("utterance.wav"), engine="unknown")
+
+    def test_default_edge_voice_matches_greek_response_language(self):
+        from tools.sip_tools import edge_voice_for_language
+        self.assertEqual(edge_voice_for_language("", "el"), "el-GR-AthinaNeural")
+        self.assertEqual(edge_voice_for_language("custom-voice", "el"), "custom-voice")
+
+    def test_call_me_resolves_only_to_the_configured_destination(self):
+        from tools.sip_tools import resolve_call_destination
+        cfg = effective_settings(env_defaults(), FULL)
+        self.assertEqual(resolve_call_destination(cfg, "me"), "+306912345678")
+        self.assertEqual(resolve_call_destination(cfg, "the operator"), "+306912345678")
+        cfg["sip_notify_to"] = ""
+        with self.assertRaisesRegex(ValueError, "No call-me number"):
+            resolve_call_destination(cfg, "me")
+
+
+class ScheduledSipAuthorizationTests(SipGateTestCase):
+    def test_interactive_call_still_requires_confirmation(self):
+        tool = build_sip_tools(config)[0]
+        result = tool.handler({"action": "call", "to": "1001"}, ToolContext(user_id="alice"))
+        self.assertIn("Nothing was dialled", result)
+
+    def test_explicit_sip_task_can_call_without_a_second_confirmation(self):
+        tool = build_sip_tools(config)[0]
+        ctx = ToolContext(user_id="alice", autonomous_call_authorized=True)
+        with patch("tools.sip_tools.start_call", return_value="scheduled call started") as start:
+            result = tool.handler({"action": "call", "to": "me", "text": "Disk is over 80%"}, ctx)
+        self.assertEqual(result, "scheduled call started")
+        self.assertEqual(start.call_args.args[2], "me")
+        self.assertEqual(start.call_args.args[4], config.SIP_MAX_DURATION_SECONDS)
+
+    def test_task_authorized_plan_does_not_loop_for_confirmation(self):
+        tool = build_sip_tools(config)[0]
+        ctx = ToolContext(user_id="alice", autonomous_call_authorized=True)
+        with patch("tools.sip_tools.start_call", return_value="scheduled call started") as start:
+            result = tool.handler({"action": "plan", "to": "me", "text": "The disk is over 80%"}, ctx)
+        self.assertEqual(result, "scheduled call started")
+        start.assert_called_once()
 
 
 class EnvFileTests(unittest.TestCase):
@@ -639,10 +679,12 @@ class SipRouteTests(SipGateTestCase):
                 "sip_display_name": "APEX",
                 "sip_domain": "",
                 "sip_outbound_proxy": "",
+                "sip_notify_to": "+306912345678",
             })
         self.assertEqual(result.status_code, 200)
         settings = result.json["settings"]
         self.assertEqual(settings["sip_server"], "pbx.example.org")
+        self.assertEqual(settings["sip_notify_to"], "+306912345678")
         self.assertNotIn("sip_password", settings)
         self.assertTrue(settings["sip_password_set"])
 
@@ -660,7 +702,8 @@ class SipRouteTests(SipGateTestCase):
         client = self._app().test_client()
         token = self._login(client)
         for invalid in ({"sip_transport": "sctp"}, {"sip_port": "0"}, {"sip_port": "70000"},
-                        {"sip_server": []}, {"sip_enabled": {"a": 1}}):
+                        {"sip_server": []}, {"sip_enabled": {"a": 1}},
+                        {"sip_notify_to": []}):
             result = client.post("/api/settings", headers=self._headers(token), json=invalid)
             self.assertEqual(result.status_code, 400, invalid)
 
@@ -731,6 +774,8 @@ class RoutingTests(unittest.TestCase):
 
     def test_call_requests_reach_the_sip_skill(self):
         for text in ("call me", "Call me right now", "ring me", "phone me", "telephone me",
+                 "Call the operator and inform them of the current time",
+                 "phone the user when the job finishes",
                      "make a call", "dial 2101234567", "place a phone call",
                      "τηλεφωνησε με", "κάλε με", "κάλεσε τον 2101234567",
                      "καλ τον 2101234567", "καλ το 2101234567", "μου τηλεφωνάς"):

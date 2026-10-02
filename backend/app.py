@@ -177,8 +177,8 @@ SIP_FIELDS = frozenset(SIP_ENV_KEYS)
 #: paste accident, and it must never reach a baresip command line unvalidated.
 SIP_TEXT_FIELDS = (
     "sip_server", "sip_user", "sip_password", "sip_transport", "sip_port",
-    "sip_display_name", "sip_domain", "sip_outbound_proxy", "sip_tts_engine",
-    "sip_tts_voice",
+    "sip_display_name", "sip_domain", "sip_outbound_proxy", "sip_notify_to",
+    "sip_tts_engine", "sip_tts_voice",
 )
 SIP_FIELD_MAX = 200
 
@@ -218,6 +218,7 @@ def sip_config_summary(config, rt):
         "sip_display_name": cfg["sip_display_name"],
         "sip_domain": cfg["sip_domain"],
         "sip_outbound_proxy": cfg["sip_outbound_proxy"],
+        "sip_notify_to": cfg["sip_notify_to"],
         "sip_tts_engine": cfg["sip_tts_engine"],
         "sip_tts_voice": cfg["sip_tts_voice"],
         "sip_configured": cfg["configured"],
@@ -1128,7 +1129,7 @@ def create_app() -> Flask:
             "visio_enabled", "visio_provider", "visio_model", "visio_camera",
             "sip_enabled", "sip_server", "sip_user", "sip_password", "sip_transport",
             "sip_port", "sip_display_name", "sip_domain", "sip_outbound_proxy",
-            "sip_tts_engine", "sip_tts_voice",
+            "sip_notify_to", "sip_tts_engine", "sip_tts_voice",
         }
         if "visio_provider" in data and data["visio_provider"] not in ("openai", "ollama"):
             return jsonify({"error": "VISIO provider must be openai or ollama"}), 400

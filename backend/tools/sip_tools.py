@@ -80,6 +80,7 @@ ENV_KEYS = {
     "sip_display_name": "SIP_DISPLAY_NAME",
     "sip_domain": "SIP_DOMAIN",
     "sip_outbound_proxy": "SIP_OUTBOUND_PROXY",
+    "sip_notify_to": "SIP_NOTIFY_TO",
     "sip_tts_engine": "SIP_TTS_ENGINE",
     "sip_tts_voice": "SIP_TTS_VOICE",
 }
@@ -343,8 +344,12 @@ def effective_settings(config, runtime=None) -> dict:
         "sip_display_name": pick("sip_display_name", "SIP_DISPLAY_NAME", "APEX").strip() or "APEX",
         "sip_domain": pick("sip_domain", "SIP_DOMAIN").strip(),
         "sip_outbound_proxy": pick("sip_outbound_proxy", "SIP_OUTBOUND_PROXY").strip(),
+        "sip_notify_to": pick("sip_notify_to", "SIP_NOTIFY_TO").strip(),
         "sip_tts_engine": pick("sip_tts_engine", "SIP_TTS_ENGINE", "espeak").strip().lower(),
         "sip_tts_voice": pick("sip_tts_voice", "SIP_TTS_VOICE").strip(),
+        "response_language": str(runtime.get(
+            "response_language", getattr(config, "RESPONSE_LANGUAGE", "en")
+        ) or "en").strip().lower(),
     }
     if cfg["sip_tts_engine"] not in ALLOWED_TTS_ENGINES:
         cfg["sip_tts_engine"] = "espeak"
@@ -748,6 +753,28 @@ def synthesize(
     if proc.returncode or not out_wav.exists() or out_wav.stat().st_size <= 44:
         raise ValueError("Speech synthesis failed: " + (proc.stderr or proc.stdout).strip())
     return out_wav
+
+
+def edge_voice_for_language(configured_voice: str, language: str) -> str:
+    if configured_voice:
+        return configured_voice
+    if str(language).strip().lower().startswith("el"):
+        return "el-GR-AthinaNeural"
+    return ""
+
+
+def resolve_call_destination(cfg: dict, destination: str) -> str:
+    if str(destination or "").strip().lower() in {
+        "me", "myself", "call me", "my phone", "operator", "the operator",
+        "user", "the user", "owner", "the owner",
+    }:
+        target = str(cfg.get("sip_notify_to") or "").strip()
+        if not target:
+            raise ValueError(
+                "No call-me number is configured. Set it in SIP settings before scheduling calls to yourself."
+            )
+        return target
+    return str(destination or "").strip()
 
 
 def _ffmpeg() -> str:
@@ -1337,6 +1364,7 @@ def plan_call(config, ctx, dest: str, text: str, duration: int) -> str:
         return blocked
     cfg = effective_settings(config)
     try:
+        dest = resolve_call_destination(cfg, dest)
         plan = build_plan(cfg, dest, text, duration)
     except ValueError as exc:
         return f"That destination cannot be dialled: {exc}"
@@ -1358,6 +1386,10 @@ def start_call(config, ctx, dest: str, text: str, duration: int) -> str:
     if blocked:
         return blocked
     cfg = effective_settings(config)
+    try:
+        dest = resolve_call_destination(cfg, dest)
+    except ValueError as exc:
+        return f"Nothing was dialled. {exc}"
 
     missing = missing_binaries()
     if missing:
@@ -1454,6 +1486,12 @@ def start_call(config, ctx, dest: str, text: str, duration: int) -> str:
         else:
             result["spoken"] = spoken["spoken"]
             result["remaining_seconds"] = spoken["remaining_seconds"]
+            if getattr(ctx, "autonomous_call_authorized", False):
+                close_session(sess)
+                result["session"] = None
+                result["remaining_seconds"] = 0
+                result["completed"] = True
+                result["note"] = "Scheduled notification delivered; the call was ended."
     else:
         result["note"] = (
             "The call is up and they are listening. Speak your opening line with "
@@ -1474,11 +1512,18 @@ def speak_turn(config, sess: SipSession, cfg: dict, text: str) -> dict:
         synth = synthesize(
             text,
             sess.workdir / "utterance.wav",
-            voice=cfg["sip_tts_voice"] if cfg["sip_tts_engine"] == "edge" else "",
+            voice=(
+                edge_voice_for_language(cfg["sip_tts_voice"], cfg["response_language"])
+                if cfg["sip_tts_engine"] == "edge" else ""
+            ),
             engine=cfg["sip_tts_engine"],
         )
         sip_wav = to_wav(synth, sess.workdir / "utterance_8k.wav", 8000)
         play_into_sink(sip_wav, sess.tx_sink)
+        if sess.closed.is_set():
+            reason = sess.end_reason()
+            close_session(sess)
+            return {"error": f"{reason} The call to {sess.destination} ended while speaking."}
     except ValueError as exc:
         return {"error": str(exc)}
     with sess.lock:
@@ -1583,17 +1628,24 @@ def build_sip_tools(config) -> list[Tool]:
             if action == "status":
                 return status_report(config, ctx)
             if action == "plan":
+                if getattr(ctx, "autonomous_call_authorized", False):
+                    default_duration = int(getattr(config, "SIP_MAX_DURATION_SECONDS", 600) or 600)
+                    return start_call(config, ctx, args.get("to", ""), args.get("text", ""),
+                                      int(args.get("duration") or default_duration))
+                default_duration = int(getattr(config, "SIP_MAX_DURATION_SECONDS", 600) or 600)
                 return plan_call(config, ctx, args.get("to", ""), args.get("text", ""),
-                                 int(args.get("duration") or 60))
+                                 int(args.get("duration") or default_duration))
             if action == "call":
                 # The dry run is the gate. Without an explicit confirmation in
-                # the same request there is no dial, whatever the destination.
-                if not args.get("confirm"):
+                # the same request there is no interactive dial. A scheduled
+                # task has its own explicit, persisted authorization.
+                if not args.get("confirm") and not getattr(ctx, "autonomous_call_authorized", False):
                     return ("Nothing was dialled. Call this tool again with the same 'to' "
                             "and confirm=true to place the call - get the operator's "
                             "agreement first.")
+                default_duration = int(getattr(config, "SIP_MAX_DURATION_SECONDS", 600) or 600)
                 return start_call(config, ctx, args.get("to", ""), args.get("text", ""),
-                                  int(args.get("duration") or 60))
+                                  int(args.get("duration") or default_duration))
             if action == "say":
                 return say_into_call(config, ctx, str(args.get("session") or ""),
                                      str(args.get("text") or ""))
@@ -1611,9 +1663,10 @@ def build_sip_tools(config) -> list[Tool]:
         "configured and installed; never dials), plan (validate a destination and print a "
         "redacted call plan; never dials), call (dial, then hold the call open), say "
         "(speak one utterance into the live call), listen (record the caller's reply and "
-        "transcribe it), hangup. plan is the safe default; call needs confirm=true and "
-        "the operator's explicit agreement. Never invent a phone number: use one the "
-        "operator gave you in this conversation.",
+        "transcribe it), hangup. Interactive calls need confirm=true and the operator's "
+        "explicit agreement; a scheduled task explicitly requesting a call is already "
+        "authorized. A scheduled notification ends after speaking. For 'call me', use "
+        "the configured call-me number. Never invent another phone number.",
         {"type": "object", "properties": {
             "action": {"type": "string", "enum": list(ACTIONS),
                        "description": "status | plan | call | say | listen | hangup"},
@@ -1624,9 +1677,9 @@ def build_sip_tools(config) -> list[Tool]:
                      "description": "What to say. For call it is the opening line; for say "
                                     "it is the next utterance."},
             "confirm": {"type": "boolean",
-                        "description": "Must be true to actually dial. Left out, nothing is placed."},
+                        "description": "Required for interactive calls; a call explicitly requested by a scheduled task is pre-authorized."},
             "duration": {"type": "integer", "minimum": 10, "maximum": 600,
-                         "description": "Total call length in seconds from answer. Defaults to 60."},
+                         "description": "Total call length in seconds from answer. Defaults to the configured SIP maximum."},
             "session": {"type": "string",
                         "description": "Session id returned by call. Required for say, listen and hangup."},
             "seconds": {"type": "integer", "minimum": 2, "maximum": 120,

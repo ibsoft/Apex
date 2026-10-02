@@ -442,6 +442,7 @@ _SIP_CALL_RE = re.compile(
     # English: an explicit request to place a call, and "call me" specifically,
     # which is by far the most common phrasing.
     r"\b(?:please\s+)?(?:call|phone|ring|dial)\s+(?:me|us)\b"
+    r"|\b(?:please\s+)?(?:call|phone|ring|dial)\s+(?:the\s+)?(?:operator|user|owner)\b"
     r"|\b(?:call|phone|ring|dial)\s+(?:up\s+)?(?:\+?[0-9][0-9\s().-]{5,})\b"
     r"|\b(?:make|place|start|send)\s+(?:me\s+)?(?:a\s+|the\s+)?(?:phone\s+)?call\b"
     r"|\btelephone\s+me\b"

@@ -217,6 +217,7 @@ export type AppConfig = {
   sip_display_name: string;
   sip_domain: string;
   sip_outbound_proxy: string;
+  sip_notify_to: string;
   sip_tts_engine: string;
   sip_tts_voice: string;
   sip_configured: boolean;

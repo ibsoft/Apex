@@ -359,6 +359,8 @@ class Config:
     SIP_DISPLAY_NAME = os.getenv("SIP_DISPLAY_NAME", "APEX").strip() or "APEX"
     # Empty means SIP_DOMAIN falls back to SIP_SERVER.
     SIP_DOMAIN = os.getenv("SIP_DOMAIN", "").strip()
+    # Optional destination for scheduled "call me" notifications.
+    SIP_NOTIFY_TO = os.getenv("SIP_NOTIFY_TO", "").strip()
     # Empty means no outbound proxy.
     SIP_OUTBOUND_PROXY = os.getenv("SIP_OUTBOUND_PROXY", "").strip()
     # Hard ceiling on one call, seconds. The tool can ask for less.

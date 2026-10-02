@@ -9,7 +9,7 @@ account and hold a real spoken conversation. This dials a real phone on a real
 account: treat every call as consequential and never do it on your own
 initiative.
 
-## A call is two steps, always
+## Interactive calls
 
 1. `sip_call(action="plan", to=...)` — validates the account and the number and
    returns a redacted plan. Nothing is dialled. Show the operator what you
@@ -17,10 +17,16 @@ initiative.
 2. `sip_call(action="call", to=..., text=..., confirm=true)` — only after they
    have said yes.
 
-A `call` without `confirm=true` will not dial; it tells you to ask first. Do not
-retry it in a loop hoping a different phrasing works, and do not pass
-`confirm=true` on the first attempt to save a step. Approval is for the number
-you showed them, not for calling whoever you like afterwards.
+A `call` without `confirm=true` will not dial during an interactive chat; ask
+first. Do not retry it in a loop hoping a different phrasing works. Approval is
+for the number you showed them, not for calling whoever you like afterwards.
+
+When a scheduled task explicitly instructs you to call, that task is the
+operator's authorization: do not ask for another confirmation. For a scheduled
+notification, call `sip_call(action="call", to="me", text=...)`. The configured
+call-me destination is used, the message is spoken, and the tool ends the
+one-way notification call. If the call-me destination is not configured, report
+that setting is needed; never guess it.
 
 ### When the operator simply says yes
 
@@ -41,11 +47,15 @@ a time:
   when the utterance has finished playing, not when it started.
 - `action="listen", session=..., seconds=...` — record their reply and read it
   back as `heard`.
-- Repeat until they are finished.
+- Repeat for as many exchanges as the conversation needs. Do not hang up merely
+  because one answer, or two, has arrived. A normal exchange is not an end signal.
 
-Then `action="hangup", session=...` and report the transcript. A call you leave
-open keeps ringing someone's phone and holds the account, so always hang up,
-including after an error, and including when the operator interrupts you.
+End an interactive call only when the caller clearly says they are finished, the
+operator asks to end it, `listen` reports that the caller hung up, or the call's
+time limit is reached. Then hang up if the session is still live and report the
+transcript. If a tool reports the caller hung up, do not try to reuse that
+session. A one-way scheduled notification is the exception: it ends after its
+message is spoken.
 
 `heard_nothing: true` means they said nothing intelligible — silence at the start
 of a question is normal, they may still be thinking. Wait and listen again rather
@@ -60,9 +70,14 @@ stranger who cannot consent to the call.
 
 ### Finding their number
 
-"Call me" in a fresh conversation names no number, and asking for one every
-time defeats the point. If the operator has stored their number before, use
-`recall` to look it up ("my phone number", "how do you reach me").
+For `to="me"` or `to="operator"`, SIP uses the explicit call-me number saved in
+SIP settings. This is the required destination for scheduled notifications. If
+it is not set, do not substitute the SIP account username or guess; tell the
+operator to configure the number.
+
+For an interactive chat, if no call-me number is configured, memory may be used
+to look up a number the operator previously identified as their own ("my phone
+number", "how do you reach me").
 
 Only ever dial a number memory attributes to **the operator themselves** — a
 fact they explicitly asked you to remember, or a number they have already used
@@ -72,8 +87,10 @@ Those are somebody else's number. Dialling one calls a stranger who never
 agreed to hear from anyone, so if the number you find belongs to a person,
 firm or document rather than to the operator, ask instead of calling.
 
-If `recall` is unavailable or has nothing of the operator's own, say so and ask
-for the number. Never fall back to a number from memory that is not theirs.
+If `recall` is unavailable or has nothing of the operator's own, ask for the
+number during an interactive chat. A scheduled task cannot ask, so report the
+missing SIP call-me setting instead. Never fall back to a number from memory
+that is not theirs.
 
 Spaces, dashes and brackets in a number are formatting, not a problem: pass
 `+30 6977 456030` exactly as the operator said it and the tool normalises it.

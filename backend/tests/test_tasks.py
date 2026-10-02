@@ -28,6 +28,7 @@ from tools.tasks import (
     register_task_routes,
     task_context_block,
     task_prompt,
+    task_skill_and_call_authorization,
     task_status,
 )
 
@@ -297,6 +298,19 @@ class TaskStoreTests(unittest.TestCase):
         self.assertIn("df -h /", prompt)
         self.assertIn("nobody is watching", prompt.lower())
         self.assertIn("report", prompt.lower())
+
+
+class TaskSkillRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.skills = SimpleNamespace(all=lambda: [SimpleNamespace(name="SIP")])
+
+    def test_scheduled_call_me_prompt_selects_sip_and_authorizes_that_task(self):
+        row = {"prompt": "Check free disk space hourly and call me if it exceeds 80%"}
+        self.assertEqual(task_skill_and_call_authorization(row, self.skills), ("SIP", True))
+
+    def test_unrelated_tasks_keep_their_selected_skill(self):
+        row = {"prompt": "Check free disk space", "skill": "general"}
+        self.assertEqual(task_skill_and_call_authorization(row, self.skills), ("general", False))
 
 
 class RunnerTests(unittest.TestCase):
