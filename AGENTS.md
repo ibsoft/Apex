@@ -428,7 +428,7 @@ frontend/scripts/generate-icons.mjs` (zero deps, PNG encoder included).
   tested by executing the real script, so do not re-inline a copy in the layout.
 - **Installability needs a secure origin on the address the operator uses.**
   `ensure_https_cert` in `apex` (run by `start`/`restart`) issues
-  `frontend/.apex/https/cert.pem` — gitignored, signed by the mkcert CA, covering
+  `.apex/https/cert.pem` at the repo root — gitignored, signed by the mkcert CA, covering
   `localhost`, the host name, `127.0.0.1`, `0.0.0.0` and every address from
   `hostname -I` — and hands it to Next via `--experimental-https-key` /
   `--experimental-https-cert`. Without that, Next's `--experimental-https`
@@ -459,6 +459,89 @@ frontend/scripts/generate-icons.mjs` (zero deps, PNG encoder included).
   `vm` with a stubbed CacheStorage, so the "never answers these" cases fail if
   the worker starts answering them. It also parses the manifest and checks every
   referenced icon is a real PNG at the declared size.
+
+## SIP calls (phone)
+
+`backend/tools/sip_tools.py` is the whole feature: the `sip_call` tool, the
+settings merge, the env-file mirror and the per-call baresip process.
+`backend/skills/definitions/SIP.md` is the prompt; `force_sip_skill` in
+`skills/manager.py` routes "call me" to it ahead of the host-state skill.
+
+- **The account lives in the settings table and is mirrored into the env file**
+  (`backend/.env`, not `/etc/APEX`). `mirror_to_env` writes the *stored* rows,
+  never the merged values: merging would write every documented default into the
+  file on first save and pin them there forever, and after a password is cleared
+  it would read the secret straight back out of the file it had just removed it
+  from. `write_env_file` distinguishes *absent* (leave the line alone), *non-empty*
+  (replace) and *present and empty* (remove the line). That last case is what
+  makes "forget the stored password" real; writing `SIP_PASSWORD=` would pin `""`.
+- **Two null sinks, not one.** A call needs APEX's voice to go out and the far
+  end's voice to come back at the same time: `<id>_rx` is baresip's
+  `audio_player`, `<id>_tx.monitor` its `audio_source`, `<id>_tx` is where APEX
+  plays into and `<id>_rx.monitor` is where APEX records from. Reusing one sink
+  for both directions feeds the call back into itself.
+- **baresip must receive `env=pulse_env()` too.** The systemd backend lacks
+  `XDG_RUNTIME_DIR`. Without it, `pulse.so` fails to connect while SIP still
+  rings and establishes a silent call. Giving only pactl/paplay/parec the
+  desktop environment is insufficient; the SIP process needs the same one.
+- **baresip runs on a pty, not a pipe.** `/dial` and `/hangup` are registered by
+  the *menu* module, and the menu is only instantiated when the app starts, which
+  needs a terminal. On a pipe baresip prints "baresip is ready" and then answers
+  `/dial` with `command not found (dial)` - no call, no error, nothing to
+  notice. The slave is put in raw mode so the line discipline does not echo the
+  command back, which would otherwise be indistinguishable from baresip talking.
+  The menu is loaded as `module_app menu.so` and *not* also as `module menu.so`:
+  both lines load it, the second reports "module already loaded", the app never
+  starts, and the commands go missing again.
+- **Codecs must be loaded before `account.so`.** account.so parses the `accounts`
+  file the moment it loads, so with it first the account binds no codec and
+  every call dies with "no common audio codecs" - or worse, an established call
+  carrying silence. The order in `write_baresip_config` is load-bearing.
+- **An account naming a transport no module carries never registers**, with
+  "Destination address required" - a message that points at the network rather
+  than at a missing `tls.so`. `available_transports()` reports what this host can
+  carry, the settings tab offers only that, and `start_call` refuses up front.
+- **The answer is recognised by baresip's own wording** (`Call established: <peer>`)
+  and a rejection is detected instead of waited out, so a number that does not
+  exist says so in a second rather than ringing for the full `RING_TIMEOUT_SECONDS`.
+  The reader starts at a mark taken when `/dial` went out, not at "now": a phone
+  answering inside the 2s registration settle has already written the line by the
+  time the reader starts.
+- **`poll_method select` is not optional here.** This box's container refuses
+  `epoll_ctl` on stdin, and with epoll baresip does not start at all.
+- **G.711 only.** A codec the far end lacks gives an established call carrying
+  silence, which is worse than a call that plainly fails to connect.
+- **The conversation budget starts at answer, not at `/dial`.** Ring time is
+  outside it, otherwise a phone that rings for twenty seconds is hung up the
+  instant it says hello and the symptom looks like a server fault. An unanswered
+  call is bounded separately by `RING_TIMEOUT_SECONDS`.
+- **`confirm=true` is required for `action="call"`**, and the default action is
+  `status`. The plan returns the resolved destination and asks for agreement
+  first. `plan_call` never dials even with `confirm=true`.
+- **`Path("")` is `.`, which exists.** An unset `SIP_WHISPER_PYTHON` would
+  otherwise pass the interpreter check and be executed as a directory, and a
+  44-byte header is treated as "nothing was recorded" - checked before the
+  setup guard so silence is never reported to the model as a failed hearing.
+- **The destination is allowlisted** (`[+0-9*#,A-Za-z._@-]`), and a complete
+  `sip:`/`sips:` URI is matched by a separate pattern that admits no whitespace.
+  It reaches baresip on stdin, which splits on spaces, so anything looser lets a
+  destination append a second command to the same line.
+- **Secrets never travel to the browser.** `public_settings()` *deletes*
+  `sip_password` and adds `sip_password_set`, so a client cannot round-trip a
+  placeholder back over a real password; an empty posted password keeps the
+  stored one, and clearing is the separate `POST /api/sip/clear-password`.
+  `redact()` masks by parameter name as well as by value, because baresip echoes
+  the account line itself.
+- **Speech recognition lives in its own virtualenv.** `faster-whisper` pulls
+  torch-scale binaries, so `backend/tools/sip-whisper-requirements.txt` pins
+  `huggingface_hub<0.26` (0.26 dropped the `open(**kwargs)` download shape) and
+  `av<14` (PyAV 14 dropped `metadata_errors`) - both break at transcribe time,
+  not install time, so an unpinned install looks fine until the first call.
+  `sip_whisper.py` imports nothing from APEX, because it runs under an
+  interpreter that cannot see the backend on `sys.path`.
+- Sessions are owner-scoped in memory, one at a time (`MAX_CALLS = 1`), and
+  `sip_call` refuses to run without a `ToolContext.user_id`.
+- Tests: `backend/tests/test_sip_tools.py`.
 
 ## Common extension points
 

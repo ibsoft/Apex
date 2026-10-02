@@ -62,6 +62,8 @@ class AgentContext:
     require_tool: bool = False
     # Skills may veto tools entirely (see Skill.exclude_tools).
     exclude_tools: list[str] = field(default_factory=list)
+    # Set only for a scheduled task that explicitly asks to place a phone call.
+    autonomous_call_authorized: bool = False
     # Events queued by tools through ToolContext.emit. Engines drain them right
     # after the tool result so mid-tool events (a terminal window that had to be
     # opened, a memory write) reach the browser in causal order.
@@ -101,6 +103,7 @@ class AgentContext:
             focused_terminal=self.focused_terminal,
             terminal_map=self.terminal_map,
             output_destination=self.output_destination,
+            autonomous_call_authorized=self.autonomous_call_authorized,
             emit=self.push_event,
         )
 

@@ -152,6 +152,17 @@ def task_prompt(row: dict) -> str:
     return "\n\n".join(parts)
 
 
+def task_skill_and_call_authorization(row: dict, skill_manager) -> tuple[str, bool]:
+    """Route a scheduled phone-call request to SIP and authorize that task's call."""
+    from skills.manager import force_sip_skill
+
+    prompt = str(row.get("prompt") or "")
+    forced = force_sip_skill(prompt, skill_manager.all())
+    if forced == "SIP":
+        return "SIP", True
+    return (str(row.get("skill") or "general").strip() or "general"), False
+
+
 # ---- runner ------------------------------------------------------------
 
 
@@ -364,8 +375,9 @@ def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
 
     provider_name = (runtime.get("provider") or "openai").lower()
     engine_name = (runtime.get("engine") or "responses").lower()
-    skill_name = (row.get("skill") or "general").strip() or "general"
-    skill_obj = get_skill_manager().select(skill_name)
+    skill_manager = get_skill_manager()
+    skill_name, call_authorized = task_skill_and_call_authorization(row, skill_manager)
+    skill_obj = skill_manager.select(skill_name)
 
     try:
         provider = ProviderManager(
@@ -395,6 +407,13 @@ def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
         "\n\nYou are running unattended on a timer. There is no operator watching and "
         "no one to answer a question, so never ask for confirmation: act, then report."
     )
+    if call_authorized:
+        system_prompt += (
+            "\n\nThe operator explicitly scheduled this phone call. This task itself "
+            "authorizes the call, so do not request another confirmation. For a "
+            "one-way notification, use the configured call-me number and let the "
+            "tool end the call after the message. Do not call any other destination."
+        )
 
     window = int(getattr(config, "TASKS_HISTORY_WINDOW", 20) or 20)
     history = [
@@ -419,6 +438,7 @@ def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
         runtime=runtime,
         voice_mode=False,
         user_name=user_row.get("name") or "",
+        autonomous_call_authorized=call_authorized,
     )
 
     db.add_message(conv["id"], "user", prompt, {"task_id": row["id"], "autonomous": True})

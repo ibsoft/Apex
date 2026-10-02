@@ -14,6 +14,7 @@ import FileDownloads, { backendFileHref } from "./FileDownloads";
 import AppsPanel from "./AppsPanel";
 import TasksPanel from "./TasksPanel";
 import VisioSettings from "./VisioSettings";
+import SipSettings from "./SipSettings";
 import SettingsCard from "./SettingsCard";
 
 const C = {
@@ -912,6 +913,7 @@ export default function ChatUI() {
                   </Row>
                 </SettingsCard>
                 <VisioSettings />
+                <SipSettings />
                 <SettingsCard title="Voice & language">
                   <Row label="Wake word">
                     <input style={inputBase} value={wake} onChange={(e) => void a.updateSettings({ wake_word: e.target.value })} />

@@ -28,6 +28,7 @@ from tools.tasks import (
     register_task_routes,
     task_context_block,
     task_prompt,
+    task_skill_and_call_authorization,
     task_status,
 )
 
@@ -299,6 +300,19 @@ class TaskStoreTests(unittest.TestCase):
         self.assertIn("report", prompt.lower())
 
 
+class TaskSkillRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.skills = SimpleNamespace(all=lambda: [SimpleNamespace(name="SIP")])
+
+    def test_scheduled_call_me_prompt_selects_sip_and_authorizes_that_task(self):
+        row = {"prompt": "Check free disk space hourly and call me if it exceeds 80%"}
+        self.assertEqual(task_skill_and_call_authorization(row, self.skills), ("SIP", True))
+
+    def test_unrelated_tasks_keep_their_selected_skill(self):
+        row = {"prompt": "Check free disk space", "skill": "general"}
+        self.assertEqual(task_skill_and_call_authorization(row, self.skills), ("general", False))
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -441,10 +455,17 @@ class TaskToolTests(unittest.TestCase):
     def test_update_can_replace_the_schedule(self):
         self.call("task_schedule", {"title": "Disk", "prompt": "df", "schedule": "0 9 * * *"})
         result = self.call("task_update", {"task_id": "1", "schedule": "*/30 * * * *"})
-        self.assertIn("30", result)
+        self.assertIn("updated", result)
         import db as db_module
 
-        self.assertEqual(db_module.get_db().list_tasks("alice")[0]["cron"], "*/30 * * * *")
+        row = db_module.get_db().list_tasks("alice")[0]
+        self.assertEqual(row["cron"], "*/30 * * * *")
+        # Asserted on the stored next_run rather than on the human label, which
+        # used to be `assertIn("30", ...)`. That passed only while the clock was
+        # in the first half hour: `*/30` also fires on the hour, so a run at
+        # 10:56 correctly reads "11:00" and the substring check failed on a
+        # correct answer. The schedule this is really about is the boundary.
+        self.assertIn(datetime.fromtimestamp(row["next_run"]).minute, (0, 30))
 
     def test_another_users_task_is_not_reachable(self):
         self.call("task_schedule", {"title": "Mine", "prompt": "x", "schedule": "@daily"})

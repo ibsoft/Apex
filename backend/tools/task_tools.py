@@ -254,7 +254,7 @@ def build_task_tools(config) -> list[Tool]:
             "prompt": {"type": "string", "description": "What to do when this comes due, in your own words. This is the whole instruction."},
             "schedule": {"type": "string", "description": SCHEDULE_GUIDE},
             "plan": {"type": "string", "description": PLAN_DESC},
-            "skill": {"type": "string", "description": "Optional skill to run it under; empty means the general skill."},
+            "skill": {"type": "string", "description": "Optional skill to run it under; call tasks are automatically routed to SIP."},
         },
         "required": ["prompt", "schedule"],
         "additionalProperties": False,
