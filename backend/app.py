@@ -31,7 +31,9 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, redirect, request, send_file, session
+from flask import (
+    Flask, Response, current_app, jsonify, redirect, request, send_file, session,
+)
 
 from agent.factory import build_engine, make_registry
 from agent.base import AgentContext
@@ -157,6 +159,69 @@ from skills.manager import get_skill_manager, route_skill
 from soul import normalize_soul, soul_prompt_block
 from tools.tasks import task_context_block
 from tools.memory_tools import memory_prompt_block
+from tools.sip_tools import (
+    ALLOWED_TRANSPORTS,
+    ALLOWED_TTS_ENGINES,
+    ENV_KEYS as SIP_ENV_KEYS,
+    mirror_to_env as mirror_sip_to_env,
+    effective_settings as sip_settings,
+    pending_reply as sip_pending_reply,
+)
+
+SIP_TRANSPORTS = ALLOWED_TRANSPORTS
+SIP_TTS_ENGINES = ALLOWED_TTS_ENGINES
+#: Every settings key the SIP tab owns, mirrored into the env file on save.
+SIP_FIELDS = frozenset(SIP_ENV_KEYS)
+#: The free-text ones. A 200-character cap matches the VISIO fields; the
+#: password is included because a real account password longer than that is a
+#: paste accident, and it must never reach a baresip command line unvalidated.
+SIP_TEXT_FIELDS = (
+    "sip_server", "sip_user", "sip_password", "sip_transport", "sip_port",
+    "sip_display_name", "sip_domain", "sip_outbound_proxy", "sip_tts_engine",
+    "sip_tts_voice",
+)
+SIP_FIELD_MAX = 200
+
+#: Settings keys that hold a secret. They are stripped from every HTTP response
+#: by ``public_settings`` and replaced with a ``<key>_set`` boolean. SIP is the
+#: only one today; the list exists so the next credential does not have to
+#: rediscover this.
+SECRET_SETTING_KEYS = ("sip_password",)
+
+
+def _mirror_sip_to_env(config):
+    """Write the effective SIP settings into the env file, logging any failure.
+
+    Thin wrapper so the POST handler reads as one line; the reasons this cannot
+    be allowed to fail a save live in ``sip_tools.mirror_to_env``.
+    """
+    ok, err = mirror_sip_to_env(config)
+    if not ok:
+        current_app.logger.warning("Could not mirror SIP settings to the env file: %s", err)
+
+
+def sip_config_summary(config, rt):
+    """The SIP fields /api/config hands to the settings panel.
+
+    ``sip_password_set`` is a flag, never the secret: this payload is readable
+    by anything signed in, and a settings screen does not need the value to know
+    whether it has been filled in.
+    """
+    cfg = sip_settings(config, rt)
+    return {
+        "sip_enabled": cfg["sip_enabled"],
+        "sip_server": cfg["sip_server"],
+        "sip_user": cfg["sip_user"],
+        "sip_password_set": bool(cfg["sip_password"]),
+        "sip_transport": cfg["sip_transport"],
+        "sip_port": cfg["sip_port"],
+        "sip_display_name": cfg["sip_display_name"],
+        "sip_domain": cfg["sip_domain"],
+        "sip_outbound_proxy": cfg["sip_outbound_proxy"],
+        "sip_tts_engine": cfg["sip_tts_engine"],
+        "sip_tts_voice": cfg["sip_tts_voice"],
+        "sip_configured": cfg["configured"],
+    }
 
 
 # One running summarizer thread per (user, conversation) to keep the
@@ -437,6 +502,7 @@ def create_app() -> Flask:
     from tools.filebrowser import register_filebrowser_routes
     from tools.notepad import register_notepad_routes
     from tools.tasks import register_task_routes
+    from tools.sip import register_sip_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
@@ -448,6 +514,7 @@ def create_app() -> Flask:
     register_terminal_routes(app, require_user, config)
     register_filebrowser_routes(app, require_user, config)
     register_notepad_routes(app, require_user, config)
+    register_sip_routes(app, require_user, config)
     # Registers the Tasks tab's REST surface and starts the runner thread that
     # fires due tasks. A no-op when TASKS_ENABLED is false.
     register_task_routes(app, require_user, config)
@@ -604,6 +671,25 @@ def create_app() -> Flask:
         intent = session.pop("apex_intent", None) or config.FRONTEND_URL
         return redirect(intent)
 
+    def public_settings() -> dict:
+        """Runtime settings with secrets replaced by presence flags.
+
+        Every HTTP response that echoes the settings goes through this, because
+        the settings table is global: without it, `GET /api/settings` would hand
+        the SIP account password to anyone signed in, and the browser would be
+        holding it in memory for no reason. The unmasked values stay reachable
+        only to the tool, through ``sip_settings``.
+
+        The masked key is *removed* rather than blanked, so a client cannot
+        round-trip the placeholder back and overwrite the real password.
+        """
+        rt = dict(runtime())
+        for secret in SECRET_SETTING_KEYS:
+            if secret in rt:
+                rt[f"{secret}_set"] = bool(rt.get(secret))
+                del rt[secret]
+        return rt
+
     # ---- auth: session --------------------------------------------------------
     @app.get("/api/me")
     def me():
@@ -615,7 +701,7 @@ def create_app() -> Flask:
             {
                 "ok": True,
                 "user": summary(user),
-                "settings": rt,
+                "settings": public_settings(),
                 "engine": rt.get("engine") or config.AGENT_ENGINE,
                 "provider": rt.get("provider") or config.PROVIDER_DEFAULT,
             }
@@ -942,6 +1028,7 @@ def create_app() -> Flask:
                 "engines": engines_available(),
                 "models": model_list(),
                 **visio_settings(config, rt),
+                **sip_config_summary(config, rt),
                 "think_hard_model": str(rt.get("think_hard_model") or config.THINK_HARD_MODEL or "").strip(),
                 "think_hard_model_enabled": _rt_bool(rt.get("think_hard_model_enabled")) if "think_hard_model_enabled" in rt else config.THINK_HARD_MODEL_ENABLED,
                 "memory_enabled": bool(mem),
@@ -1018,7 +1105,7 @@ def create_app() -> Flask:
             return jsonify({"error": "unauthorized"}), 401
         return jsonify(
             {
-                "settings": runtime(),
+                "settings": public_settings(),
                 "providers": provider_status(user["id"]),
                 "engines": engines_available(),
                 "models": model_list(),
@@ -1039,6 +1126,9 @@ def create_app() -> Flask:
             "humor_level", "sarcasm_level", "autonomous_voice_budget", "soul",
             "think_hard_model", "think_hard_model_enabled",
             "visio_enabled", "visio_provider", "visio_model", "visio_camera",
+            "sip_enabled", "sip_server", "sip_user", "sip_password", "sip_transport",
+            "sip_port", "sip_display_name", "sip_domain", "sip_outbound_proxy",
+            "sip_tts_engine", "sip_tts_voice",
         }
         if "visio_provider" in data and data["visio_provider"] not in ("openai", "ollama"):
             return jsonify({"error": "VISIO provider must be openai or ollama"}), 400
@@ -1047,6 +1137,35 @@ def create_app() -> Flask:
                 return jsonify({"error": f"Invalid {key}"}), 400
         if data.get("visio_camera") and not re.fullmatch(r"/dev/video[0-9]+", data["visio_camera"]):
             return jsonify({"error": "VISIO camera must be /dev/videoN or empty"}), 400
+        for key in SIP_TEXT_FIELDS:
+            if key in data and (not isinstance(data[key], str) or len(data[key]) > SIP_FIELD_MAX):
+                return jsonify({"error": f"Invalid {key}"}), 400
+        # A boolean posted as a list or dict would stringify to something
+        # confidently falsy and quietly switch SIP off.
+        if "sip_enabled" in data and not isinstance(data["sip_enabled"], (bool, int, str)):
+            return jsonify({"error": "Invalid sip_enabled"}), 400
+        # Rejected on save, not normalised on read: a silently rewritten
+        # transport would register on udp while the operator believes they
+        # configured tls.
+        if "sip_transport" in data and str(data["sip_transport"]).lower() not in SIP_TRANSPORTS:
+            return jsonify({"error": f"SIP transport must be one of {', '.join(SIP_TRANSPORTS)}"}), 400
+        if "sip_tts_engine" in data and str(data["sip_tts_engine"]).lower() not in SIP_TTS_ENGINES:
+            return jsonify({"error": f"SIP TTS engine must be one of {', '.join(SIP_TTS_ENGINES)}"}), 400
+        if data.get("sip_port"):
+            try:
+                port = int(data["sip_port"])
+            except (TypeError, ValueError):
+                return jsonify({"error": "SIP port must be a number or empty"}), 400
+            if not 1 <= port <= 65535:
+                return jsonify({"error": "SIP port must be between 1 and 65535"}), 400
+        # A stored password is never sent back to the browser, so the settings tab
+        # renders an empty box for it. Posting that empty box back would
+        # otherwise silently destroy a working account on any unrelated save of
+        # another SIP field, so an empty value keeps what is stored and clearing
+        # the password is a separate explicit action.
+        if "sip_password" in data and not str(data["sip_password"] or "").strip():
+            data.pop("sip_password")
+        sip_patch = {k for k in data if k in SIP_FIELDS}
         for key, value in data.items():
             if key not in allowed:
                 continue
@@ -1070,9 +1189,25 @@ def create_app() -> Flask:
                 value = str(value or "").strip()
             if key in {"think_hard_model_enabled", "visio_enabled"}:
                 value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+            if key in SIP_FIELDS:
+                if key == "sip_enabled":
+                    value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+                elif key == "sip_transport":
+                    value = str(value).strip().lower()
+                elif key == "sip_tts_engine":
+                    value = str(value).strip().lower()
+                else:
+                    value = str(value or "").strip()
             get_db().set_setting(key, value)
+        # The settings tab is the source of truth, but the standalone helper and
+        # a shell-started backend both read the env file, so every SIP_* value is
+        # mirrored there. Done after the DB writes and only when this request
+        # actually touched a SIP field, because the env file holds the OpenAI
+        # keys too and rewriting it on every keystroke would be churn.
+        if sip_patch:
+            _mirror_sip_to_env(config)
         get_skill_manager().refresh()
-        return jsonify({"ok": True, "settings": runtime()})
+        return jsonify({"ok": True, "settings": public_settings()})
 
     # ---- conversations ------------------------------------------------------------
     @app.get("/api/conversations")
@@ -1343,10 +1478,25 @@ def create_app() -> Flask:
         except ProviderError as exc:
             return jsonify({"error": str(exc)}), 502
 
+        # A pending call plan answers the operator's reply to the plan. It is
+        # checked before the skill router because the reply ("yes", "go ahead")
+        # names no skill at all: routed normally it would land in general, which
+        # has no sip_call, and the model would report that it cannot place calls
+        # while holding the plan to do exactly that.
+        routed_skill = None
+        sip_reply = sip_pending_reply(user_text, uid, conv["id"])
+        if sip_reply == "confirm":
+            routed_skill = "SIP"
+            skill_name = "SIP"
+            skill_obj = get_skill_manager().select("SIP")
+        elif sip_reply == "decline":
+            skill_name = "general"
+            skill_obj = get_skill_manager().select("general")
+
         # Auto-route from the general skill to the best specialist skill.
         # The conversation stays in general mode; routing is per-turn.
-        routed_skill = None
-        if skill_name == "general" and config.AUTO_ROUTE_FROM_GENERAL:
+        if routed_skill is None and sip_reply is None and skill_name == "general" \
+                and config.AUTO_ROUTE_FROM_GENERAL:
             all_skills = get_skill_manager().all()
             routed = route_skill(user_text, all_skills, provider, fallback="general")
             if routed != "general":

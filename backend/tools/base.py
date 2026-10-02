@@ -112,8 +112,14 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.notepad_tools import build_notepad_tools
     from tools.task_tools import build_task_tools
     from tools.visio_tools import build_visio_tools
+    from tools.sip_tools import build_sip_tools
 
     for tool in build_visio_tools(config):
+        registry.register(tool)
+    # Registered unconditionally, like VISIO. The gate is inside the handler, so
+    # turning SIP on in the settings tab takes effect on the next turn instead of
+    # needing a backend restart.
+    for tool in build_sip_tools(config):
         registry.register(tool)
     for tool in build_core_tools(registry, config):
         registry.register(tool)

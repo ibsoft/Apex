@@ -370,6 +370,49 @@ def _strip_accents(text: str) -> str:
 
 
 
+#: Matched against accent-stripped, lowercased text, so every alternative is
+#: written unaccented. A pattern holding an accented character can never match
+#: the stripped input, which is how a Greek memory request quietly stops being
+#: recognised.
+_MEMORY_STORE_RE = re.compile(
+    # English. The object is what makes this a fact being stored rather than an
+    # ordinary sentence that happens to start with a verb: "remember this",
+    # "note that my number", "save my address", "remember I like cakes".
+    r"\b(?:remember|memori[sz]e|note|save|store|keep)\b"
+    r"(?:\s+\w+){0,3}\s+\b(?:this|that|these|those|it|my|our|=|:)\b"
+    r"|\b(?:remember|memori[sz]e)\s+(?:i|you|we|they|he|she)\s+(?:like|love|hate|"
+    r"prefer|want|need|am|is|are|was|have|has|drive|live|work|use|own|call|number|"
+    r"name|birthday|email)\b"
+    r"|\b(?:remember|memori[sz]e|note|save|store|keep)\s+(?:my|our)\b"
+    # Greek, unaccented, with suffixes: "θυμήσου", "θυμάσαι", "θυμησε" and the
+    # imperative endings all share the stem, so the stem carries the match.
+    r"|\bθυμ[αηεο]\w*\b|\bθυμ\b"
+    r"|\bσημειωσ[εε]*\b|\bκρατα\b",
+    re.IGNORECASE,
+)
+
+#: "save the file to disk" is a shell task, not something being remembered.
+#: Checked against the same span the verb matched, so it only disqualifies the
+#: store reading when the object is really a file.
+_MEMORY_STORE_OBJECT_RE = re.compile(
+    r"\b(?:file|files|disk|folder|directory|document|script|repo|repository|"
+    r"code|image|picture|photo|table|spreadsheet|workbook|presentation|"
+    r"αρχειο|αρχεια|φακελο|φακελος)\b",
+    re.IGNORECASE,
+)
+
+
+def is_memory_store(text: str) -> bool:
+    """Whether the message asks for a fact to be remembered."""
+    if _CODEISH_RE.search(text or ""):
+        return False
+    flat = _strip_accents(text or "")
+    match = _MEMORY_STORE_RE.search(flat)
+    if not match:
+        return False
+    return not _MEMORY_STORE_OBJECT_RE.search(flat[match.start():])
+
+
 def force_host_skill(user_text: str, skills: list[Skill]) -> str | None:
     """Return HOST_STATE_SKILL for live-host questions, else None.
 
@@ -395,6 +438,49 @@ def force_visio_skill(user_text: str, skills: list[Skill]) -> str | None:
     return None
 
 
+_SIP_CALL_RE = re.compile(
+    # English: an explicit request to place a call, and "call me" specifically,
+    # which is by far the most common phrasing.
+    r"\b(?:please\s+)?(?:call|phone|ring|dial)\s+(?:me|us)\b"
+    r"|\b(?:call|phone|ring|dial)\s+(?:up\s+)?(?:\+?[0-9][0-9\s().-]{5,})\b"
+    r"|\b(?:make|place|start|send)\s+(?:me\s+)?(?:a\s+|the\s+)?(?:phone\s+)?call\b"
+    r"|\btelephone\s+me\b"
+    # Greek. Both sigma spellings are listed deliberately: the final sigma is a
+    # separate character and matching only one makes half the phrasings fail
+    # silently, which is the same trap the voice command normaliser documents.
+    r"|\bτηλεφωνη[σς]ε\s+με\b"
+    r"|\bκαλ(?:ε(?:σε)?)?[άσ]?\s+με\b"
+    r"|\bμου\s+τηλεφων[άα]ς\b"
+    # "καλέσε τον 210…" / "κάλε τον 210…". The article is accusative (τον)
+    # here, not the neuter το, and the verb carries an optional -ε / -εσε.
+    # Only the digits are required, which is what stops this matching "καλός".
+    r"|\bκαλ(?:εσε)?(?:ε)?\s+(?:τον|το)?\s*(?:[0-9]|\+)",
+    re.IGNORECASE,
+)
+
+
+def force_sip_skill(user_text: str, skills: list[Skill]) -> str | None:
+    """Route an explicit request to place a call straight to the SIP skill.
+
+    Deterministic, and required rather than merely nice: the general skill does
+    not list ``sip_call`` in its tools, so a "call me" that fell through to the
+    classifier would land on a skill that cannot place calls and the operator
+    would be told it is impossible.
+
+    Deliberately narrow. ``call`` alone is far too common a word — a function
+    call, a phone call *about* something, "call the police" as advice — so only
+    phrasings that clearly ask for a call to be placed route here.
+    """
+    if not any(s.name == "SIP" for s in skills):
+        return None
+    text = user_text or ""
+    if not text.strip() or _CODEISH_RE.search(text):
+        return None
+    if _SIP_CALL_RE.search(_strip_accents(text)):
+        return "SIP"
+    return None
+
+
 def route_skill(
     user_text: str,
     skills: list[Skill],
@@ -411,9 +497,18 @@ def route_skill(
     if not skills:
         return fallback
 
+    # Storing a fact is the general skill's job, and it has to be settled before
+    # anything else: a memory request that mentions a phone number, an address
+    # or a file is text the classifier reads as belonging to a specialist
+    # (SIP, VISIO, FILE_SEARCH), and each of those skills lacks `remember`. The
+    # operator gets a call plan, or a camera snapshot, instead of a memory.
+    if is_memory_store(user_text):
+        return fallback
+
     # Deterministic first: live-host questions always go to the skill that
     # actually runs commands, no matter what the classifier decides (or caches).
-    forced = force_visio_skill(user_text, skills) or force_host_skill(user_text, skills)
+    forced = (force_visio_skill(user_text, skills) or force_sip_skill(user_text, skills)
+              or force_host_skill(user_text, skills))
     if forced:
         return forced
 
@@ -446,6 +541,16 @@ def route_skill(
         "'FILE_SEARCH'.\n"
         "- If the request is about creating Word, Excel, report or document "
         "files, reply 'EDITOR'.\n"
+        "- If the request is to place a phone call, telephone or ring someone, "
+        "reply 'SIP'.\n"
+        # Memory is not a specialist skill, so it has no name to route to and
+        # falls through to the fallback. Without this the classifier reads
+        # "remember this my phone number is 6977456030" as a request about a
+        # phone number, routes it to SIP, and hands the operator a call plan
+        # when they asked for a fact to be stored.
+        "- If the request is to remember, note, save or store a fact about the "
+        f"user, reply '{fallback}'. Storing something is never a phone call, "
+        "even when the fact is a number, a name or an address.\n"
         f"- If none of the specialist skills clearly fit, reply '{fallback}'.\n\n"
         "Reply with ONLY the skill name, no explanation, no punctuation.\n\n"
         f"User message: {user_text}\nSkill:"

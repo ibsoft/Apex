@@ -344,6 +344,41 @@ class Config:
     # person just because the embedding drifted.
     VISIO_FACE_POSSIBLE_THRESHOLD = float(os.getenv("VISIO_FACE_POSSIBLE_THRESHOLD", "0.65"))
 
+    # --- SIP skill (outbound phone calls) ------------------------------------
+    # Off by default: this dials a real phone on a real account. A deployment
+    # turns it on in the settings tab, which is also what writes the SIP_*
+    # values into backend/.env (SIP_ENV_FILE).
+    SIP_ENABLED = _bool("SIP_ENABLED", False)
+    SIP_SERVER = os.getenv("SIP_SERVER", "").strip()
+    SIP_USER = os.getenv("SIP_USER", "").strip()
+    SIP_PASSWORD = os.getenv("SIP_PASSWORD", "")
+    # udp | tcp | tls. Anything else is rejected on save, not silently fixed.
+    SIP_TRANSPORT = os.getenv("SIP_TRANSPORT", "udp").strip().lower()
+    # Empty means the server's default port.
+    SIP_PORT = os.getenv("SIP_PORT", "").strip()
+    SIP_DISPLAY_NAME = os.getenv("SIP_DISPLAY_NAME", "APEX").strip() or "APEX"
+    # Empty means SIP_DOMAIN falls back to SIP_SERVER.
+    SIP_DOMAIN = os.getenv("SIP_DOMAIN", "").strip()
+    # Empty means no outbound proxy.
+    SIP_OUTBOUND_PROXY = os.getenv("SIP_OUTBOUND_PROXY", "").strip()
+    # Hard ceiling on one call, seconds. The tool can ask for less.
+    SIP_MAX_DURATION_SECONDS = _int("SIP_MAX_DURATION_SECONDS", 600)
+    # How long a `listen` turn waits for the person to start speaking.
+    SIP_LISTEN_TIMEOUT_SECONDS = _int("SIP_LISTEN_TIMEOUT_SECONDS", 20)
+    # SIP speech defaults to local eSpeak. Edge TTS is an opt-in online engine.
+    SIP_TTS_ENGINE = os.getenv("SIP_TTS_ENGINE", "espeak").strip().lower()
+    SIP_TTS_VOICE = os.getenv("SIP_TTS_VOICE", "").strip()
+    # faster-whisper lives in its own virtualenv so it does not bloat the
+    # backend's dependencies. Created by: pip install faster-whisper
+    SIP_WHISPER_PYTHON = os.getenv(
+        "SIP_WHISPER_PYTHON", str(Path(BASE_DIR).parent / ".venv" / "sip-whisper" / "bin" / "python")
+    )
+    SIP_WHISPER_MODEL = os.getenv("SIP_WHISPER_MODEL", "tiny").strip() or "tiny"
+    # Where the settings tab writes SIP_* so a shell-started process and a
+    # systemd-started one read the same values. Default is the env file
+    # python-dotenv already loads for this module.
+    SIP_ENV_FILE = os.getenv("SIP_ENV_FILE", str(BASE_DIR / ".env"))
+
     # --- On-screen shell output ---------------------------------------------
     # run_shell on_screen=true writes the captured output here for viewing and
     # download in a desktop window; files are cleaned up after this many seconds.

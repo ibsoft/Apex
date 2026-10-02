@@ -1,0 +1,27 @@
+# faster-whisper for APEX SIP calls, in its own virtualenv.
+#
+#   python3 -m venv .venv/sip-whisper
+#   .venv/sip-whisper/bin/pip install -r backend/tools/sip-whisper-requirements.txt
+#
+# This is a separate environment on purpose. faster-whisper pulls ctranslate2,
+# tokenizers and torch-scale binaries, and adding them to the backend's own
+# dependency set would make every APEX upgrade heavier and more breakable for a
+# feature most deployments never enable. SIP_WHISPER_PYTHON points at the
+# interpreter here; sip_whisper.py runs under it and imports nothing from APEX.
+#
+# The upper bounds are not conservatism, they are the two breakages this was
+# built against:
+#
+#   huggingface_hub < 0.26  - 0.26 dropped the `open(**kwargs)` shape that
+#       faster-whisper 1.1 uses to download a model, so it dies with
+#       "open() got an unexpected keyword argument".
+#   av < 14               - PyAV 14 removed the `metadata_errors` argument that
+#       faster_whisper.audio.decode_audio passes to av.open(), which fails every
+#       transcription with the same TypeError, model load fine.
+#
+# Both failures happen at transcribe time rather than at install time, so an
+# unpinned install looks fine until the first call.
+
+faster-whisper>=1.1,<1.2
+huggingface_hub<0.26
+av>=11,<14

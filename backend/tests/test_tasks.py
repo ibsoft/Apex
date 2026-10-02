@@ -441,10 +441,17 @@ class TaskToolTests(unittest.TestCase):
     def test_update_can_replace_the_schedule(self):
         self.call("task_schedule", {"title": "Disk", "prompt": "df", "schedule": "0 9 * * *"})
         result = self.call("task_update", {"task_id": "1", "schedule": "*/30 * * * *"})
-        self.assertIn("30", result)
+        self.assertIn("updated", result)
         import db as db_module
 
-        self.assertEqual(db_module.get_db().list_tasks("alice")[0]["cron"], "*/30 * * * *")
+        row = db_module.get_db().list_tasks("alice")[0]
+        self.assertEqual(row["cron"], "*/30 * * * *")
+        # Asserted on the stored next_run rather than on the human label, which
+        # used to be `assertIn("30", ...)`. That passed only while the clock was
+        # in the first half hour: `*/30` also fires on the hour, so a run at
+        # 10:56 correctly reads "11:00" and the substring check failed on a
+        # correct answer. The schedule this is really about is the boundary.
+        self.assertIn(datetime.fromtimestamp(row["next_run"]).minute, (0, 30))
 
     def test_another_users_task_is_not_reachable(self):
         self.call("task_schedule", {"title": "Mine", "prompt": "x", "schedule": "@daily"})

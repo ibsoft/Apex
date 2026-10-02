@@ -206,6 +206,20 @@ export type AppConfig = {
   visio_provider: string;
   visio_model: string;
   visio_camera: string;
+  /** SIP · outbound phone calls. The password itself is never returned; only
+   *  this flag, so the settings tab can show that one is stored. */
+  sip_enabled: boolean;
+  sip_server: string;
+  sip_user: string;
+  sip_password_set: boolean;
+  sip_transport: string;
+  sip_port: string;
+  sip_display_name: string;
+  sip_domain: string;
+  sip_outbound_proxy: string;
+  sip_tts_engine: string;
+  sip_tts_voice: string;
+  sip_configured: boolean;
   memory_enabled: boolean;
   embedding: string | null;
   wake_word: string;
@@ -221,6 +235,34 @@ export type AppConfig = {
   sarcasm_level: number;
   autonomous_voice_budget: number;
   skills: Skill[];
+};
+
+/** GET /api/sip/status. `password_set` is a flag, never the secret. */
+export type SipStatus = {
+  ok: boolean;
+  sip_enabled: boolean;
+  configured: boolean;
+  missing_settings: string[];
+  missing_on_host: string[];
+  transport: string;
+  allowed_transports: string[];
+  server: string;
+  user: string;
+  password_set: boolean;
+  domain: string;
+  display_name: string;
+  outbound_proxy: string;
+  tts_engine: string;
+  ffmpeg_available: boolean;
+  whisper_ready: boolean;
+  audio_loopback_ok: boolean;
+  audio_loopback_note: string;
+  /** Where the settings are mirrored so a shell-started process agrees. */
+  env_file: string;
+  env_keys: string[];
+  live_calls: number;
+  max_concurrent_calls: number;
+  max_duration_seconds: number;
 };
 
 export type ChatEventMeta = {
@@ -394,6 +436,12 @@ export const api = {
 
   visio: {
     cameras: () => json<{ cameras: { device: string; name: string; accessible: boolean }[]; ffmpeg_available: boolean }>("/api/visio/cameras"),
+  },
+
+  /** SIP · phone calls. Never returns the password, only `password_set`. */
+  sip: {
+    status: () => json<SipStatus>("/api/sip/status"),
+    clearPassword: () => json<{ ok: boolean; sip_password_set: boolean }>("/api/sip/clear-password", { method: "POST" }),
   },
 
   settings: {
