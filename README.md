@@ -1,4 +1,4 @@
-# APEX — AI co-worker with real-time voice
+# APEX — AI Ghost in a shell with real-time voice for Linux Systems
 
 For everyday use, voice commands, desktop apps, and troubleshooting, see the [User Manual](USER-MANUAL.md).
 

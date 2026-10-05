@@ -76,7 +76,7 @@ export default function OrbStatusBar({ state = 'idle' }) {
             standby teaches the commands. Hidden the moment Apex is active. */}
         {!isActive && (
           <text className="sb-hint" x={cx} y={cy + 80} textAnchor="middle" fill={GOLD} fontSize="9" fontFamily="'Share Tech Mono', monospace"
-            letterSpacing="0.14em" opacity="0.32">TAP THE CORE · CLICK AN AGENT · SCROLL FOR THE STORY</text>
+            letterSpacing="0.14em" opacity="0.32">TAP THE CORE · APEX · GHOST IN A SHELL</text>
         )}
       </svg>
     </div>

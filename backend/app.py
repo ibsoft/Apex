@@ -157,6 +157,11 @@ from models.embedders import EmbeddingManager
 from models.providers import ProviderError, ProviderManager
 from skills.manager import get_skill_manager, route_skill
 from soul import normalize_soul, soul_prompt_block
+from tools.command_router import (
+    resolve_local_actions,
+    router_enabled,
+    router_model,
+)
 from tools.tasks import task_context_block
 from tools.memory_tools import memory_prompt_block
 from tools.sip_tools import (
@@ -508,6 +513,8 @@ def create_app() -> Flask:
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
     register_image_routes(app, require_user, config)
+    from tools.visio_tools import register_visio_routes
+    register_visio_routes(app, require_user, config)
     register_vapt_routes(app, require_user, config)
     register_code_routes(app, require_user, config)
     register_shell_routes(app, require_user, config)
@@ -529,6 +536,20 @@ def create_app() -> Flask:
             return config.agent_engines_available
         except Exception:
             return ["responses"]
+
+    def _allowed_models(provider_name: str):
+        """The models this provider can actually serve, or None for "any".
+
+        Providers that run a local list of models (ollama, kimi) reject a name
+        they do not have, so a configured router model is checked against it
+        before it is used. Providers addressed over an API accept any name.
+        """
+        if provider_name in ("ollama", "kimi"):
+            try:
+                return set(model_list(provider_name))
+            except Exception:
+                return None
+        return None
 
     def provider_status(user_id):
         rt = runtime()
@@ -1383,6 +1404,74 @@ def create_app() -> Flask:
                 results.append({"filename": f.filename, "error": str(exc)})
 
         return jsonify({"ok": True, "total": total, "files": results})
+
+    # ---- local command reasoning ---------------------------------------------
+    @app.post("/api/resolve-command")
+    def resolve_command():
+        """Ask a model which window actions an unrecognized utterance asks for.
+
+        The browser's own parsers run first and still win; this is only reached
+        when one of them missed, which used to mean the utterance went to the
+        agent. The agent cannot un-minimize a window, so a miss was a turn that
+        produced a reply and no change.
+
+        The browser sends the catalogue of actions it can perform and the state
+        of the screen, and validates the answer itself against the same
+        catalogue - so this route never decides what is allowed, only what was
+        meant. Every failure answers 200 with an empty list, because the caller's
+        next step for "no idea" and for "provider is down" is the same one.
+        """
+        user = require_user()
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        if not router_enabled():
+            return jsonify({"actions": []})
+        data = request.get_json(silent=True) or {}
+        utterance = str(data.get("text") or "").strip()
+        catalogue = str(data.get("catalogue") or "").strip()
+        state = str(data.get("state") or "").strip()
+        if not utterance or not catalogue:
+            return jsonify({"actions": []})
+
+        rt = runtime()
+        uid = user["id"]
+        provider_name = (rt.get("provider") or config.PROVIDER_DEFAULT).lower()
+        # A per-user setting wins over the config default, the same way the
+        # think-hard model does, so the router can be retuned without a restart.
+        configured_model = str(rt.get("command_router_model") or config.COMMAND_ROUTER_MODEL)
+        # Asking a local provider what models it has is a network call, so it is
+        # only made when a dedicated model was actually configured - otherwise
+        # the provider's default is used and the question does not arise.
+        model = ""
+        if configured_model:
+            model = router_model(
+                provider_name,
+                allowed_models=_allowed_models(provider_name),
+                configured=configured_model,
+            )
+        try:
+            provider = ProviderManager(
+                bearer=bearer_for_api(uid),
+                use_oauth_access=is_subscription_access(uid),
+                runtime=rt,
+            ).build(provider_name, model or None)
+        except ProviderError:
+            # An unbuildable provider is the ordinary "not configured" case for a
+            # user who has never set an API key. It is not worth a traceback, and
+            # it must read as the same thing as any other fallback.
+            return jsonify({"actions": []})
+        except Exception:
+            app.logger.exception("command router provider unavailable")
+            return jsonify({"actions": []})
+
+        actions = resolve_local_actions(
+            utterance=utterance,
+            language=str(data.get("language") or config.RESPONSE_LANGUAGE),
+            catalogue=catalogue,
+            state=state,
+            provider=provider,
+        )
+        return jsonify({"actions": actions})
 
     # ---- chat ----------------------------------------------------------------
     @app.post("/api/chat")

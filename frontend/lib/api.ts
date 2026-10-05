@@ -282,6 +282,10 @@ export type ChatEvent =
   | { type: "tool_result"; name: string; output: string }
   | { type: "memory"; action: string; detail: any }
   | { type: "terminal_opened"; terminal_id: string }
+  /* The camera was asked what it sees and answered; the frame itself is a
+     short-lived signed URL held in memory on the backend, never written to
+     disk. The browser opens it in a window and the assistant describes it. */
+  | { type: "visio_frame"; url: string; title: string; camera: string }
   | { type: "skills_changed" }
   /* A task tool changed the schedule: created, edited or deleted one. The event
      carries no row on purpose - the client re-reads the list, so a partial
@@ -456,6 +460,17 @@ export const api = {
 
   models: (provider?: string) =>
     json<{ models: string[] }>(`/api/models${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`),
+
+  /** Ask the model which window actions an utterance the parsers missed asks
+   *  for. Returns [] both when the answer is "that was for the agent" and when
+   *  the router is unavailable, so a failure here costs nothing but a reply
+   *  delay. The reply is a *proposal*: `sanitizeActions` is what decides it is
+   *  executable, and it runs against the same catalogue sent here. */
+  resolveCommand: (payload: { text: string; language: string; catalogue: string; state: string }) =>
+    json<{ actions: Array<Record<string, unknown>> }>("/api/resolve-command", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 
   self: {
     health: (run?: boolean) =>

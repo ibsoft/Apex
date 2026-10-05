@@ -300,9 +300,26 @@ export function collectPreviewableItems(content: string): WindowItem[] {
 
 /** Apex-awareness block appended to the model prompt, e.g.
  *  [Open windows: #1 "Budget.xlsx" (xlsx, focused) · #2 "chart.png" (image)]
- *  Passing the active virtual desktop appends it to the header. */
+ *  Passing the active virtual desktop appends it to the header.
+ *
+ *  The state flags are in the block because the agent is often asked to act on a
+ *  window ("bring the terminal back", "what is the one on the other desktop?")
+ *  and it cannot answer from the kind alone: a minimized window is still open,
+ *  and with the flag omitted "restore the terminals" is indistinguishable from
+ *  "open the terminals". */
 export function windowContextBlock(windows: AppWindow[], focusedId: string | null | undefined, desktop?: number): string {
   if (!windows.length) return "";
+  const stateOf = (w: AppWindow): string => {
+    const flags = [w.minimized ? "minimized" : "", w.maximized ? "maximized" : ""].filter(Boolean);
+    /* Only a window that actually carries a desktop number gets one reported.
+       `desktop` is optional on AppWindow, and `undefined + 1` is NaN - which is
+       how "on desktop NaN" reached a model prompt. A window with no desktop set
+       lives on the one being looked at. */
+    if (typeof w.desktop === "number" && typeof desktop === "number" && w.desktop !== desktop) {
+      flags.push(`on desktop ${w.desktop + 1}`);
+    }
+    return flags.length ? `, ${flags.join(", ")}` : "";
+  };
   const parts = windows.map((w, i) => {
     const focused = w.id === focusedId ? ", focused" : "";
     const item = w.items[w.index] ?? w.items[0];
@@ -314,9 +331,9 @@ export function windowContextBlock(windows: AppWindow[], focusedId: string | nul
       // instead of the window position: the operator says "terminal 2" and the
       // model must pass the same 2 to terminal_command.
       const number = terminalNumber(windows, w);
-      return `terminal #${number} "${title}" (${w.kind}${focused})`;
+      return `terminal #${number} "${title}" (${w.kind}${focused}${stateOf(w)})`;
     }
-    return `#${i + 1} "${title}" (${w.kind}${focused})`;
+    return `#${i + 1} "${title}" (${w.kind}${focused}${stateOf(w)})`;
   });
   const desktopNote = typeof desktop === "number" ? ` · active desktop ${desktop + 1}/${DESKTOPS}` : "";
   return `[Open windows: ${parts.join(" · ")}${desktopNote}]`;

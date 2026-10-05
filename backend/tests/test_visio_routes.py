@@ -3,6 +3,68 @@ from unittest.mock import patch
 
 from test_auth_routes import AuthRouteTestCase
 from security import CSRF_HEADER
+from config import config
+from tools import visio_tools
+
+
+class VisioFrameRouteTests(AuthRouteTestCase):
+    """A captured frame is served from memory to the person who captured it."""
+
+    def _frame_url(self, user_id="alice"):
+        from tools.visio_tools import preview_url
+        visio_tools._frames.clear()
+        return preview_url(config, user_id, b"\xff\xd8jpeg-bytes")
+
+    def test_a_frame_needs_a_session_and_is_not_cached(self):
+        client = self._app().test_client()
+        url = self._frame_url()
+        route = url.split("/api", 1)[1]
+        self.assertEqual(client.get(f"/api{route}").status_code, 401)
+        self._login(client)
+        response = client.get(f"/api{route}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b"\xff\xd8jpeg-bytes")
+        self.assertEqual(response.mimetype, "image/jpeg")
+        # The frame leaves memory after its TTL; a proxy or the disk cache must
+        # not keep a picture of the room past that.
+        self.assertIn("no-store", response.headers.get("Cache-Control", ""))
+
+    def test_another_users_frame_is_not_found(self):
+        client = self._app().test_client()
+        url = self._frame_url("bob")
+        route = url.split("/api", 1)[1]
+        self._login(client)
+        # 404, not 403: a token minted for someone else has to be
+        # indistinguishable from one that was never issued.
+        self.assertEqual(client.get(f"/api{route}").status_code, 404)
+
+    def test_forged_and_expired_tokens(self):
+        client = self._app().test_client()
+        self._login(client)
+        self.assertEqual(client.get("/api/visio/frame/not-a-real-token").status_code, 404)
+        # An honestly signed token whose age is past its max_age. The TTL is
+        # negative for the whole exchange, signing included, so this is the
+        # signature expiring (410) rather than the frame having been swept out
+        # of memory - which is the other limit, asserted separately below.
+        with patch("tools.visio_tools._FRAME_TTL_SECONDS", -1):
+            stale = self._frame_url()
+            self.assertEqual(client.get(f"/api{stale.split('/api', 1)[1]}").status_code, 410)
+
+    def test_a_frame_swept_from_memory_is_not_found(self):
+        client = self._app().test_client()
+        self._login(client)
+        url = self._frame_url()
+        route = f"/api{url.split('/api', 1)[1]}"
+        visio_tools._frames.clear()
+        self.assertEqual(client.get(route).status_code, 404)
+
+    def test_locked_sessions_cannot_read_a_frame(self):
+        client = self._app().test_client()
+        url = self._frame_url()
+        self._login(client)
+        with client.session_transaction() as session:
+            session["locked"] = True
+        self.assertEqual(client.get(f"/api{url.split('/api', 1)[1]}").status_code, 423)
 
 
 class VisioRouteTests(AuthRouteTestCase):

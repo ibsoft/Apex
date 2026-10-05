@@ -433,7 +433,24 @@ def force_visio_skill(user_text: str, skills: list[Skill]) -> str | None:
     if not any(s.name == "VISIO" for s in skills) or _CODEISH_RE.search(user_text or ""):
         return None
     text = _strip_accents(user_text).lower()
-    if re.search(r"\bwhat (?:do|can) you see(?: now)?\b|\b(?:look|see) through (?:the |my )?camera\b|\b(?:camera|webcam) (?:snapshot|attached|connected|available)\b|\b(?:take|capture) (?:(?:a|one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+) )?(?:snapshots?|photos?)\b|τι βλεπεις|κοιτα (?:απο |με )?την καμερα", text):
+    # "show me what you see" is the same request as "what do you see" with an
+    # imperative in front, and it was not matched: the verb in front of "what
+    # you see" is not the one that had been written down. It is anchored to the
+    # start of the utterance, unlike the "what do you see" form which reads
+    # fine mid-sentence, because "how do I write a program to show me what you
+    # see" is a question *about* the feature and has to reach the agent.
+    #
+    # Greek needs the final sigma spelled both ways: `_strip_accents` removes
+    # diacritics but does not fold ς to σ, so "τι βλεπεις" as typed reaches this
+    # pattern as "τι βλεπεις" (final sigma) and never as the folded form. The
+    # pre-existing "τι βλεπεις" alternative has been broken by that for as long
+    # as it has been there; both spellings are now listed.
+    if re.search(r"^(?:please\s+)?(?:show|see|display)\s+(?:me\s+)?(?:what|how)\s+(?:you|we)\s+(?:see|are\s+seeing)\b"
+                 r"|\bwhat (?:do|can) you see(?: now)?\b|\b(?:look|see) through (?:the |my )?camera\b"
+                 r"|\b(?:camera|webcam) (?:snapshot|attached|connected|available)\b"
+                 r"|\b(?:take|capture) (?:(?:a|one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+) )?(?:snapshots?|photos?)\b"
+                 r"|τι βλεπει[σς]|τι βλεπετε|δειξ(?:ε|τε)(?: μου)? τι βλεπει[σς]"
+                 r"|κοιτα (?:απο |με )?την καμερα", text):
         return "VISIO"
     return None
 
