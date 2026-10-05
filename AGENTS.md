@@ -176,6 +176,14 @@ the React tree over a cancelable `CustomEvent`, retrying until a consumer calls
   fails. And a `write ... in the chat` command is matched against the *raw*
   text, never the punctuation-stripped copy, so a dictated "what is the time?"
   keeps its question mark.
+- **The sigma trap is now closed by construction, not by memory.** Every Greek
+  vocabulary handed to a regex in `commands.ts` goes through `fold()`, which
+  runs each word through `normalize()`. Write "τις" and "κονσόλες" the way a
+  person says them; `ALL_WORDS`, `DETERMINERS` and `bulkWindowAction`'s
+  noun/verb arguments fold them once at build time. Several of those words
+  (`όλους`, `τους`) had been spelled with a final sigma for months in a form
+  that could never fire, which is exactly the failure mode to avoid repeating by
+  hand. The test asserts a phrase ending in final sigma still parses.
 - `write in chat` fills the draft and focuses the box; `send chat` sends. They
   are separate on purpose - dictating a message and sending it are two
   decisions.
@@ -189,6 +197,61 @@ the React tree over a cancelable `CustomEvent`, retrying until a consumer calls
   id is refused server-side.
 - The command phrase is stripped of trailing punctuation; the captured message
   is not.
+
+## The command reasoning layer (what the parsers miss)
+
+A regex only matches the phrases its author wrote down, and the agent cannot fix
+the miss: no tool can un-minimize a window. So an unrecognized *window* phrase
+used to produce a reply and no change. Three pieces, in order:
+
+1. `frontend/lib/commands.ts` still runs first and still wins. The bulk
+   vocabulary (`bulkWindowAction`, one function for windows, terminals, file
+   managers and notepads) is the fix for the cheap half of the problem - a
+   missing regex slot. A request is bulk when a quantifier is present **or** the
+   noun is plural on its own; a singular noun with no quantifier is deliberately
+   not bulk, so "restore terminal" keeps meaning the focused window.
+2. `frontend/lib/commandSpec.ts` describes what the browser can do to itself:
+   `LOCAL_ACTIONS` (the catalogue), `buildUiState` (windows with the numbers
+   shown on screen, their kind, minimized/maximized/desktop, plus tasks) and
+   `sanitizeActions`, the trust boundary.
+3. `backend/tools/command_router.py` + `POST /api/resolve-command` ask a model
+   to read one utterance against the catalogue and the state, and answer with
+   `{"actions": [...]}`. `COMMAND_ROUTER_ENABLED` (default on) and
+   `COMMAND_ROUTER_MODEL` (optional; ignored if the provider cannot serve it) are
+   in `backend/config.py`.
+
+Four rules make this safe, and each has a test:
+
+- **The reply is a proposal, never a decision.** The route forwards what the
+  browser sent and the browser validates it against the *same* catalogue, so the
+  two cannot drift. An invented action is dropped. The server is not the
+  authority on what may be done to the desktop; the session is.
+- **A number that is not on screen drops its action.** Stripping the field would
+  turn "close window 4" into "close the focused window" - a different window
+  from the one named, which for a close is not a guess to make. An action nobody
+  numbered is unaffected, because there the focused window is the intent.
+- **`signout`, `lock` and `chatinput` need the parser to agree**
+  (`CONFIRMATORY_ACTIONS`). The model's opinion is not enough for ending a
+  session or writing into the box; the parser that anchors those phrases to the
+  whole utterance stays the only way they fire.
+- **Every failure is silent and looks like success.** A provider that is down, a
+  model that will not answer in JSON, a router that is off and "this was a
+  question for the agent" all return `[]`, because the caller's next step for
+  all four is the same one: send it to the agent, as it always did. The resolver
+  never raises, and a chain runs sequentially (its steps read each other's
+  result) and is capped at `MAX_ACTION_CHAIN`.
+
+Window titles reach the model, so the state block is fenced and labelled as
+data in the prompt, and `sanitizeActions` treats the returned text as a value to
+store, not an instruction. Tests: `backend/tests/test_command_router.py`,
+`frontend/tests/commandSpec.test.cjs`.
+
+Adding an action means adding it to `LOCAL_ACTIONS` **and** to the executor in
+`ApexProvider::executeLocalCommand`; the catalogue is the model's menu, and an
+action it does not list is one it will not be offered. Content-extracting
+commands (`timer`, `reminder`, `images`, `operator`, notepad editing) stay out of
+it deliberately - they slice a payload out of the operator's sentence, which a
+catalogue entry cannot express.
 
 ## Window manager (desktop media layer)
 

@@ -122,6 +122,22 @@ test('windowContextBlock labels focused windows and is empty when nothing is ope
   );
 });
 
+test('windowContextBlock reports state, and never a desktop number out of thin air', () => {
+  const mk = (over) => ({ id: over.id, items: [{ url: 'https://x.com/a.png', title: 'a.png' }], index: 0, kind: 'image',
+    rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false, ...over });
+  // `desktop` is optional, and undefined + 1 is NaN: a window with no desktop
+  // must not produce "on desktop NaN" in a model prompt.
+  const noDesktop = mk({ id: 'a' });
+  assert.doesNotMatch(windowContextBlock([noDesktop], null, 1), /NaN|undefined/);
+  // A window that is minimized is still open, which is exactly why the flag has
+  // to be in the block: without it, "restore" is indistinguishable from "open".
+  assert.match(windowContextBlock([mk({ id: 'a', minimized: true })], null, 0), /minimized/);
+  assert.match(windowContextBlock([mk({ id: 'a', maximized: true })], null, 0), /maximized/);
+  assert.match(windowContextBlock([mk({ id: 'a', desktop: 2 })], null, 0), /on desktop 3/);
+  // and it is only reported when it is *not* the one being looked at
+  assert.doesNotMatch(windowContextBlock([mk({ id: 'a', desktop: 0 })], null, 0), /on desktop/);
+});
+
 test('onDesktop filters windows to their virtual desktop', () => {
   const mk = (id, desktop) => ({ id, desktop, items: [], index: 0, kind: 'other',
     rect: { x: 0, y: 0, w: 400, h: 300 }, maximized: false, minimized: false, note: '', showNotes: false });

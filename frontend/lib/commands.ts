@@ -3,17 +3,24 @@
 import type { NotepadCommand } from "./notepad";
 import type { WindowArrangement } from "./windows";
 
+/* The *_all actions are bulk: "restore all terminals" is one request about every
+ * window of a kind, not one request per window. They exist on every window-ish
+ * type (window, terminal, files, notepad) because the kinds are otherwise
+ * asymmetric - the window parser has had *_all all along, so "restore all
+ * windows" worked while "restore all terminals" did nothing. */
+export type BulkWindowAction = "close_all" | "minimize_all" | "maximize_all" | "restore_all";
+
 export type LocalCommand =
-  | {
+  | ({
       type: "window";
-      action: "open" | "close" | "close_all" | "minimize_all" | "restore_all" | "focus" | "maximize" | "minimize"
-        | "restore" | "arrange" | "next" | "previous" | "list" | "note";
+      action: "open" | "close" | "focus" | "maximize" | "minimize"
+        | "restore" | "arrange" | "next" | "previous" | "list" | "note" | BulkWindowAction;
       target?: number;
       arrangement?: WindowArrangement;
       note?: string;
-    }
-  | { type: "terminal"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; target?: number; create?: boolean; count?: number }
-  | { type: "files"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore"; create?: boolean }
+    })
+  | ({ type: "terminal"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore" | BulkWindowAction; target?: number; create?: boolean; count?: number })
+  | ({ type: "files"; action: "open" | "close" | "focus" | "minimize" | "maximize" | "restore" | BulkWindowAction; create?: boolean })
   | NotepadCommand
   | { type: "desktop"; action: "switch" | "next" | "previous" | "move"; desktop: number; target?: number; targets?: number[]; terminals?: boolean }
   | { type: "cancelTimers" }
@@ -313,6 +320,7 @@ function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
 
   // close all windows
   if (/^(?:close|hide|dismiss|shut)\s+(?:(?:all|every|the)\s+)?windows$/.test(normalized)
+      || /^close\s+all$/.test(normalized)
       || (greek && /^(?:κλεισε|κρυψε|αποκρυψε)\s+(?:(?:ολα|ολα\s+τα|τα)\s+)?παραθυρα$/.test(normalized)))
     return { type: "window", action: "close_all" };
 
@@ -324,6 +332,17 @@ function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
       || /^restore\s+all(?:\s+windows)?$/.test(normalized)
       || (greek && /^(?:επαναφερε|κανονικοποιησε)\s+(?:(?:ολα|ολα\s+τα|τα)\s+)?παραθυρα$/.test(normalized)))
     return { type: "window", action: "restore_all" };
+  // "maximize all windows" - the one bulk action this parser never had, because
+  // the hand-written forms above cover only the three that existed when they
+  // were written. The shared matcher keeps it from drifting again.
+  {
+    const bulk = bulkWindowAction(
+      normalized,
+      "windows?|παραθυρα?|παραθυρο",
+      "windows|παραθυρα",
+    );
+    if (bulk === "maximize_all") return { type: "window", action: bulk };
+  }
 
   // arrange windows
   const arrangeEn = normalized.match(/^arrange\s+(?:(?:the|all)\s+)?windows?(?:\s+(?:in|as|in\s+a)\s+)?([\p{L}\s-]+)?$/u);
@@ -399,6 +418,90 @@ function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
   return null;
 }
 
+/* ---------- bulk window actions ----------
+ *
+ * "restore all terminals" fits none of the single-target parsers. The verb is
+ * followed by a quantifier and a plural noun; the single-target branches need
+ * either a number or an empty tail, so nothing matched, the utterance fell
+ * through to the agent, and nothing happened - the agent has no tool that can
+ * un-minimize a window either. That is the whole bug: a phrase with a missing
+ * regex slot, not a missing capability.
+ *
+ * A request is BULK when a quantifier is present ("all", "every", "both",
+ * "όλα τα", "μόνα") OR when the noun is plural on its own ("τα τερματικά").
+ * A singular noun with no quantifier is deliberately NOT bulk, so "restore
+ * terminal" keeps meaning the one focused window exactly as before.
+ *
+ * All three window-ish parsers need this identically, so it is one function
+ * rather than three regex families that drift apart - the drift is what let the
+ * window parser keep its *_all forms while terminal and files lost theirs. */
+
+/** Fold a vocabulary written as a person writes it, so the patterns match.
+ *
+ * `normalize()` strips accents and folds the final sigma (`ς` → `σ`), so a word
+ * spelled the way it is actually said never matches a pattern that spells it out
+ * by hand: "κλείσε τις κονσόλες" arrives here as "κλεισε τισ κονσολεσ", and an
+ * alternation containing "τις" or "κονσόλες" cannot match it. "όλους" and "τους"
+ * had been in these lists for months in a spelling that could never fire. Every
+ * vocabulary is written normally and folded once, here, instead of being
+ * remembered in its folded form - remembering is the bug. */
+const fold = (words: string) => words.split("|").map(normalize).join("|");
+const ALL_WORDS = fold("all|every|each|both|those|όλα|όλες|όλους|όλων|μόνα|καθε");
+
+/* Determiners that may sit between the quantifier and the noun ("all the
+   terminals", "όλα τα τερματικά"). Longest alternative first on purpose: an
+   ordered alternation is tried left to right, and "την" must not be consumed as
+   "τη" with a stray "ν" left for the noun. "τις" is here because the accusative
+   plural article is the most ordinary Greek phrasing there is: "κλείσε τις
+   κονσόλες" is not exotic. */
+const DETERMINERS = fold("των|τους|τις|την|τη|τα|το|τον|οι|ο|η|στις|στον|στο|στη|στην|those|the|my|them");
+
+/** Verbs per bulk action, English and Greek in one alternation. `show` is
+ *  deliberately absent: for a notepad "show" already means focus, and for a
+ *  terminal it is ambiguous with focusing. `restore` verbs are unambiguous. */
+const BULK_VERBS: Array<[BulkWindowAction, string]> = [
+  ["close_all", "close|shut|dismiss|kill|terminate|κλείσε|κρύψε|απόκρυψε|σταμάτα|σταμάτησε|τερμάτισε"],
+  ["minimize_all", "minim(?:ize|ise)|shrink|ελαχιστοποίησε|μικρύνε|σμίκρυνε"],
+  ["maximize_all", "maxim(?:ize|ise)|expand|enlarge|full[-\\s]?screen|μεγιστοποίησε|μεγέθυνε|επεκτείνε"],
+  ["restore_all", "restore|normali(?:ze|ise)|bring\\s+back|unminimiz(?:e|ise)|unmaximiz(?:e|ise)"
+    + "|επαναφέρε|κανονικοποίησε|επαναφορά|ξαναφέρε"],
+];
+
+/** Match a bulk request for one noun, or return null.
+ *
+ * `noun` is every spelling the noun has in both languages; `plural` is only the
+ * subset that is plural by itself, because Greek plurals are not derivable from
+ * the singular the way English "terminals" is. Returns the action only when a
+ * quantifier was actually spoken or the noun was spoken in the plural, so
+ * returning null is the normal "this was not a bulk request" answer.
+ *
+ * `extraRestoreVerbs` widens only the restore verb list, which is how "show all
+ * terminals" reads as restore for a terminal or a file manager. It is not the
+ * default because in the notepad parser a bare "show the notepad" has always
+ * meant focus - widening there would change an existing meaning rather than add
+ * one - and it is deliberately not a general widen: BULK_VERBS is ordered, so
+ * widening every list would make "show all terminals" match close_all first. */
+function bulkWindowAction(norm: string, noun: string, plural: string, extraRestoreVerbs = ""): BulkWindowAction | null {
+  // Folded here too, so a caller cannot get it wrong by passing a noun in the
+  // spelling a person would use. See `fold` above for why this is not optional.
+  const isPlural = new RegExp(`^(?:${normalize(plural)})$`);
+  for (const [action, verbsBase] of BULK_VERBS) {
+    const verbs = action === "restore_all" && extraRestoreVerbs
+      ? `(?:${normalize(verbsBase)})|(?:${normalize(extraRestoreVerbs)})`
+      : normalize(verbsBase);
+    const m = norm.match(new RegExp(
+      `^(?:${verbs})\\s+` +
+      `((?:${ALL_WORDS})\\s+)?` + // 1: the quantifier, which forces bulk
+      `(?:(?:${DETERMINERS})\\s*)?` +
+      `(${normalize(noun)})` + // 2: the noun in any of its forms
+      `(?:\\s+(?:windows?|παραθυρα?))?` + // "all terminal windows"
+      `\\s*$`,
+    ));
+    if (m && (m[1] || isPlural.test(m[2]))) return action;
+  }
+  return null;
+}
+
 /* ---------- terminal commands ---------- */
 
 /* "open terminal [2]", "close terminal", "focus on terminal 2", with Greek
@@ -427,6 +530,17 @@ function parseTerminalCommand(text: string, greek: boolean): LocalCommand | null
     if (rest.trim() !== "") return null;
     return { type: "terminal", action, ...createOpt };
   };
+
+  // "close all terminals", "restore every terminal", "επαναφέρε όλα τα τερματικά".
+  // Checked before the single-target branches: none of them can match a
+  // quantifier, and a bare plural ("τα τερματικά") reads as "all of them".
+  const bulk = bulkWindowAction(
+    norm,
+    "terminal|terminals|console|consoles|τερματικό|τερματικά|τερματικές|τερματικούς|τερματικών|κονσόλα|κονσόλες",
+    "terminals|consoles|τερματικά|τερματικές|τερματικούς|τερματικών|κονσόλες",
+    "show|δείξε|εμφάνισε",
+  );
+  if (bulk) return { type: "terminal", action: bulk };
 
   // "open 4 terminals" / "open four terminals" / "άνοιξε 4 τερματικά".
   // A PLURAL terminal with a count always means "open N of them" and never
@@ -509,6 +623,19 @@ function parseFilesCommand(text: string, greek: boolean): LocalCommand | null {
   const end = "(?=$|\\s*[.,!?])";
   const newSlot = greek ? "(?:(?:ενα\\s+ακομα|ακομα\\s+ενα|ενα\\s+νιο|νιο|νεο|καινουργιο|αλλο)\\s+)?" : "(?:(?:a\\s+|an\\s+|another\\s+)?(?:new|another)\\s+)?";
 
+  // "close all file managers", "minimize every file browser", "κλείσε όλα τα
+  // παράθυρα αρχείων". Same rule as the terminal parser: a quantifier or a
+  // plural noun makes it bulk, anything else stays single-target.
+  const bulk = bulkWindowAction(
+    norm,
+    "file\\s+managers?|file\\s+browsers?|file\\s+explorers?|explorers?|files?\\s+windows?|files"
+    + "|διαχειριστής?\\s+αρχείων|φυλλομετρητής?\\s+αρχείων|παραθυρ(?:ο|α)\\s+αρχεί(?:ων|α)|αρχεία|αρχείων",
+    "files|file\\s+managers|file\\s+browsers|file\\s+explorers|explorers"
+    + "|διαχειριστές\\s+αρχείων|φυλλομετρητές\\s+αρχείων|παράθυρα\\s+αρχείων|παράθυρα\\s+αρχεία|αρχεία|αρχείων",
+    "show|δείξε|εμφάνισε",
+  );
+  if (bulk) return { type: "files", action: bulk };
+
   const openEn = greek ? null : norm.match(new RegExp(`^(?:open|start|launch|browse|show|display)\\s+(?:me\\s+)?${newSlot}${article}${noun}${end}`));
   const openEl = greek && !openEn ? norm.match(new RegExp(`^(?:ανοιξε|ξεκινα|ξεκινησε|δειξε|εμφανισε|προβαλε)\\s+(?:μου\\s+)?${newSlot}${article}${noun}${end}`)) : null;
   if (openEn || openEl) {
@@ -552,6 +679,15 @@ function parseNotepadCommand(text: string, greek: boolean): LocalCommand | null 
   }
   const noun = "(?:notepad|note\\s*pad|editor)";
   const article = "(?:(?:the|my)\\s+)?";
+  // "close all notepads", "restore every editor", "κλείσε όλα τα
+  // σημειωματάρια". The editor's own actions (write/save/format) are untouched:
+  // they carry content and are extracted by the branches below, not here.
+  const bulk = bulkWindowAction(
+    norm,
+    "notepads?|note\\s+pads?|editors?|σημειωματάρια?|κειμενογράφα?|κειμενογράφων",
+    "notepads|note\\s+pads|editors|σημειωματάρια|κειμενογράφα|κειμενογράφων",
+  );
+  if (bulk) return { type: "notepad", action: bulk };
   const actions: Array<["open" | "close" | "focus" | "minimize" | "maximize" | "restore" | "new" | "save" | "download", string, string]> = [
     ["open", "open|launch|start", "ανοιξε|ξεκινα|ξεκινησε"],
     ["close", "close|quit|exit", "κλεισε|τερματισε"],

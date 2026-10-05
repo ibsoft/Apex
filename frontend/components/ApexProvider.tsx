@@ -45,8 +45,15 @@ import {
   parseLocalCommand,
   parseTerminalTarget,
   parseThinkHard,
+  type LocalCommand,
   type PanelTabName,
 } from "../lib/commands";
+import {
+  buildUiState,
+  renderActionCatalogue,
+  renderUiState,
+  sanitizeActions,
+} from "../lib/commandSpec";
 import {
   describeOneTask,
   describeTasks,
@@ -1035,11 +1042,18 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   // pinned — otherwise Word/Excel/shell output would fall back to a "download
   // only" card instead of an inline preview.
   const notepadReplyIds = useRef(new Set<string>());
+  /* The reply whose camera frame was already opened from a `visio_frame` event.
+     The frame URL is signed and has no image extension, so the link scanner
+     below cannot find it in the text - and if the model does write the URL out,
+     this stops the scanner opening the same snapshot a second time. */
+  const visioFrameMsgRef = useRef<string | null>(null);
   const autoOpenedMsgRef = useRef<string | null>(null);
   useEffect(() => {
     const last = messages[messages.length - 1];
     if (!last || last.role !== "assistant" || last.streaming || !last.content) return;
     if (autoOpenedMsgRef.current === last.id || notepadReplyIds.current.has(last.id)) return;
+    // A camera frame for this reply is already open, from its own event.
+    if (visioFrameMsgRef.current === last.id) return;
     const items = collectPreviewableItems(last.content);
     if (items.length) {
       autoOpenedMsgRef.current = last.id;
@@ -1130,6 +1144,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             setWindows((prev) => prev.map((w) => ({ ...w, minimized: true })));
             setFocusedWindowId(null);
             return localize("All windows minimized.", "Ελαχιστοποιήθηκαν όλα τα παράθυρα.");
+          case "maximize_all":
+            setWindows((prev) => prev.map((w) => ({ ...w, maximized: true, minimized: false })));
+            {
+              const top = [...windowsRef.current].reverse().find((w) => w.desktop === activeDesktopRef.current);
+              setFocusedWindowId(top ? top.id : null);
+            }
+            return localize("All windows maximized.", "Μεγιστοποιήθηκαν όλα τα παράθυρα.");
           case "restore_all":
             setWindows((prev) => prev.map((w) => ({ ...w, minimized: false })));
             {
@@ -1212,9 +1233,45 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           return terminals[n - 1] ?? null;
         };
         switch (command.action) {
+          /* Bulk terminal actions. Each one names the kind explicitly because
+           * "restore all" is ambiguous between kinds, and the acknowledgement
+           * says how many windows it touched so a voice reply is verifiable.
+           * Every window of the kind is affected, on every desktop: a terminal
+           * number is its position among terminals, which does not depend on
+           * which desktop the window happens to be on. */
+          case "close_all":
+          case "minimize_all":
+          case "maximize_all":
+          case "restore_all": {
+            if (!terminals.length) return localize("No terminal window is open.", "Δεν είναι ανοιχτό παράθυρο τερματικού.");
+            const ids = terminals.map((w) => w.id);
+            const count = ids.length;
+            if (command.action === "close_all") ids.forEach((id) => windowClose(id));
+            else if (command.action === "minimize_all") {
+              setWindows((prev) => prev.map((w) => (ids.includes(w.id) ? { ...w, minimized: true } : w)));
+            } else {
+              // maximize and restore both clear minimized; restore also clears
+              // maximized, which is the only difference between the two.
+              setWindows((prev) => prev.map((w) => (ids.includes(w.id)
+                ? { ...w, maximized: command.action === "maximize_all", minimized: false }
+                : w)));
+            }
+            const plural = count === 1 ? "Terminal" : `${count} Terminals`;
+            const pluralEl = count === 1 ? "Τερματικό" : `${count} Τερματικά`;
+            if (command.action === "close_all") return localize(`Closed ${plural}.`, `Έκλεισε ${pluralEl}.`);
+            if (command.action === "minimize_all") return localize(`Minimized ${plural}.`, `Ελαχιστοποιήθηκε ${pluralEl}.`);
+            if (command.action === "maximize_all") return localize(`Maximized ${plural}.`, `Μεγιστοποιήθηκε ${pluralEl}.`);
+            return localize(`Restored ${plural}.`, `Επαναφέρθηκε ${pluralEl}.`);
+          }
           case "open": {
             const wanted = command.count ?? 1;
-            if (command.create && command.target == null) {
+            /* Asking for more than one terminal *is* asking for them to be
+               created, so `count` implies `create`. The deterministic parser
+               spells both out ("open two terminals" sets create + count), but a
+               count the operator gave and a create flag the model forgot is the
+               same request - and reading it as "focus one" is how "show me two
+               terminals" opened a single window. */
+            if ((command.create || wanted > 1) && command.target == null) {
               const error = await openTerminalWindow(wanted);
               if (error) return error;
               return wanted > 1
@@ -1326,6 +1383,32 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             if (command.action === "maximize") return localize(`Maximized ${fileWord()}.`, `Μεγιστοποιήθηκε ο ${fileWord()}.`);
             return localize(`Restored ${fileWord()}.`, `Επαναφέρθηκε ο ${fileWord()}.`);
           }
+          /* Bulk forms, so "restore all file managers" has the same vocabulary as
+           * "restore all terminals". There is normally one files window, but the
+           * open action can make more, so this must not assume a single one. */
+          case "close_all":
+          case "minimize_all":
+          case "maximize_all":
+          case "restore_all": {
+            if (!files.length) return localize("The File Manager is not open.", "Ο Διαχειριστής Αρχείων δεν είναι ανοιχτός.");
+            const ids = files.map((w) => w.id);
+            if (command.action === "close_all") ids.forEach((id) => windowClose(id));
+            else if (command.action === "minimize_all") {
+              setWindows((prev) => prev.map((w) => (ids.includes(w.id) ? { ...w, minimized: true } : w)));
+            } else {
+              setWindows((prev) => prev.map((w) => (ids.includes(w.id)
+                ? { ...w, maximized: command.action === "maximize_all", minimized: false }
+                : w)));
+              windowFocus(ids[ids.length - 1]);
+            }
+            const count = ids.length;
+            const plural = count === 1 ? fileWord() : `${count} File Manager windows`;
+            const pluralEl = count === 1 ? "Διαχειριστές Αρχείων" : `${count} παράθυρα Διαχειριστή Αρχείων`;
+            if (command.action === "close_all") return localize(`Closed ${plural}.`, `Έκλεισε ${pluralEl}.`);
+            if (command.action === "minimize_all") return localize(`Minimized ${plural}.`, `Ελαχιστοποιήθηκε ${pluralEl}.`);
+            if (command.action === "maximize_all") return localize(`Maximized ${plural}.`, `Μεγιστοποιήθηκε ${pluralEl}.`);
+            return localize(`Restored ${plural}.`, `Επαναφέρθηκε ${pluralEl}.`);
+          }
         }
         return null;
       }
@@ -1333,6 +1416,32 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         const pads = windowsRef.current.filter(isNotepadWindow);
         const pad = pads.find((item) => item.id === focusedWindowIdRef.current)
           ?? [...pads].reverse().find((item) => item.desktop === activeDesktopRef.current) ?? pads[pads.length - 1];
+        /* The bulk forms are handled here rather than falling through to the editor
+         * below: an unknown NotepadAction is forwarded verbatim as an editing
+         * command, so "restore all notepads" would otherwise be typed into the
+         * document. They are also in the no-window guard, because opening a
+         * notepad just to restore it is the opposite of what was asked. */
+        if (command.action.endsWith("_all")) {
+          if (!pads.length) return localize("Notepad is not open.", "Το Σημειωμάριο δεν είναι ανοιχτό.");
+          const ids = pads.map((p) => p.id);
+          if (command.action === "close_all") ids.forEach((padId) => windowClose(padId));
+          else if (command.action === "minimize_all") {
+            setWindows((prev) => prev.map((w) => (ids.includes(w.id) ? { ...w, minimized: true } : w)));
+          } else {
+            setWindows((prev) => prev.map((w) => (ids.includes(w.id)
+              ? { ...w, maximized: command.action === "maximize_all", minimized: false }
+              : w)));
+            windowFocus(ids[ids.length - 1]);
+          }
+          const count = ids.length;
+          const plural = count === 1
+            ? localize("Notepad", "το Σημειωμάριο")
+            : localize(`${count} Notepad windows`, `${count} παράθυρα Σημειωμάτων`);
+          if (command.action === "close_all") return localize(`Closed ${plural}.`, `Κλείστηκε ${plural}.`);
+          if (command.action === "minimize_all") return localize(`Minimized ${plural}.`, `Ελαχιστοποιήθηκε ${plural}.`);
+          if (command.action === "maximize_all") return localize(`Maximized ${plural}.`, `Μεγεθυνθεί ${plural}.`);
+          return localize(`Restored ${plural}.`, `Επαναφέρθηκε ${plural}.`);
+        }
         let request: NotepadCommand = command;
         if (command.action === "command_output") {
           const messages = byConvRef.current[activeIdRef.current ?? ""] ?? [];
@@ -1551,6 +1660,95 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  /* ---------- the reasoning fallback ---------- */
+
+  /* What the screen looks like, for the model to read. Rebuilt per request
+   * rather than cached: a model that is told about a window which has since
+   * closed will confidently address a window that is not there. */
+  const uiStateSnapshot = useCallback(
+    () =>
+      buildUiState({
+        windows: windowsRef.current,
+        focusedWindowId: focusedWindowIdRef.current,
+        activeDesktop: activeDesktopRef.current,
+        tasks: tasksRef.current.map((task) => ({
+          id: task.id,
+          description: task.title,
+          status: task.enabled ? "enabled" : "paused",
+        })),
+      }),
+    [],
+  );
+
+  /* Ask the model to read an utterance the parsers did not recognise.
+   *
+   * Returns [] for every failure, including "the provider is down" and "that
+   * was a question for the agent". Both mean the same thing to the caller -
+   * send it to the agent, which is what happened before this existed - so they
+   * must not be distinguishable here.
+   *
+   * The reply is treated as a proposal. `sanitizeActions` is the only thing that
+   * decides it may run, and it checks every action against the catalogue the
+   * browser just sent, so a hallucinated action is dropped instead of executed
+   * and a number the screen does not show is discarded rather than aimed at
+   * whatever happens to be in that slot. */
+  const resolveCommandWithModel = useCallback(async (text: string): Promise<LocalCommand[]> => {
+    try {
+      const { actions } = await api.resolveCommand({
+        text,
+        language: commandLanguage(),
+        catalogue: renderActionCatalogue(),
+        state: renderUiState(uiStateSnapshot()),
+      });
+      return sanitizeActions(actions, {
+        state: uiStateSnapshot(),
+        utterance: text,
+        language: commandLanguage(),
+        skills: skillsRef.current,
+      });
+    } catch {
+      // An offline backend, a 423 from another window locking the session, a
+      // router that is switched off. None of them may stop the turn: it just
+      // goes to the agent.
+      return [];
+    }
+  }, [commandLanguage, uiStateSnapshot]);
+
+  /* Run a resolved chain in order and answer with one sentence.
+   *
+   * Sequential rather than parallel because the steps of a chain interact:
+   * "close the window and restore terminal 2" is wrong if the second step reads
+   * the window list before the first step has changed it. A step that returns
+   * null is not applicable - the window it names is not open - so it is dropped
+   * and the rest still run; only an empty result means "not a local command",
+   * which is the signal to send the original text to the agent.
+   *
+   * The reply joins the parts that said something, which is what makes a chain
+   * legible out loud: two actions, one spoken sentence, in the order asked. */
+  const runResolvedCommands = useCallback(
+    async (commands: LocalCommand[]): Promise<string | null> => {
+      if (!commands.length) return null;
+      const replies: string[] = [];
+      for (const command of commands) {
+        const reply = await executeLocalCommand(command);
+        if (reply) replies.push(reply);
+      }
+      if (!replies.length) return null;
+      // One full stop per step, so a chain of four actions reads as four clauses
+      // instead of one run-on. Trailing punctuation is trimmed first so a part
+      // that already ended in a full stop does not collect two.
+      return replies
+        .map((reply) => reply.trim().replace(/[.\s]+$/, ""))
+        .filter(Boolean)
+        .map((part) => `${part}.`)
+        .join(" ");
+    },
+    // executeLocalCommand is re-created every render on purpose: it closes over
+    // live window state. Depending on it would rebuild this on every frame.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   async function handleVoiceCommand(text: string) {
     try {
       const command = parseLocalCommand(text, commandLanguage(), skillsRef.current);
@@ -1561,6 +1759,18 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       }
       if (command) {
         const reply = await executeLocalCommand(command);
+        if (reply !== null) {
+          if (reply) speakRef.current(reply);
+          return;
+        }
+      }
+      // The parsers did not recognise it and the local handler could not carry
+      // it out. Ask the model what it meant against the state of the screen -
+      // this is where "restore all terminals" and "bring back the one I closed"
+      // stop being nothing at all.
+      const resolved = await resolveCommandWithModel(text);
+      if (resolved.length) {
+        const reply = await runResolvedCommands(resolved);
         if (reply !== null) {
           if (reply) speakRef.current(reply);
           return;
@@ -1612,6 +1822,28 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         }
         if (command) {
           const reply = await executeLocalCommand(command);
+          if (reply !== null) {
+            if (reply) {
+              setByConv((m) => ({
+                ...m,
+                [convId]: [...(m[convId] ?? []), mkMsg("assistant", reply, { meta: { voice: !!opts.voice } })],
+              }));
+            }
+            setOrb("idle");
+            if (opts.voice && reply) speakRef.current(reply);
+            return;
+          }
+        }
+
+        /* Nothing recognised it and no local handler could carry it out, which
+         * used to mean the turn went straight to the agent. The agent has no
+         * tool that can un-minimize a window, so "restore all terminals" was a
+         * reply and no change. Ask the model what the utterance meant, against
+         * the list of actions the browser supports and the state of the screen,
+         * and run what comes back. */
+        const resolved = await resolveCommandWithModel(clean);
+        if (resolved.length) {
+          const reply = await runResolvedCommands(resolved);
           if (reply !== null) {
             if (reply) {
               setByConv((m) => ({
@@ -1767,6 +1999,16 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             // operator sees the commands and can answer sudo/passphrase
             // prompts by hand.
             attachTerminalWindow(ev.terminal_id);
+          } else if (ev.type === "visio_frame") {
+            /* "Show me what you see" is two requests: an explanation and the
+               picture. The model only writes the explanation, so the frame
+               arrives as its own event and is opened here. Done on the event
+               rather than by scraping the reply for the URL, because the model
+               paraphrasing the sentence must not be able to drop the window. */
+            if (ev.url) {
+              visioFrameMsgRef.current = asstId;
+              windowOpen([{ url: ev.url, title: ev.title || "Camera snapshot" }], { kind: "image" });
+            }
           } else if (ev.type === "task_changed") {
             // The model created, edited or deleted a task during this turn.
             // Re-read instead of patching from the event: the event says *that*

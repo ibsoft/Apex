@@ -186,6 +186,16 @@ class Config:
     # turn is answered once by this model, with no second pass.
     THINK_HARD_MODEL = os.getenv("THINK_HARD_MODEL", "").strip()
     THINK_HARD_MODEL_ENABLED = _bool("THINK_HARD_MODEL_ENABLED", False)
+    # Local-command reasoning fallback. The browser's command parsers are regexes
+    # and only match the phrases they were written for; when one misses, the
+    # utterance used to reach the agent, which has no tool that can un-minimize a
+    # window, so "restore all terminals" produced a reply and no change. This
+    # asks a model to read the missed utterance against the list of actions the
+    # browser supports and the state of the screen. OFF means a miss goes to the
+    # agent, which is exactly the old behaviour.
+    COMMAND_ROUTER_ENABLED = _bool("COMMAND_ROUTER_ENABLED", True)
+    # Optional small model for the above. Empty uses the provider's default model.
+    COMMAND_ROUTER_MODEL = os.getenv("COMMAND_ROUTER_MODEL", "").strip()
     # Tools that need special permission (only enabled via env).
     ENABLE_RUN_PYTHON = _bool("ENABLE_RUN_PYTHON", False)
     ENABLE_RUN_SHELL = _bool("ENABLE_RUN_SHELL", False)
