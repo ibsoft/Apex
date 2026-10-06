@@ -240,6 +240,37 @@ Four rules make this safe, and each has a test:
   all four is the same one: send it to the agent, as it always did. The resolver
   never raises, and a chain runs sequentially (its steps read each other's
   result) and is capped at `MAX_ACTION_CHAIN`.
+- **The answer's *shape* is not the catalogue's shape, and the difference is
+  silent.** `renderActionCatalogue` prints its entries as `terminal.open`, and
+  the live model copies that printed key straight into `"type"` and never sets
+  `"action"` (`{"type": "terminal.open", "count": 2}`; it also produced
+  `{"terminal.open": {"count": 2}}`). `specKey` builds `type + "." + action`, so
+  that entry looks up `terminal.open.` — in no map. **Every action in the chain is
+  dropped, the resolver returns `[]`, and the turn reaches the agent**, which has
+  `terminal_command` and answers half the sentence: "show me two terminals and a
+  notepad" opened two terminals and no notepad. `normalizeEntry` in
+  `commandSpec.ts` reshapes all three forms before the lookup. Reshaping is safe
+  where adding an action is not — the result still has to pass `ALLOWED`, and
+  splitting on the first dot cannot invent a pair — and there is a test per shape
+  plus one asserting a bogus dotted name still drops. **When adding an action,
+  check the real model's answer to a phrase that uses it**; the router prompt now
+  says `type` and `action` are separate fields, but a prompt instruction is a
+  request, not a guarantee, so the normalizer is what makes it hold.
+- **A count the operator gave implies creation.** "two terminals" is a request
+  for two *new* ones. The deterministic parser spells out `create` + `count`, but
+  a model that answers `count: 2` and no `create` used to be read as "focus one",
+  because the executor keyed off `create` alone. `count > 1` now implies it.
+- **A parser must consume the whole sentence, or decline.** "open 3 terminals one
+  notepad and a file manager" is *two thirds* the request. The count branch of
+  `parseTerminalCommand` matched that prefix and returned, so the parser won over
+  the router and the operator got 3 terminals and a silent loss of the rest -
+  the worst kind of failure, because it looks like the system worked. The branch
+  now checks that nothing follows, the same way `finish()` does for the
+  single-target branches; declining sends the whole sentence to the reasoning
+  layer, which answers all three actions. **This is the general trap: a regex
+  with `^` and no end anchor is a prefix matcher.** When adding a branch, anchor
+  it or pass the leftover text to the helper that declines. Test the compound
+  form, not just the single one.
 
 Window titles reach the model, so the state block is fenced and labelled as
 data in the prompt, and `sanitizeActions` treats the returned text as a value to
@@ -605,6 +636,42 @@ settings merge, the env-file mirror and the per-call baresip process.
 - Sessions are owner-scoped in memory, one at a time (`MAX_CALLS = 1`), and
   `sip_call` refuses to run without a `ToolContext.user_id`.
 - Tests: `backend/tests/test_sip_tools.py`.
+
+## Camera, vision and showing the picture (VISIO)
+
+`backend/tools/visio_tools.py` owns the `visio` tool and `GET /api/visio/frame/<token>`;
+`backend/skills/definitions/VISIO.md` is the prompt and `force_visio_skill` in
+`skills/manager.py` routes camera requests to it ahead of the classifier.
+
+- **"Show me what you see" is two requests in one sentence**, and one snapshot
+  answers both: the tool emits `{"type": "visio_frame", "url": ...}`, and
+  `ApexProvider` opens that URL in a desktop window, while the tool result's
+  `description` is what the model reports. Opening from the **event** rather than
+  by scanning the reply is deliberate — a model paraphrasing the sentence must not
+  be able to drop the window, and the signed URL has no image extension so
+  `collectPreviewableItems` would not find it anyway. `visioFrameMsgRef` keeps
+  that scanner from opening it a second time if the model does write it out.
+- **A frame shown is not a frame saved.** `_store_frame` keeps bytes in a bounded
+  in-memory dict (`_FRAMES_MAX`, `_FRAME_TTL_SECONDS`) behind a signed token naming
+  the owner. Nothing is written to disk: `action="save"` remains the only thing
+  that writes a JPEG, into the user's Pictures folder, on an explicit request.
+  `Cache-Control: private, no-store` keeps a proxy from outliving the in-memory TTL.
+- **A frame belongs to the person who captured it.** `_read_frame` returns `None`
+  for a token minted for someone else, and the route answers 404 rather than 403,
+  so another user's frame is indistinguishable from one that never existed.
+- **`force_visio_skill` needed "show me what you see".** The regex knew "what do
+  you see" but not an imperative in front of it, so the phrasing an operator
+  actually uses was answered from training data instead of turning the camera on.
+  That form is anchored to the start of the utterance — unlike the "what do you
+  see" form — because "how do I write a program to show me what you see" is a
+  question *about* the feature and must reach the agent.
+- **`_strip_accents` does not fold final sigma.** It removes diacritics and
+  nothing else, so Greek reaches these patterns with ς intact. The Greek
+  alternatives list both spellings (`τι βλεπει[σς]`); the pre-existing
+  `τι βλεπεις` had been dead for as long as it had been there. This is the same
+  trap `normalize()` documents on the frontend, in the one place that does not
+  call it.
+- Tests: `backend/tests/test_visio_tools.py` (`PreviewTests`, routing), `test_visio_routes.py` (`VisioFrameRouteTests`).
 
 ## Common extension points
 
