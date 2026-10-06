@@ -548,15 +548,29 @@ function parseTerminalCommand(text: string, greek: boolean): LocalCommand | null
   // Plurality is what signals a count, so "open one terminal" and "open
   // terminal 2" keep their old meaning (one window / a target).
   const mCount = norm.match(new RegExp(
+    // "open 3 terminals" / "άνοιξε 3 τερματικά"
     `^(?:open|start|launch|spawn|ανοιξε|ξεκινα|ξεκινησε|εναρξη|δημιουργησε)\\s+` +
     `(?:(?:a|the|another|new|ενα|ενα ακομα|ακομα ενα|μια)\\s+)*` +
     `(\\d+|[a-zα-ω]+)\\s+(?:(?:new|windows?|παραθυρα?)\\s+)*(?:terminals|τερματικα?|τερματικου)(?![a-zα-ω])` +
-    `|(\\d+|[a-zα-ω]+)\\s+(?:terminal|τερματικο)\\s+(?:windows?|παραθυρα?)(?![a-zα-ω])`));
+    // The same request with the count last: "open 3 terminal windows". The old
+    // pattern had this alternative without a verb, so it could only ever match
+    // a sentence that *began* with a number.
+    `|(?:open|start|launch|spawn|ανοιξε|ξεκινα|ξεκινησε|εναρξη|δημιουργησε)\\s+` +
+    `(?:(?:a|the|another|new|ενα|ενα ακομα|ακομα ενα|μια)\\s+)*` +
+    `(\\d+|[a-zα-ω]+)\\s+(?:terminal|τερματικο)\\s+(?:windows?|παραθυρα?)(?![a-zα-ω])`));
   if (mCount) {
     const raw = mCount[1] ?? mCount[2];
     const num = /^\d+$/.test(raw) ? Number(raw) : (greek ? EL_NUMBERS : EN_NUMBERS)[raw];
     // An unknown word ("open a terminals") is not a count: fall through.
     if (num !== undefined && num >= 1) {
+      /* Anchored to the whole sentence. This branch is the one place in this
+         parser that used to match a *prefix* and return, so "open 3 terminals
+         one notepad and a file manager" was read as "open 3 terminals" and the
+         rest of the sentence was silently dropped - the operator got two
+         thirds of what they asked for, with no error anywhere. Every other
+         branch here goes through `finish`, which declines when text remains and
+         hands the turn to the reasoning layer instead. */
+      if (norm.slice(mCount[0].length).trim() !== "") return null;
       return { type: "terminal", action: "open", create: true, count: Math.min(num, 10) };
     }
   }

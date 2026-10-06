@@ -63,6 +63,34 @@ test('a quantifier makes any window-ish verb a bulk request', () => {
   }
 });
 
+test('a counted request is parsed, and only when it is the whole sentence', () => {
+  for (const [text, count] of [
+    ['open 3 terminals', 3],
+    ['open two terminals', 2],
+    ['open 4 terminal windows', 4],
+    ['άνοιξε 3 τερματικά', 3],
+    ['άνοιξε τέσσερα τερματικά', 4],
+  ]) {
+    const got = parse(text, /[α-ω]/.test(text) ? 'el' : 'en');
+    assert.equal(got?.action, 'open', text);
+    assert.equal(got?.count, count, text);
+  }
+  /* A count must not swallow the rest of the sentence. This branch used to
+     match a prefix and return, so "open 3 terminals one notepad and a file
+     manager" was read as "open 3 terminals" and the operator got one third of
+     what they asked for - silently, since the parser returns a valid command
+     and the reasoning layer is never reached. Declining here is what lets the
+     whole sentence be resolved. */
+  for (const text of [
+    'open 3 terminals and a notepad',
+    'open 3 terminals one notepad and a file manager',
+    'open 2 terminals and 2 notepads',
+    'άνοιξε 3 τερματικα και ενα σημειωμαριο',
+  ]) {
+    assert.equal(parse(text, /[α-ω]/.test(text) ? 'el' : 'en'), null, text);
+  }
+});
+
 test('a bare plural is bulk too, with no quantifier at all', () => {
   // Greek "τα τερματικά" has no "all" in it, and means every one of them.
   assert.equal(parse('επαναφέρε τα τερματικά').action, 'restore_all');
