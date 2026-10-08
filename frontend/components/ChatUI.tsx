@@ -170,7 +170,7 @@ function InlineImage({ src, alt }: { src: string; alt: string }) {
 
 function renderRichText(text: string): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
-  const regex = /(!?)\[((?:\\.|[^\]\\])*)\]\((https?:\/\/[^\s)]+|\/api\/files\/download\/[A-Za-z0-9_.-]+|\/api\/editor\/download\/[A-Za-z0-9_.-]+|\/api\/images\/file\/[A-Za-z0-9_.-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/files\/download\/[A-Za-z0-9_.-]+)|(\/api\/editor\/download\/[A-Za-z0-9_.-]+)|(\/api\/images\/file\/[A-Za-z0-9_.-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
+  const regex = /(!?)\[((?:\\.|[^\]\\])*)\]\((https?:\/\/[^\s)]+|\/api\/files\/download\/[A-Za-z0-9_.-]+|\/api\/editor\/download\/[A-Za-z0-9_.-]+|\/api\/images\/file\/[A-Za-z0-9_.-]+|\/api\/visio\/frame\/[A-Za-z0-9_.-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/files\/download\/[A-Za-z0-9_.-]+)|(\/api\/editor\/download\/[A-Za-z0-9_.-]+)|(\/api\/images\/file\/[A-Za-z0-9_.-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)|(\/api\/visio\/frame\/[A-Za-z0-9_.-]+)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
@@ -183,7 +183,10 @@ function renderRichText(text: string): React.ReactNode[] {
     }
     const full = match[0];
     const label = match[2]?.replace(/\\([\\\[\]])/g, "$1");
-    const url = match[3] || match[4] || match[5] || match[6];
+    // Every capture that can carry a URL: markdown target, raw http, then the
+    // bare backend shapes. Reading only the first few left bare image-browser
+    // and obsidian links (and now camera snapshots) as plain text.
+    const url = match[3] || match[4] || match[5] || match[6] || match[7] || match[8] || match[9];
     const fileHref = backendFileHref(url);
     const isBackendFile = fileHref !== null;
     const isImage = match[1] === "!" || (!match[3] && isImageUrl(url));

@@ -72,6 +72,7 @@ import {
   WindowItem,
   WindowKind,
   collectPreviewableItems,
+  groupItemsByKind,
   itemTitle,
   isFilesWindow,
   isNotepadWindow,
@@ -1058,7 +1059,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     if (items.length) {
       autoOpenedMsgRef.current = last.id;
       void resolvePreviewKinds(items, fetch, BASE).then((resolved) => {
-        windowOpen(resolved, { kind: kindForItems(resolved) });
+        /* One window per kind, not one window for everything: a photo, a PDF
+           and a Word file in a single window would all render as the first
+           item's kind. Images still share one gallery window. */
+        for (const group of groupItemsByKind(resolved)) {
+          windowOpen(group, { kind: kindForItems(group) });
+        }
       });
     }
   }, [messages, windowOpen]);

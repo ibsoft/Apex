@@ -2,26 +2,31 @@
 import base64
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.base import ToolContext
-from tools.visio_tools import _frames, _frame_signer, _read_frame, build_visio_tools, capture_frame, describe_frame, effective_settings, pictures_directory, save_frame
+from tools.visio_tools import _frame_signer, _read_frame, build_visio_tools, capture_frame, describe_frame, effective_settings, pictures_directory, save_frame
 from skills.manager import SkillManager, force_visio_skill, route_skill
 
 
 class VisioTests(unittest.TestCase):
     def setUp(self):
-        # SECRET_KEY and BASE_URL: a snapshot now mints a signed preview URL, so
-        # a config without them raises inside the tool and the caller gets an
-        # error string where the description should be.
-        self.config = SimpleNamespace(VISIO_ENABLED=False, VISIO_PROVIDER="ollama", VISIO_MODEL="vision-model", VISIO_CAMERA="", OPENAI_API_KEY="", OPENAI_BASE_URL="", OLLAMA_BASE_URL="http://localhost:11434/v1", SECRET_KEY="test-secret", BASE_URL="https://apex.local")
+        # SECRET_KEY, BASE_URL and DATA_DIR: a snapshot now mints a signed
+        # preview URL and stores the frame under DATA_DIR, so a config without
+        # them raises inside the tool and the caller gets an error string where
+        # the description should be - or writes into the real data directory.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.config = SimpleNamespace(VISIO_ENABLED=False, VISIO_PROVIDER="ollama", VISIO_MODEL="vision-model", VISIO_CAMERA="", OPENAI_API_KEY="", OPENAI_BASE_URL="", OLLAMA_BASE_URL="http://localhost:11434/v1", SECRET_KEY="test-secret", BASE_URL="https://apex.local", DATA_DIR=Path(self.tmp.name))
         self.settings = effective_settings(self.config, {})
         self.tool = build_visio_tools(self.config)[0]
         self.ctx = ToolContext(user_id="alice")
@@ -198,14 +203,18 @@ class CaptureTests(unittest.TestCase):
 
 class PreviewTests(unittest.TestCase):
     """"Show me what you see" has to put the picture on the screen, not only
-    describe it. The frame reaches the browser as a signed URL over an in-memory
-    store, and as an event, so the window opens whatever the model says."""
+    describe it. The frame is stored on disk behind a signed URL, and arrives
+    as an event, so the window opens whatever the model says - and keeps
+    working after a restart, which an in-memory frame never did."""
 
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.config = SimpleNamespace(VISIO_ENABLED=False, VISIO_PROVIDER="ollama", VISIO_MODEL="vision-model",
                                       VISIO_CAMERA="", OPENAI_API_KEY="", OPENAI_BASE_URL="",
                                       OLLAMA_BASE_URL="http://localhost:11434/v1",
-                                      SECRET_KEY="test-secret", BASE_URL="https://apex.local")
+                                      SECRET_KEY="test-secret", BASE_URL="https://apex.local",
+                                      DATA_DIR=Path(self.tmp.name))
         self.settings = effective_settings(self.config, {})
         self.settings["visio_enabled"] = True
         self.tool = build_visio_tools(self.config)[0]
@@ -215,18 +224,18 @@ class PreviewTests(unittest.TestCase):
                         patch("tools.visio_tools.camera_devices", return_value=[{"device": "/dev/video0", "name": "Camera", "accessible": True}]),
                         patch("tools.visio_tools.capture_frame", return_value=b"\xff\xd8jpeg"),
                         patch("tools.visio_tools.describe_frame", return_value="A dog under a car.")]
+        self.runtime, self.devices, self.capture, self.describe = [p.start() for p in self.patches]
         for p in self.patches:
             self.addCleanup(p.stop)
-            p.start()
-        _frames.clear()
 
-    def tearDown(self):
-        _frames.clear()
+    def _ticket(self, url):
+        return _frame_signer(self.config).loads(url.rsplit("/", 1)[-1])
 
     def test_a_snapshot_returns_a_frame_url_and_emits_it(self):
         result = json.loads(self.tool.call({"action": "snapshot", "question": "what do you see"}, self.ctx))
         self.assertEqual(result["description"], "A dog under a car.")
         self.assertIn("/api/visio/frame/", result["image_url"])
+        self.assertTrue(result["shown"])
         self.assertFalse(result["snapshot_saved"], "showing a frame is not saving it")
         # The event is what opens the window; the URL in the result is only a
         # fallback for a caller that wants to render it itself.
@@ -235,25 +244,55 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(self.events[0]["url"], result["image_url"])
 
     def test_the_url_serves_this_users_frame_and_nobody_elses(self):
-        from tools.visio_tools import _frame_signer
+        from tools.visio_tools import _FRAME_TTL_SECONDS
         url = json.loads(self.tool.call({"action": "snapshot"}, self.ctx))["image_url"]
-        key = url.rsplit("/", 1)[-1]
-        self.assertEqual(_read_frame(_frame_signer(self.config).loads(key, max_age=300)["k"], "alice"), b"\xff\xd8jpeg")
+        token = url.rsplit("/", 1)[-1]
+        key = self._ticket(url)["k"]
+        self.assertEqual(_read_frame(self.config, key, "alice"), b"\xff\xd8jpeg")
         # Another user's session must not be able to read it, and must not be
         # able to learn that it exists either.
-        self.assertIsNone(_read_frame(_frame_signer(self.config).loads(key, max_age=300)["k"], "bob"))
+        self.assertIsNone(_read_frame(self.config, key, "bob"))
+        self.assertEqual(_frame_signer(self.config).loads(token, max_age=_FRAME_TTL_SECONDS)["u"], "alice")
 
-    def test_frames_are_held_in_memory_only(self):
+    def test_a_snapshot_is_stored_on_disk_behind_the_signed_url(self):
+        result = json.loads(self.tool.call({"action": "snapshot"}, self.ctx))
+        key = self._ticket(result["image_url"])["k"]
+        stored = Path(self.tmp.name) / "visio" / "alice" / f"{key}.jpg"
+        self.assertEqual(stored.read_bytes(), b"\xff\xd8jpeg")
+        self.assertEqual(stored.stat().st_mode & 0o777, 0o600, "a camera frame is private")
+        # The preview store belongs to the backend data directory; it never
+        # lands in the operator's own folders (that is action="save").
+        self.assertFalse((Path(self.tmp.name) / "Pictures").exists())
+
+    def test_expired_frames_are_swept_when_a_new_one_is_stored(self):
+        directory = Path(self.tmp.name) / "visio" / "alice"
+        directory.mkdir(parents=True)
+        stale = directory / ("0" * 32 + ".jpg")
+        stale.write_bytes(b"old frame")
+        old = time.time() - 8 * 86400
+        os.utime(stale, (old, old))
         json.loads(self.tool.call({"action": "snapshot"}, self.ctx))
-        # Nothing on disk: the module promises frames are written only for
-        # action="save", into Pictures, by an explicit request.
-        self.assertEqual(len(_frames), 1)
+        self.assertFalse(stale.exists(), "frames past the TTL must not pile up")
+
+    def test_describing_without_showing_stores_and_emits_nothing(self):
+        result = json.loads(self.tool.call({"action": "snapshot", "show": False}, self.ctx))
+        self.assertEqual(result["description"], "A dog under a car.")
+        self.assertIsNone(result["image_url"])
+        self.assertFalse(result["shown"])
+        self.assertEqual(self.events, [], "no picture was asked for, no window opens")
+        self.assertFalse((Path(self.tmp.name) / "visio" / "alice").exists())
+
+    def test_show_must_be_a_boolean(self):
+        for bad in ("yes", 1, [], None):
+            self.assertIn("show", self.tool.call({"action": "snapshot", "show": bad}, self.ctx))
+        self.capture.assert_not_called()
 
     def test_a_forged_or_tampered_token_names_no_frame(self):
         from itsdangerous import BadSignature
         with self.assertRaises(BadSignature):
             _frame_signer(self.config).loads("not-a-real-token")
-        self.assertIsNone(_read_frame("deadbeef", "alice"))
+        self.assertIsNone(_read_frame(self.config, "deadbeef", "alice"))
+        self.assertIsNone(_read_frame(self.config, "../../etc/passwd", "alice"))
 
 
 class RoutingTests(unittest.TestCase):

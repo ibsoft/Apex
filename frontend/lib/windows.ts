@@ -46,6 +46,8 @@ export function kindForName(name: string, url = ""): WindowKind {
   const source = (name || url || "").split("?")[0].split("#")[0];
   if (IMAGE_EXT_RE.test(source) || IMAGE_EXT_RE.test(url)) return "image";
   if (/\/api\/images\/file\/[A-Za-z0-9_.\-]+/.test(url)) return "image";
+  // Camera snapshots are served behind a signed token with no extension.
+  if (/\/api\/visio\/frame\/[A-Za-z0-9_.\-]+/.test(url)) return "image";
   const ext = (source.match(/\.([a-z0-9]+)$/i)?.[1] ?? "").toLowerCase();
   if (ext === "pdf") return "pdf";
   if (ext === "docx") return "docx";
@@ -67,10 +69,36 @@ export function kindForItems(items: WindowItem[]): WindowKind {
 export function kindForItem(item: WindowItem): WindowKind {
   return item.kind ?? kindForName(item.title, item.url);
 }
+
+/** Group items so each group is one window of a single kind.
+
+ * A reply can carry several different things (photos from the web, a PDF from
+ * disk, a generated document) and one window can only render one kind: mixed
+ * items fall back to the first item's kind and the rest show as a broken or
+ * wrong body. Images share one gallery window; every other kind gets its own
+ * window, so each item renders as what it actually is. */
+export function groupItemsByKind(items: WindowItem[]): WindowItem[][] {
+  const groups: WindowItem[][] = [];
+  const byKind = new Map<string, WindowItem[]>();
+  for (const item of items) {
+    const kind = kindForItem(item);
+    const key = kind as string;
+    const bucket = byKind.get(key);
+    if (bucket) {
+      bucket.push(item);
+      continue;
+    }
+    const group = [item];
+    byKind.set(key, group);
+    groups.push(group);
+  }
+  return groups;
+}
 /** True for signed backend preview tokens (no visible extension in the URL). */
 export function isSignedPreviewToken(url: string): boolean {
   if (/\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/images\/file\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
+  if (/\/api\/visio\/frame\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/obsidian\/file\?path=/.test(url)) return true;
   return false;
 }
@@ -268,11 +296,12 @@ export function layoutRects(arrangement: WindowArrangement, total: number, vw: n
 /* ---------- extraction from assistant messages ---------- */
 
 const PREVIEWABLE_URL_RE =
-  /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+|\/api\/images\/file\/[A-Za-z0-9_.\-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+)|(\/api\/images\/file\/[A-Za-z0-9_.\-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)/g;
+  /\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+|\/api\/images\/file\/[A-Za-z0-9_.\-]+|\/api\/visio\/frame\/[A-Za-z0-9_.\-]+|\/api\/obsidian\/file\?path=[^\s)]+)\)|(https?:\/\/[^\s<>"{}|\\^`[\]]+)|(\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+)|(\/api\/images\/file\/[A-Za-z0-9_.\-]+)|(\/api\/obsidian\/file\?path=[^\s<>"{}|\\^`[\]]+)|(\/api\/visio\/frame\/[A-Za-z0-9_.\-]+)/g;
 
 function isPreviewableUrl(url: string): boolean {
   if (/\/api\/(?:files|editor|shell|fm)\/download\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/images\/file\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
+  if (/\/api\/visio\/frame\/[A-Za-z0-9_.\-]+$/.test(url)) return true;
   if (/\/api\/obsidian\/file\?path=/.test(url)) return true;
   if (/\.(jpg|jpeg|png|gif|webp|svg|bmp|pdf)(\?.*)?$/i.test(url)) return true;
   return false;
@@ -286,14 +315,22 @@ export function collectPreviewableItems(content: string): WindowItem[] {
   let match: RegExpExecArray | null;
   while ((match = PREVIEWABLE_URL_RE.exec(content)) !== null) {
     const label = match[1];
-    let url = match[2] || match[3] || match[4] || match[5] || match[6];
-    if (!url || seen.has(url) || !isPreviewableUrl(url)) continue;
+    /* `![alt](url)` is the model saying "this is a picture". The regex starts
+       at the `[`, so the intent is the character in front of the match - the
+       same way ChatUI's renderer reads it. That intent opens a window even
+       when the URL carries no image extension (web image search results often
+       do not), and it also pins the kind so it renders as an image. */
+    const wantedImage = match.index > 0 && content[match.index - 1] === "!";
+    let url = match[2] || match[3] || match[4] || match[5] || match[6] || match[7];
+    if (!url || seen.has(url) || !(wantedImage || isPreviewableUrl(url))) continue;
     // raw http(s) captures may swallow trailing sentence punctuation
     if (match[3]) url = url.replace(/[\.,;:!?'")\]]+$/, "");
-    if (!url || seen.has(url) || !isPreviewableUrl(url)) continue;
+    if (!url || seen.has(url) || !(wantedImage || isPreviewableUrl(url))) continue;
     seen.add(url);
     const title = (label && label.trim()) || titleFromUrl(url);
-    items.push({ url, title });
+    // An image intent is also the kind: a search result URL with no extension
+    // would otherwise be guessed as "other" and shown as a download card.
+    items.push(wantedImage ? { url, title, kind: "image" } : { url, title });
   }
   return items;
 }

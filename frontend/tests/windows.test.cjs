@@ -12,7 +12,7 @@ const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
 const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock, windowDownload,
   terminalUrl, terminalSessionId, isTerminalWindow, isFilesWindow, shouldReleaseTerminal, onDesktop,
-  terminalNumber, terminalWindows } = moduleExports;
+  terminalNumber, terminalWindows, isSignedPreviewToken, groupItemsByKind } = moduleExports;
 
 test('kindForName classifies files by extension', () => {
   assert.equal(kindForName('photo.png'), 'image');
@@ -105,6 +105,40 @@ test('terminal items carry a synthetic url, identify sessions, and never downloa
 test('collectPreviewableItems ignores markdown links to plain sites', () => {
   const items = collectPreviewableItems('[Apex](https://opencode.ai) is a site, and so is https://x.com.');
   assert.deepEqual(items, []);
+});
+
+test('camera snapshot URLs are images, signed tokens and previewable', () => {
+  const url = 'https://apex.local/api/visio/frame/eyJ1IjoiYWxpY2UifQ.abc-DEF_123';
+  assert.equal(kindForName('Camera snapshot', url), 'image');
+  assert.equal(kindForName('Camera snapshot', '/api/visio/frame/tok.en'), 'image');
+  assert.equal(isSignedPreviewToken(url), true);
+  assert.equal(isSignedPreviewToken('/api/visio/frame/tok.en'), true);
+  const items = collectPreviewableItems(`Snapshot: ${url} and /api/visio/frame/other-token.99`);
+  assert.deepEqual(items.map((i) => i.url), [url, '/api/visio/frame/other-token.99']);
+});
+
+test('a markdown image opens as an image window even without an extension', () => {
+  // Web image search results often carry no file extension; `![]()` is the
+  // model saying "this is a picture" and must still land in an image window.
+  const items = collectPreviewableItems(
+    '![a cat](https://cdn.example.com/photos/cat) then [the same page](https://cdn.example.com/photos/cat)',
+  );
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, 'image');
+});
+
+test('groupItemsByKind splits a reply into one window per kind, images together', () => {
+  const groups = groupItemsByKind([
+    { url: 'https://x.com/a.png', title: 'a.png' },
+    { url: 'https://y.com/b.jpg', title: 'b.jpg' },
+    { url: '/api/editor/download/t1', title: 'Report.docx', kind: 'docx' },
+    { url: 'https://z.com/c.pdf', title: 'c.pdf' },
+  ]);
+  assert.equal(groups.length, 3, 'photos share one window; the document and the PDF get their own');
+  assert.deepEqual(groups[0].map((i) => i.title), ['a.png', 'b.jpg']);
+  assert.deepEqual(groups[1].map((i) => i.title), ['Report.docx']);
+  assert.deepEqual(groups[2].map((i) => i.title), ['c.pdf']);
+  assert.deepEqual(groupItemsByKind([]), []);
 });
 
 test('windowContextBlock labels focused windows and is empty when nothing is open', () => {
