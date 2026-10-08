@@ -11,7 +11,7 @@ without any client-side document library:
                       work even for links whose download route is attachment-only
   - anything else   -> 415 (the window shows a "download" card instead)
 
-Only the four known, signed/validated source URL shapes are accepted; every
+Only the known, signed/validated source URL shapes are accepted; every
 other URL is rejected. The same signer salts, ownership checks and path
 containment rules as the source download routes are reused.
 """
@@ -91,7 +91,7 @@ def _escape(value: object) -> str:
 
 
 def _resolve_source(url: str, user_id: str, config):
-    """Resolve one of the four known signed URL shapes to a local file.
+    """Resolve one of the known signed URL shapes to a local file.
 
     Returns (path, display_name). Raises _PreviewError for anything invalid.
     """
@@ -237,6 +237,24 @@ def _resolve_source(url: str, user_id: str, config):
             raise
         except (OSError, ValueError, KeyError, TypeError):
             raise _PreviewError("Image is unavailable.", 404)
+        return target, target.name
+
+    # ---- VISIO camera snapshots ----
+    m = re.fullmatch(r"/api/visio/frame/([A-Za-z0-9_.\-]+)", path)
+    if m:
+        from tools.visio_tools import _FRAME_TTL_SECONDS, _frame_path, _frame_signer
+
+        try:
+            ticket = _frame_signer(config).loads(m.group(1), max_age=_FRAME_TTL_SECONDS)
+        except Exception as exc:
+            raise _PreviewError(_ticket_message("link", exc), _ticket_status(exc))
+        if not isinstance(ticket, dict) or str(ticket.get("u")) != str(user_id):
+            # 404, not 403: a snapshot minted for somebody else must be
+            # indistinguishable from one that was never issued.
+            raise _PreviewError("Snapshot is unavailable.", 404)
+        target = _frame_path(config, str(ticket.get("k") or ""), str(user_id))
+        if target is None:
+            raise _PreviewError("Snapshot is unavailable.", 404)
         return target, target.name
 
     # ---- Obsidian attachments (path-based, vault-contained) ----

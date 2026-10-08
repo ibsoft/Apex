@@ -1,4 +1,6 @@
 """VISIO settings and detection use the existing authenticated/CSRF session."""
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from test_auth_routes import AuthRouteTestCase
@@ -8,12 +10,28 @@ from tools import visio_tools
 
 
 class VisioFrameRouteTests(AuthRouteTestCase):
-    """A captured frame is served from memory to the person who captured it."""
+    """A captured frame is served from disk to the person who captured it."""
+
+    def setUp(self):
+        super().setUp()
+        # The frames live under DATA_DIR/visio/<user>/; a test must write its
+        # snapshots into a throwaway directory, never the live data dir.
+        self._frames_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._frames_tmp.cleanup)
+        data_dir = patch.object(config, "DATA_DIR", Path(self._frames_tmp.name))
+        data_dir.start()
+        self.addCleanup(data_dir.stop)
 
     def _frame_url(self, user_id="alice"):
         from tools.visio_tools import preview_url
-        visio_tools._frames.clear()
         return preview_url(config, user_id, b"\xff\xd8jpeg-bytes")
+
+    def _stored_file(self, url, user_id="alice"):
+        token = url.rsplit("/", 1)[-1]
+        key = visio_tools._frame_signer(config).loads(
+            token, max_age=visio_tools._FRAME_TTL_SECONDS
+        )["k"]
+        return Path(self._frames_tmp.name) / "visio" / user_id / f"{key}.jpg"
 
     def test_a_frame_needs_a_session_and_is_not_cached(self):
         client = self._app().test_client()
@@ -25,7 +43,7 @@ class VisioFrameRouteTests(AuthRouteTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, b"\xff\xd8jpeg-bytes")
         self.assertEqual(response.mimetype, "image/jpeg")
-        # The frame leaves memory after its TTL; a proxy or the disk cache must
+        # The frame is released after its TTL; a proxy or the disk cache must
         # not keep a picture of the room past that.
         self.assertIn("no-store", response.headers.get("Cache-Control", ""))
 
@@ -44,18 +62,18 @@ class VisioFrameRouteTests(AuthRouteTestCase):
         self.assertEqual(client.get("/api/visio/frame/not-a-real-token").status_code, 404)
         # An honestly signed token whose age is past its max_age. The TTL is
         # negative for the whole exchange, signing included, so this is the
-        # signature expiring (410) rather than the frame having been swept out
-        # of memory - which is the other limit, asserted separately below.
+        # signature expiring (410) rather than the file having been swept off
+        # disk - which is the other limit, asserted separately below.
         with patch("tools.visio_tools._FRAME_TTL_SECONDS", -1):
             stale = self._frame_url()
             self.assertEqual(client.get(f"/api{stale.split('/api', 1)[1]}").status_code, 410)
 
-    def test_a_frame_swept_from_memory_is_not_found(self):
+    def test_a_frame_removed_from_disk_is_not_found(self):
         client = self._app().test_client()
         self._login(client)
         url = self._frame_url()
         route = f"/api{url.split('/api', 1)[1]}"
-        visio_tools._frames.clear()
+        self._stored_file(url).unlink()
         self.assertEqual(client.get(route).status_code, 404)
 
     def test_locked_sessions_cannot_read_a_frame(self):

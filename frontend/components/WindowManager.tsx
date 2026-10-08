@@ -76,12 +76,15 @@ function KindTag({ kind }: { kind: string }) {
 }
 
 /* Title-bar download: every window gets one. Signed backend links hit the
- * download endpoint; external links open the original in a new tab. */
+ * download endpoint (rewritten to the browser-facing /be origin, because the
+ * absolute URL the backend minted points wherever BASE_URL says, not
+ * necessarily here); external links open the original in a new tab. */
 function DownloadButton({ item }: { item: WindowItem }) {
   const link = windowDownload(item);
   if (!link) return null;
+  const href = backendFileHref(item.url) ?? link.href;
   return (
-    <a href={link.href} download={link.download} target="_blank" rel="noreferrer" aria-label="Download file"
+    <a href={href} download={link.download} target="_blank" rel="noreferrer" aria-label="Download file"
       title="Download file"
       style={{ background: "none", border: "none", color: C.cyan, cursor: "pointer", fontSize: 13, lineHeight: 1, fontFamily: "var(--font-mono)", textDecoration: "none" }}>
       ⭳
@@ -122,7 +125,7 @@ function HtmlDocBody({ item, htmlSrc }: HtmlDocBodyProps) {
       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12, alignItems: "center", justifyContent: "center", padding: 20, textAlign: "center" }}>
         <div style={{ fontSize: 34 }}>📄</div>
         <div style={{ fontSize: 11, color: C.dim, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>{item.title}</div>
-        <a href={item.url} download={item.title} style={{
+        <a href={backendFileHref(item.url) ?? item.url} download={item.title} style={{
           display: "inline-block", padding: "8px 16px", borderRadius: 8,
           background: `${C.cyan}18`, border: `1px solid ${C.line}`,
           color: C.cyan, fontSize: 10, fontFamily: "var(--font-mono)",
@@ -175,7 +178,7 @@ function ImageBody({ items, index, onNext, onPrevious }: {
           <div style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)", letterSpacing: "0.06em" }}>
             IMAGE UNAVAILABLE — APPLY FOR THE SAVED LINK
           </div>
-          <a href={item.url} target="_blank" rel="noreferrer"
+          <a href={backendFileHref(item.url) ?? item.url} target="_blank" rel="noreferrer"
             style={{ fontSize: 10, color: C.cyan, fontFamily: "var(--font-mono)", letterSpacing: "0.06em", textDecoration: "none" }}>
             OPEN ORIGINAL
           </a>
@@ -207,7 +210,7 @@ function OtherBody({ item }: { item: WindowItem }) {
         NO INLINE PREVIEW — DOWNLOAD INSTEAD
       </div>
       {link ? (
-        <a href={link.href} download={link.download}
+        <a href={backendFileHref(item.url) ?? link.href} download={link.download}
           style={{ display: "inline-block", padding: "9px 18px", borderRadius: 9,
             background: `${C.cyan}18`, border: `1px solid ${C.line}`,
             color: C.cyan, fontSize: 10, fontFamily: "var(--font-mono)",

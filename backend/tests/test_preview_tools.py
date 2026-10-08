@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from flask import Flask
@@ -265,6 +266,53 @@ class PreviewRenderTests(unittest.TestCase):
             query_string={"url": self.sign_images_link(blob)},
         )
         self.assertEqual(response.status_code, 415)
+
+    # ---- VISIO camera snapshots ----------------------------------------------
+
+    def _visio_url(self, user="alice"):
+        from tools.visio_tools import _frame_signer, _store_frame
+
+        key = _store_frame(self.config, user, b"\xff\xd8visio-bytes")
+        return f"/api/visio/frame/{_frame_signer(self.config).dumps({'u': user, 'k': key})}"
+
+    def test_visio_snapshot_serves_inline_as_an_image(self):
+        response = self.client.get(
+            "/api/preview/render",
+            query_string={"url": self._visio_url()},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, b"\xff\xd8visio-bytes")
+        self.assertIn("image/jpeg", response.headers["Content-Type"])
+
+    def test_visio_snapshot_kind_is_image(self):
+        kind = self.client.get(
+            "/api/preview/kind",
+            query_string={"url": self._visio_url()},
+        ).get_json()
+        self.assertEqual(kind["kind"], "image")
+
+    def test_visio_snapshot_of_another_user_is_not_found(self):
+        # 404, not 403: somebody else's snapshot link must look exactly like
+        # one that never existed.
+        response = self.client.get(
+            "/api/preview/render",
+            query_string={"url": self._visio_url(user="bob")},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_expired_visio_snapshot_rejected(self):
+        from tools.visio_tools import _store_frame
+
+        key = _store_frame(self.config, "alice", b"\xff\xd8visio-bytes")
+        with patch("tools.visio_tools._FRAME_TTL_SECONDS", -1):
+            from tools.visio_tools import _frame_signer
+
+            token = _frame_signer(self.config).dumps({"u": "alice", "k": key})
+            response = self.client.get(
+                "/api/preview/render",
+                query_string={"url": f"/api/visio/frame/{token}"},
+            )
+        self.assertEqual(response.status_code, 410)
 
     # ---- Obsidian vault -----------------------------------------------------
 

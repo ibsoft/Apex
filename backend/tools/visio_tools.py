@@ -1,4 +1,4 @@
-"""On-demand host-camera snapshots. Frames are saved only on explicit request."""
+"""On-demand host-camera snapshots. Pictures are saved only on explicit request."""
 from __future__ import annotations
 
 import base64
@@ -19,17 +19,19 @@ from tools.base import Tool
 _CAPTURE_LOCK = threading.Lock()
 
 # --- showing a frame to the operator -------------------------------------
-# A description is a *report* about a picture, and the operator asked to see it.
-# The frame has to reach the browser somehow, so it is held in memory behind a
-# signed, expiring URL and never written to disk - "saved only on explicit
-# request" is the promise this module makes about the camera light and the file
-# system, and a preview is not a save. `visio(action="save")` remains the only
-# thing that writes a JPEG, into Pictures, named by the operator's own request.
+# A description is a *report* about a picture, and the operator asked to see
+# it. The frame reaches the browser through a signed URL, and the bytes behind
+# that URL live on disk under DATA_DIR/visio/<user>/ rather than in process
+# memory: a window that is still open must keep rendering after a service
+# restart, and a frame bound to RAM dies with the first sweep or reload, which
+# is exactly when the operator is looking at it. `visio(action="save")` remains
+# the only thing that writes into Pictures, named by the operator's own
+# request; a preview snapshot is stored in the backend data directory, never in
+# the user's folders, and is swept after its TTL.
 _FRAME_SALT = "apex-visio-frame"
-_FRAME_TTL_SECONDS = 300
-_FRAMES_MAX = 8
-_frames: dict[str, tuple[float, str, bytes]] = {}
-_frames_lock = threading.Lock()
+_FRAME_TTL_SECONDS = 7 * 86400
+_FRAMES_USER_MAX = 50
+_USER_DIR_RE = re.compile(r"[A-Za-z0-9_.\-]{1,64}")
 
 
 def _frame_signer(config):
@@ -38,50 +40,122 @@ def _frame_signer(config):
     return URLSafeTimedSerializer(getattr(config, "SECRET_KEY", "dev-change-me"), salt=_FRAME_SALT)
 
 
-def _store_frame(user_id: str, frame: bytes) -> str:
-    """Keep the newest few frames, dropping the expired ones as we go.
+def _frames_root(config) -> Path:
+    root = Path(getattr(config, "DATA_DIR", Path(__file__).resolve().parents[1] / "data")) / "visio"
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
 
-    Returns the key, which is what the signed URL carries. The key is generated
-    here rather than by the caller because it has to be the one actually stored,
-    and the signer must not be able to name a frame that does not exist.
-    """
+
+def _user_dir(config, user_id) -> Path | None:
+    """The owner's frame directory, or None for a name that cannot be one.
+
+    The user id comes from the session and from the signed ticket, but it still
+    has to be a plain directory name: a slash or a ".." in it would address
+    files outside the visio root."""
+    name = str(user_id or "")
+    if not _USER_DIR_RE.fullmatch(name):
+        return None
+    return _frames_root(config) / name
+
+
+def _sweep_user_frames(directory: Path) -> None:
+    """Drop frames past the TTL and keep the per-user cap, oldest first."""
+    try:
+        entries = sorted(
+            (p for p in directory.iterdir() if p.is_file() and p.suffix == ".jpg"),
+            key=lambda p: p.stat().st_mtime,
+        )
+    except OSError:
+        return
+    cutoff = time.time() - _FRAME_TTL_SECONDS
+    fresh: list[Path] = []
+    for path in entries:
+        try:
+            expired = path.stat().st_mtime < cutoff
+        except OSError:
+            continue
+        if expired:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        else:
+            fresh.append(path)
+    # Called before a write, so leave room for the frame about to be stored.
+    for path in fresh[: max(0, len(fresh) + 1 - _FRAMES_USER_MAX)]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _store_frame(config, user_id: str, frame: bytes) -> str:
+    """Write the frame under the owner's directory and return its key.
+
+    The key is generated here rather than by the caller because it has to be
+    the name of the file actually stored, and the signer must not be able to
+    address a frame that does not exist."""
+    directory = _user_dir(config, user_id)
+    if directory is None:
+        raise ValueError("This account cannot hold snapshots.")
+    directory.mkdir(parents=True, exist_ok=True)
+    _sweep_user_frames(directory)
     key = uuid.uuid4().hex
-    now = time.time()
-    with _frames_lock:
-        for stale in [k for k, (at, _, _) in _frames.items() if now - at > _FRAME_TTL_SECONDS]:
-            _frames.pop(stale, None)
-        while len(_frames) >= _FRAMES_MAX:
-            _frames.pop(next(iter(_frames)), None)
-        _frames[key] = (now, user_id, frame)
+    target = directory / f"{key}.jpg"
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(frame)
+    except Exception:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise
     return key
 
 
-def _read_frame(key: str, user_id: str) -> bytes | None:
-    """The frame for this signed key, if it is still current and still theirs."""
-    now = time.time()
-    with _frames_lock:
-        entry = _frames.get(key)
-        if entry is None:
+def _frame_path(config, key: str, user_id: str) -> Path | None:
+    """The stored frame for this signed key, if it is still fresh and theirs."""
+    if not re.fullmatch(r"[0-9a-f]{32}", str(key or "")):
+        return None
+    directory = _user_dir(config, user_id)
+    if directory is None:
+        return None
+    try:
+        target = (directory / f"{key}.jpg").resolve()
+        if not target.is_relative_to(directory.resolve()) or not target.is_file():
             return None
-        at, owner, frame = entry
-        if now - at > _FRAME_TTL_SECONDS:
-            _frames.pop(key, None)
+        if time.time() - target.stat().st_mtime > _FRAME_TTL_SECONDS:
+            target.unlink(missing_ok=True)
             return None
-        if owner != user_id:
-            # A live frame belongs to the one person who asked for it. Answering
-            # 403-free None here would still be a probe, so the route reports it
-            # as not-found: another user's token must be indistinguishable from
-            # one that was never issued.
-            return None
-        return frame
+    except OSError:
+        return None
+    return target
+
+
+def _read_frame(config, key: str, user_id: str) -> bytes | None:
+    """The frame for this signed key, if it is still current and still theirs.
+
+    The owner check is the directory the key resolves into: another user's
+    token addresses their directory, which this caller's session is not, so the
+    route reports not-found and a second user cannot tell "not yours" from
+    "never existed"."""
+    target = _frame_path(config, key, user_id)
+    if target is None:
+        return None
+    try:
+        return target.read_bytes()
+    except OSError:
+        return None
 
 
 def preview_url(config, user_id: str, frame: bytes) -> str:
     """A signed URL for this frame, so the browser can render what it saw."""
     from public_urls import public_url
 
-    key = _store_frame(user_id, frame)
-    token = _frame_signer(config).dumps({"u": user_id, "k": key})
+    key = _store_frame(config, user_id, frame)
+    token = _frame_signer(config).dumps({"u": str(user_id), "k": key})
     return public_url(config, f"/api/visio/frame/{token}")
 VISION_PROMPT = (
     "Describe the visible scene and objects accurately. State uncertainty. "
@@ -235,13 +309,13 @@ def save_snapshots(config, user_id, device, count):
 
 
 def register_visio_routes(app, require_user, config):
-    """Serve one captured frame, from memory, to the person who captured it.
+    """Serve one captured frame, from disk, to the person who captured it.
 
-    The frame is never written to disk for this: it lives in `_frames` until its
-    TTL, addressed by a signed token naming the owner. A token that is forged,
-    expired, or minted for somebody else all answer 404, so a second user cannot
-    tell "that frame is not yours" from "that frame does not exist" - the same
-    rule the rest of the object routes follow."""
+    The frame is stored under DATA_DIR/visio/<owner>/ and addressed by a
+    signed token naming that owner. A token that is forged, expired, or minted
+    for somebody else all answer 404, so a second user cannot tell "that frame
+    is not yours" from "that frame does not exist" - the same rule the rest of
+    the object routes follow."""
     from flask import Response, jsonify, request
     from itsdangerous import BadSignature, SignatureExpired
 
@@ -256,14 +330,14 @@ def register_visio_routes(app, require_user, config):
             return jsonify({"error": "This snapshot has expired. Ask for a new one."}), 410
         except BadSignature:
             return jsonify({"error": "This snapshot link is not valid."}), 404
-        if not isinstance(ticket, dict):
+        if not isinstance(ticket, dict) or str(ticket.get("u")) != str(user["id"]):
             return jsonify({"error": "This snapshot link is not valid."}), 404
-        frame = _read_frame(str(ticket.get("k") or ""), str(user["id"]))
+        frame = _read_frame(config, str(ticket.get("k") or ""), str(user["id"]))
         if frame is None:
             return jsonify({"error": "This snapshot is no longer available."}), 404
         response = Response(frame, mimetype="image/jpeg")
-        # The camera light is on for a turn; a proxy or the disk cache must not
-        # keep this frame after the TTL that releases it from memory.
+        # The frame is released after its TTL; a proxy or the disk cache must
+        # not keep serving a picture of the room past that point.
         response.headers["Cache-Control"] = "private, no-store"
         return response
 
@@ -293,6 +367,13 @@ def build_visio_tools(config):
         question = args.get("question", "What do you see now?")
         if not isinstance(question, str) or not question.strip() or len(question) > 4000:
             return "VISIO error: question must be between 1 and 4000 characters."
+        # Whether the picture itself is wanted is the model's call from the
+        # request: "show me" wants the window, "describe" wants words only. It
+        # defaults to true so a forgotten flag costs an extra window, never the
+        # picture the operator asked for.
+        show = args.get("show", True)
+        if type(show) is not bool:
+            return "VISIO error: show must be true or false."
         devices = camera_devices()
         device = settings["visio_camera"]
         if not devices:
@@ -313,15 +394,23 @@ def build_visio_tools(config):
                 return "VISIO was disabled; the snapshot was discarded."
             description = describe_frame(config, settings, frame, question)
             # "Show me what you see" asks for two things: an explanation and the
-            # picture. The frame is kept in memory (never written to disk) behind
-            # a short-lived signed URL, and the browser opens it in a window.
-            url = preview_url(config, ctx.user_id, frame)
-            if ctx.emit:
+            # picture. When the picture is wanted it is stored on disk behind a
+            # signed URL and the browser opens it in a window from there, so
+            # the window survives a restart instead of dying with the process.
+            # When only the description was asked for, nothing is stored.
+            url = None
+            if show:
+                try:
+                    url = preview_url(config, ctx.user_id, frame)
+                except (OSError, ValueError):
+                    # The picture was seen and described; only the window failed.
+                    url = None
+            if url and ctx.emit:
                 ctx.emit({"type": "visio_frame", "url": url,
                           "title": "Camera snapshot", "camera": device})
             return json.dumps({"description": description, "camera": device,
                                "model": settings["visio_model"], "image_url": url,
-                               "snapshot_saved": False})
+                               "shown": bool(url), "snapshot_saved": False})
         except ValueError as exc:
             return f"VISIO error: {exc}"
         except Exception:
@@ -333,4 +422,5 @@ def build_visio_tools(config):
                      "action": {"type": "string", "enum": ["status", "snapshot", "save"]},
                      "count": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Number of fresh snapshots to save; defaults to 1. Only for action save."},
                      "question": {"type": "string", "description": "What the user wants to know about the visible scene."},
+                     "show": {"type": "boolean", "description": "True when the user wants to SEE the picture as well (show/show me/what does it look like) - the browser then opens it in a window. False when the request is only to describe, read, classify or analyse what is in front of the camera and the picture itself is not wanted. Defaults to true."},
                  }, "required": ["action"], "additionalProperties": False}, t_visio)]

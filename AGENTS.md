@@ -295,8 +295,11 @@ optional per-window notes.
   ToggleMaximize/ToggleMinimize/Arrange/Next/Previous/SetNote/ToggleNotes/Update`.
 - `frontend/lib/windows.ts` is the single model + helper module:
   `kindForName`/`kindForItems`, `titleFromUrl`, `layoutRects` (cascade/grid/
-  tile-h/tile-v/center), `collectPreviewableItems` (token, obsidian and raw
-  image/PDF URL extraction from assistant messages) and `windowContextBlock`.
+  tile-h/tile-v/center), `collectPreviewableItems` (token, obsidian, camera
+  snapshot and raw image/PDF URL extraction from assistant messages — a
+  `![alt](url)` counts as an image even without an extension) and
+  `groupItemsByKind` (one window per kind: photos share a gallery, a document
+  or PDF gets its own) and `windowContextBlock`.
   Tests: `frontend/tests/windows.test.cjs`.
 - `frontend/components/WindowManager.tsx` renders the layer (drag title bar,
   bottom-right resize handle, gallery arrows in-image, notes panel, taskbar).
@@ -651,14 +654,33 @@ settings merge, the env-file mirror and the per-call baresip process.
   be able to drop the window, and the signed URL has no image extension so
   `collectPreviewableItems` would not find it anyway. `visioFrameMsgRef` keeps
   that scanner from opening it a second time if the model does write it out.
-- **A frame shown is not a frame saved.** `_store_frame` keeps bytes in a bounded
-  in-memory dict (`_FRAMES_MAX`, `_FRAME_TTL_SECONDS`) behind a signed token naming
-  the owner. Nothing is written to disk: `action="save"` remains the only thing
-  that writes a JPEG, into the user's Pictures folder, on an explicit request.
-  `Cache-Control: private, no-store` keeps a proxy from outliving the in-memory TTL.
-- **A frame belongs to the person who captured it.** `_read_frame` returns `None`
-  for a token minted for someone else, and the route answers 404 rather than 403,
-  so another user's frame is indistinguishable from one that never existed.
+- **Whether the picture is wanted at all is the model's call, via `show`.**
+  `show=true` (the default) stores the frame and opens the window; `show=false`
+  stores nothing and the reply is words only ("describe what you see"). The
+  default is deliberate: a forgotten flag costs one extra window, never the
+  picture the operator asked for. Validate it before the camera is touched.
+- **A frame shown is stored on disk, not in RAM.** `_store_frame` writes the
+  JPEG to `DATA_DIR/visio/<user>/<key>.jpg` (0600, `O_EXCL`) behind a signed
+  token naming the owner, swept after `_FRAME_TTL_SECONDS` (7 days) and capped
+  at `_FRAMES_USER_MAX` per user. RAM was the wrong store: the window died on
+  the first restart or sweep, which is exactly when the operator is looking at
+  it. `action="save"` remains the only thing that writes into the user's
+  Pictures folder; a preview never lands in a user folder. `Cache-Control:
+  private, no-store` keeps a proxy serving past the TTL.
+- **A frame belongs to the person who captured it.** The ticket's `u` must
+  match the session user, `_frame_path` only resolves inside that user's
+  directory, and the route answers 404 rather than 403, so another user's
+  frame is indistinguishable from one that never existed. `preview_tools.
+  _resolve_source` has a matching branch so `windowSource` can render the
+  snapshot through `/api/preview/render` like every other signed link.
+- **The window layer decides what shows and how many windows.** The reply
+  scanner (`collectPreviewableItems` → `groupItemsByKind`) opens one window
+  per kind — photos share a gallery window, a PDF or document gets its own —
+  and treats `![alt](url)` as an image even without an extension, because a
+  web image search result often has none. `backendFileHref`,
+  `isSignedPreviewToken`, `isPreviewableUrl` and `kindForName` all know the
+  `/api/visio/frame/<token>` shape; a new signed URL shape has to be added to
+  all of them or its window silently shows the "IMAGE UNAVAILABLE" card.
 - **`force_visio_skill` needed "show me what you see".** The regex knew "what do
   you see" but not an imperative in front of it, so the phrasing an operator
   actually uses was answered from training data instead of turning the camera on.
@@ -671,7 +693,9 @@ settings merge, the env-file mirror and the per-call baresip process.
   `τι βλεπεις` had been dead for as long as it had been there. This is the same
   trap `normalize()` documents on the frontend, in the one place that does not
   call it.
-- Tests: `backend/tests/test_visio_tools.py` (`PreviewTests`, routing), `test_visio_routes.py` (`VisioFrameRouteTests`).
+- Tests: `backend/tests/test_visio_tools.py` (`PreviewTests`, routing), `test_visio_routes.py`
+  (`VisioFrameRouteTests`), `test_preview_tools.py` (snapshot branch),
+  `frontend/tests/windows.test.cjs` (visio URL shapes, `groupItemsByKind`).
 
 ## Common extension points
 
