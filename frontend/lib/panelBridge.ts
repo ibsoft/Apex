@@ -36,7 +36,10 @@ export const PANEL_TAB_NAMES: readonly PanelTabName[] = [
   "tasks",
 ];
 
-export type PanelCommand = { action: "open" | "close" | "toggle"; tab?: PanelTabName };
+export type PanelCommand = {
+  action: "open" | "close" | "toggle" | "maximize" | "normalize";
+  tab?: PanelTabName;
+};
 export type ChatInputCommand = { action: "write" | "send"; text?: string };
 
 export const PANEL_EVENT = "apex:panel";

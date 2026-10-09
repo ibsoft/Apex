@@ -64,6 +64,21 @@ class MemoryUploadTests(unittest.TestCase):
         self.assertTrue(body["ok"])
         self.assertGreater(body["total"], 0)
         self.assertEqual(body["files"][0]["filename"], "test.txt")
+        # A bounded preview travels back so the attaching turn can answer from
+        # the document without a recall round-trip.
+        self.assertIn("hello world", body["files"][0]["preview"])
+
+    def test_upload_preview_is_bounded(self):
+        text = b"x" * 5000
+        data = {"files": (io.BytesIO(text), "long.txt")}
+        resp = self.client.post(
+            "/api/memory/upload",
+            data=data,
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(resp.status_code, 200)
+        preview = resp.get_json()["files"][0]["preview"]
+        self.assertEqual(len(preview), 2000)
 
     def test_upload_rejects_no_files(self):
         resp = self.client.post("/api/memory/upload", data={})

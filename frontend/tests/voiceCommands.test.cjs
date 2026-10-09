@@ -13,7 +13,7 @@ new Function('exports', compiled)(moduleExports);
 const {
   wakePattern, isWakeOnlyText, isWakeWordFragment, isSleepCommand, recognitionLanguage,
   accumulateResults, commandText, emptyResultSnapshot, sliceAfterLastWake,
-  wakeAcks, pickWakeAck, stripAckEcho,
+  wakeAcks, pickWakeAck, stripAckEcho, speechSummary,
 } = moduleExports;
 
 test('Greek default wake aliases preserve command text and recognize Unicode boundaries', () => {
@@ -278,4 +278,47 @@ test('acknowledgement echo is removed from a command without touching its wordin
   const ack = 'APEX online.';
   const heard = stripAckEcho('apex open the notes APEX online', ack);
   assert.equal(sliceAfterLastWake(heard, 'apex', 'en'), 'open the notes');
+});
+
+test('speechSummary strips raw command output so the voice speaks the prose', () => {
+  // A df -h table fenced into the reply must not be read row by row.
+  const reply = [
+    'Here is the disk usage information:',
+    '',
+    '```',
+    'Filesystem      Size  Used Avail Use% Mounted on',
+    'tmpfs           3.2G  7.2M  3.2G   1% /run',
+    '/dev/sda1       458G  304G  131G  71% /',
+    '```',
+    '',
+    '- The root filesystem has 71% used.',
+    '- The tmpfs mounts are nearly empty.',
+  ].join('\n');
+  const spoken = speechSummary(reply);
+  assert.ok(!spoken.includes('Filesystem'), spoken);
+  assert.ok(!spoken.includes('3.2G'), spoken);
+  assert.ok(!spoken.includes('/dev/sda1'), spoken);
+  assert.ok(!spoken.includes('```'), spoken);
+  assert.ok(spoken.includes('Here is the disk usage information:'), spoken);
+  assert.ok(spoken.includes('The root filesystem has 71% used.'), spoken);
+});
+
+test('speechSummary drops markdown table rows but keeps surrounding prose', () => {
+  const reply = [
+    'Disk report:',
+    '| Mount | Use% |',
+    '|-------|------|',
+    '| /     | 71%  |',
+    'That is all.',
+  ].join('\n');
+  const spoken = speechSummary(reply);
+  assert.ok(!spoken.includes('|'), spoken);
+  assert.ok(spoken.includes('Disk report:'), spoken);
+  assert.ok(spoken.includes('That is all.'), spoken);
+});
+
+test('speechSummary removes list/heading markers and closes an unclosed fence', () => {
+  assert.equal(speechSummary('## Summary\n- one\n- two'), 'Summary\none\ntwo');
+  assert.equal(speechSummary('Done.\n```\nraw stuff'), 'Done.');
+  assert.equal(speechSummary(''), '');
 });

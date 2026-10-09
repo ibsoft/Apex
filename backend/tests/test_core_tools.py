@@ -1,17 +1,20 @@
 """Tests for dangerous/tools that run external processes."""
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from config import config
-from skills.manager import SkillManager
-from tools.base import ToolContext
-from tools.core_tools import build_core_tools
-from tools.vapt_tools import SUDO_MARKER, sudocred_clear, sudocred_get, sudocred_set
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from config import config  # noqa: E402
+from skills.manager import SkillManager  # noqa: E402
+from tools.base import Tool, ToolContext, ToolRegistry  # noqa: E402
+from tools.core_tools import build_core_tools  # noqa: E402
+from tools.vapt_tools import SUDO_MARKER, sudocred_clear, sudocred_get, sudocred_set  # noqa: E402
 
 
 class MockCfg:
@@ -86,7 +89,13 @@ class CreateSkillTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.orig_data_dir = config.DATA_DIR
         config.DATA_DIR = Path(self.tmp.name)
-        registry = type("R", (), {"get": lambda self, key: None})()
+        # A registry that really knows these tools, so an unknown name means
+        # something: create_skill now validates `tools` against it.
+        registry = ToolRegistry()
+        for name in ("web_search", "web_fetch"):
+            registry.register(
+                Tool(name, f"{name} test tool", {"type": "object", "properties": {}},
+                     lambda args, ctx: "ok"))
         self.tools = {t.name: t for t in build_core_tools(registry, config)}
 
     def tearDown(self):

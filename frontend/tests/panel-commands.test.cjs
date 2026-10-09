@@ -44,6 +44,32 @@ test('open and close panel in Greek', () => {
   assert.deepEqual(parse('κλείσε το πάνελ', 'el'), { type: 'panel', action: 'close' });
 });
 
+// --- maximize / normalize -------------------------------------------------
+test('maximize and normalize the panel width', () => {
+  for (const phrase of ['maximize the panel', 'maximise the panel', 'expand the panel',
+                        'enlarge the panel', 'maximize the chat panel', 'full screen panel',
+                        'make the panel wider']) {
+    assert.deepEqual(parse(phrase, 'en'), { type: 'panel', action: 'maximize' }, phrase);
+  }
+  for (const phrase of ['normalize the panel', 'normalise the panel', 'restore the panel',
+                        'shrink the panel', 'unmaximize the panel', 'reset the panel',
+                        'return the panel to normal']) {
+    assert.deepEqual(parse(phrase, 'en'), { type: 'panel', action: 'normalize' }, phrase);
+  }
+});
+
+test('maximize and normalize the panel in Greek', () => {
+  assert.deepEqual(parse('μεγιστοποίησε το πάνελ', 'el'), { type: 'panel', action: 'maximize' });
+  assert.deepEqual(parse('επανάφερε το πάνελ', 'el'), { type: 'panel', action: 'normalize' });
+});
+
+test('width commands do not win over close or a non-panel request', () => {
+  // "minimize" has always meant hide the panel; it must stay on the close arm.
+  assert.deepEqual(parse('minimize the panel', 'en'), { type: 'panel', action: 'close' });
+  // A normal sentence that merely contains the words must reach the agent.
+  assert.equal(parse('normalize the panel data in the database', 'en'), null);
+});
+
 // --- go to a tab ---------------------------------------------------------
 test('go to each tab by name', () => {
   for (const [phrase, tab] of [

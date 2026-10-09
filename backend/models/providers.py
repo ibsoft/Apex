@@ -196,6 +196,35 @@ class KimiProvider(CompatProvider):
 # --------------------------------------------------------------------------- #
 # OpenAI Responses API (ChatGPT-subscription / fine-grained OAuth tokens)
 # --------------------------------------------------------------------------- #
+def _responses_input(messages: list[dict]) -> list[dict]:
+    """Translate chat-completions message content into what the Responses API
+    wants. Text-only messages pass through untouched; a multimodal content
+    array is rewritten (``text``->``input_text``, ``image_url``->``input_image``)
+    because the Responses API rejects the chat-completions part types."""
+    out: list[dict] = []
+    for message in messages:
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            out.append(message)
+            continue
+        parts: list[dict] = []
+        for part in message["content"]:
+            if not isinstance(part, dict):
+                parts.append(part)
+                continue
+            ptype = part.get("type")
+            if ptype == "text":
+                parts.append({"type": "input_text", "text": part.get("text", "")})
+            elif ptype == "image_url":
+                url = part.get("image_url")
+                if isinstance(url, dict):
+                    url = url.get("url", "")
+                parts.append({"type": "input_image", "image_url": url})
+            else:
+                parts.append(part)
+        out.append({**message, "content": parts})
+    return out
+
+
 class ResponsesProvider:
     """Responses API streaming. Used for ChatGPT OAuth access tokens; also
     works fine with plain project API keys."""
@@ -218,7 +247,7 @@ class ResponsesProvider:
         try:
             with self.client.responses.stream(
                 model=self.cfg.model,
-                input=messages,  # chat-completions-shaped input is accepted
+                input=_responses_input(messages),  # chat-completions input, translated
                 tools=tool_schemas,
                 stream=True,
                 temperature=self.cfg.temperature,

@@ -267,7 +267,7 @@ from scratch. Disable this with `AUTO_ROUTE_FROM_GENERAL=false` in
 | **translator** | Professional translation and multilingual editing. | None required (empty tool list) |
 | **obsidian** | Full read/write/search access to a local Obsidian vault. | All Obsidian vault tools plus `remember` / `recall` |
 | **shell** | Local systems administrator; runs shell commands directly on the host. | `run_shell` (requires `ENABLE_RUN_SHELL=true`) |
-| **skill_creator** | Designs and creates new Apex skills on demand. | `create_skill` |
+| **skill_creator** | Creates complete skills on demand: definition, helper scripts, env vars, smoke test. | `list_tools`, `create_skill`, `create_script`, `set_env` |
 | **FILE_SEARCH** | Finds files on the APEX server by name, extension or directory and returns download links. | `file_search` |
 | **EDITOR** | Researches a topic online and generates downloadable Word or Excel documents. | `editor_create_word`, `editor_create_excel`, `web_search`, `web_fetch`, `web_image_search`, `calculate` |
 
@@ -306,8 +306,9 @@ from scratch. Disable this with `AUTO_ROUTE_FROM_GENERAL=false` in
 - Enable only on trusted machines with `ENABLE_RUN_SHELL=true`.
 
 **skill_creator**
-- Gathers a name, description, system prompt and tool list, then writes a new
-  skill definition file that appears in the skill bar immediately.
+- Gathers the requirements, proposes the plan, then writes the skill definition,
+  its helper scripts and its `.env`, and smoke-tests the result before
+  reporting. New skills appear in the skill bar immediately.
 - Example: *“Create a skill that helps me draft project risk assessments.”*
 
 **FILE_SEARCH**

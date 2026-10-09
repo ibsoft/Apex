@@ -26,7 +26,8 @@ class ResponsesEngine(AgentEngine):
         schemas = ctx.tool_schemas()
         usage = {}
 
-        for step in range(config.MAX_TOOL_STEPS):
+        max_steps = _max_tool_steps(ctx)
+        for step in range(max_steps):
             assistant_text = ""
             tool_calls: list[dict] = []
             # A skill that promises to actually DO things (shell: "for every
@@ -91,10 +92,25 @@ class ResponsesEngine(AgentEngine):
                 )
         else:
             yield {"type": "error",
-                   "message": f"Max tool steps ({config.MAX_TOOL_STEPS}) reached."}
+                   "message": f"Max tool steps ({max_steps}) reached."}
             return
 
         yield {"type": "done", "usage": usage}
+
+
+def _max_tool_steps(ctx: AgentContext) -> int:
+    """The step ceiling for this turn.
+
+    A skill named in MAX_TOOL_STEPS_EXEMPT gets the larger ceiling: the
+    skill_creator repair loop legitimately needs many create -> validate ->
+    test -> fix iterations, and the default 12 cuts it off mid-repair. Exempt
+    skills are still bounded by MAX_TOOL_STEPS_EXEMPT_LIMIT, so a runaway loop
+    cannot spin forever.
+    """
+    name = (getattr(ctx, "skill_name", "") or "").strip()
+    if name and name in config.MAX_TOOL_STEPS_EXEMPT:
+        return config.MAX_TOOL_STEPS_EXEMPT_LIMIT
+    return config.MAX_TOOL_STEPS
 
 
 def _safe_args(raw: str) -> dict:

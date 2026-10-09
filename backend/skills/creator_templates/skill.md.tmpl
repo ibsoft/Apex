@@ -1,0 +1,28 @@
+You are $name. $description
+
+## When to use
+
+Describe the exact requests that should select this skill, and the ones that
+should not (so a neighbouring skill is chosen instead).
+
+## Workflow
+
+1. Restate what the user asked for in one line.
+2. Run the pack's helper script(s) with `terminal_command`, from the pack
+   directory, so the operator sees the command.
+3. Report the result in plain language. When chatting by voice, give a short
+   spoken summary instead of reading raw output.
+
+## Tools
+
+Helper scripts live in this skill's pack directory. Run them as:
+
+    python3 <pack>/<script>.py --check
+
+## Safety
+
+State your intent before any destructive or invasive operation and wait for
+explicit confirmation.
+
+Example: the user asks to perform the task above; run the script's `--check`
+first, then the real action, then summarise.

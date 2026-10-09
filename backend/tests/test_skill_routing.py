@@ -19,12 +19,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from skills.manager import (  # noqa: E402
     HOST_STATE_SKILL,
+    Skill,
     SkillManager,
+    force_email_skill,
     force_host_skill,
     route_skill,
 )
 
 DEFINITIONS = Path(__file__).resolve().parents[1] / "skills" / "definitions"
+
+EMAIL_SKILL = Skill(
+    name="email_manager",
+    description="Check and send POP3/SMTP email in the background.",
+    system_prompt="Operate the mailbox.",
+    tools=["run_shell"],
+)
 
 
 class ExplodingProvider:
@@ -141,6 +150,59 @@ class ForceHostSkillTests(unittest.TestCase):
         self.assertIsNone(self._force("   "))
 
 
+class ForceEmailSkillTests(unittest.TestCase):
+    """Mail requests must reach the skill that can actually send.
+
+    The host-state guard would otherwise force "run df -h and email me the
+    result" to the `shell` skill, which owns the terminal but has no way to send
+    mail. The email skill is user-made, so it is discovered by name/description.
+    """
+
+    def setUp(self):
+        self.skills = SkillManager(DEFINITIONS).all() + [EMAIL_SKILL]
+
+    def _force(self, text):
+        return force_email_skill(text, self.skills)
+
+    def test_mail_requests_are_forced(self):
+        for text in (
+            "check my email",
+            "send the results to ops@example.com",
+            "mail me the report",
+            "what is in my inbox",
+            "run df -h and email me the result",
+            "send the output of the scan to a@b.gr",
+            "στείλε τα αποτελέσματα στο email μου",
+            "στείλε μου τα αποτελέσματα με ηλεκτρονικό ταχυδρομείο",
+            "στείλε τα στο μέιλ μου",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self._force(text), "email_manager")
+
+    def test_ordinary_host_work_is_left_alone(self):
+        for text in (
+            "show disk usage",
+            "check out our internet connection",
+            "ping 192.168.1.3",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(self._force(text))
+
+    def test_code_about_email_is_not_hijacked(self):
+        for text in (
+            "write a python function to send email",
+            "explain the smtp stack trace",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(self._force(text))
+
+    def test_no_email_skill_means_no_routing(self):
+        without = [s for s in self.skills if s.name != "email_manager"]
+        self.assertIsNone(force_email_skill("check my email", without))
+        self.assertIsNone(force_email_skill("", self.skills))
+        self.assertIsNone(force_email_skill("   ", self.skills))
+
+
 class RouteSkillBypassesTheModelTests(unittest.TestCase):
     def setUp(self):
         self.skills = SkillManager(DEFINITIONS).all()
@@ -166,6 +228,14 @@ class RouteSkillBypassesTheModelTests(unittest.TestCase):
             self.assertEqual(got, HOST_STATE_SKILL)
         finally:
             manager._ROUTER_CACHE.pop(key, None)
+
+    def test_run_command_and_email_beats_the_host_guard(self):
+        # The command is host work, but the destination is mail: the email
+        # skill has run_shell, so it can do both; the shell skill cannot send.
+        skills = self.skills + [EMAIL_SKILL]
+        got = route_skill("run df -h and email me the result", skills,
+                          ExplodingProvider(), fallback="general")
+        self.assertEqual(got, "email_manager")
 
 
 if __name__ == "__main__":

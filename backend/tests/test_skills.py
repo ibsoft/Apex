@@ -35,6 +35,67 @@ class ConfigExpansionTests(unittest.TestCase):
         self.assertEqual(_expand_config_vars("gpt-4o-mini"), "gpt-4o-mini")
 
 
+class VoicePromptTests(unittest.TestCase):
+    """In voice mode raw command output must be summarised, never recited.
+
+    "df -h" spoken line by line is unintelligible; the operator asked for the
+    meaning ("the disk is 71% full"). This note is appended for every skill,
+    after the skill prompt, and must outrank any "return output verbatim".
+    """
+
+    def setUp(self):
+        definitions = Path(__file__).resolve().parents[1] / "skills" / "definitions"
+        self.mgr = SkillManager(definitions)
+
+    def test_voice_mode_forbids_reading_raw_output(self):
+        prompt = self.mgr.build_system_prompt("general", voice_mode=True)
+        self.assertIn("spoken aloud by text-to-speech", prompt)
+        self.assertIn("Never put raw command or tool output in the reply", prompt)
+        self.assertIn("overrides any instruction to return output verbatim",
+                      prompt)
+        # Appended last so it outranks the skill body (shell says "verbatim").
+        self.assertTrue(prompt.rstrip().endswith("for every command and every tool."))
+
+    def test_the_rule_is_absent_without_voice_mode(self):
+        prompt = self.mgr.build_system_prompt("general", voice_mode=False)
+        self.assertNotIn("spoken aloud by text-to-speech", prompt)
+
+
+class SecretPromptTests(unittest.TestCase):
+    """Every skill must be told never to turn a `.env` file into chat text."""
+
+    def setUp(self):
+        definitions = Path(__file__).resolve().parents[1] / "skills" / "definitions"
+        self.mgr = SkillManager(definitions)
+
+    def test_env_contents_are_never_shown(self):
+        for voice in (False, True):
+            with self.subTest(voice=voice):
+                prompt = self.mgr.build_system_prompt("general", voice_mode=voice)
+                self.assertIn("never expose environment files", prompt)
+                self.assertIn("of any `.env` file", prompt)
+
+
+class RenderPromptTests(unittest.TestCase):
+    """The model is told the chat panel can render math and geometry, so it
+    emits the syntax instead of an ASCII sketch. Absent in voice mode, where
+    the reply is spoken and a formula would be read out as raw TeX."""
+
+    def setUp(self):
+        definitions = Path(__file__).resolve().parents[1] / "skills" / "definitions"
+        self.mgr = SkillManager(definitions)
+
+    def test_math_and_geometry_syntax_is_documented(self):
+        prompt = self.mgr.build_system_prompt("general")
+        self.assertIn("inline math as $...$", prompt)
+        self.assertIn("```geometry", prompt)
+        self.assertIn("0..100 coordinate box", prompt)
+
+    def test_the_rule_is_absent_in_voice_mode(self):
+        prompt = self.mgr.build_system_prompt("general", voice_mode=True)
+        self.assertNotIn("```geometry", prompt)
+
+
 class SkillManagerTests(unittest.TestCase):
     def test_code_skill_model_expanded_from_config(self):
         mgr = SkillManager()

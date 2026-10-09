@@ -176,20 +176,55 @@ class SkillManager:
             "You are APEX, an autonomous multimodal AI assistant.",
             f"You are helpful, concise and precise. Always respond in {language} until the user changes the Default response language setting in the UI. Do not switch response languages based on the user's input language. If asked for a translation, provide the requested translated content but keep your explanation and surrounding response in {language}.",
             f"## Skill: {skill.name}\n{base}",
+            # General, and after the skill body so it outranks any skill prompt:
+            # the model must never turn a credential file into chat text.
+            "Never reveal secrets and never expose environment files. Do not "
+            "read, open, print, `cat`, quote, summarise or return the contents "
+            "of any `.env` file (the backend's or a skill pack's), and never "
+            "paste a password, key or token into chat. If a credential is "
+            "missing or wrong, name the variable and the file path only, and "
+            "tell the operator to edit that file themselves.",
         ]
         if user_name:
             parts.append(f"You are assisting {user_name}.")
         if memory_block:
             parts.append(memory_block)
-        if voice_mode:
-            parts.append(
-                "You are chatting by voice. Keep answers short, natural and "
-                "conversational (2-4 sentences unless asked for detail)."
-            )
         if skill.tools:
             parts.append(f"Available tools for this skill: {', '.join(skill.tools)}.")
         if extra:
             parts.append(extra)
+        if not voice_mode:
+            # The chat panel renders this syntax (KaTeX + a small SVG geometry
+            # language). A model that does not know the delimiters will answer
+            # with plain prose or an ASCII sketch; telling it once here covers
+            # every skill. Skipped in voice mode, where the reply is spoken and
+            # a formula or diagram would be read out as raw TeX.
+            parts.append(
+                "The chat panel renders LaTeX math and simple SVG geometry on "
+                "its own. Write inline math as $...$ and display math as "
+                "$$...$$. For a diagram, emit a fenced ```geometry block with "
+                "one directive per line in a 0..100 coordinate box: "
+                "line x1 y1 x2 y2; rect x y w h; circle cx cy r; "
+                "polygon/polyline x1 y1 x2 y2 ...; point x y [label]; "
+                "text x y label; angle vx vy ax ay bx by [r]. Use geometry only "
+                "when a picture explains it better than words."
+            )
+        if voice_mode:
+            # Last on purpose: this is the final word, so it outranks the skill
+            # body (the shell skill says "return output verbatim").
+            parts.append(
+                "You are chatting by voice and your reply is spoken aloud by "
+                "text-to-speech, word for word. So the reply itself must be the "
+                "spoken answer: 1-3 short, natural sentences of plain prose that "
+                "say what the result means. Never put raw command or tool output "
+                "in the reply - no tables, no code blocks, no `Filesystem ...` "
+                "lines, no per-line listings, no logs, no file paths, no exit "
+                "codes. Do not open with 'here is the output' and do not end "
+                "with filler like 'let me know if you need anything else'. If a "
+                "command returned a lot, say the one or two numbers that matter. "
+                "This overrides any instruction to return output verbatim, for "
+                "every command and every tool."
+            )
         return "\n\n".join(p for p in parts if p)
 
 
@@ -499,6 +534,45 @@ def force_sip_skill(user_text: str, skills: list[Skill]) -> str | None:
     return None
 
 
+# An email capability is recognised from a skill's NAME or DESCRIPTION only -
+# never its prompt body, which mentions mail tooling for other reasons (the VAPT
+# skill lists `smtp-user-enum`). The email skill is user-made, so its name is
+# discovered rather than hard-coded; a box without one routes as before.
+_EMAIL_HINT_RE = re.compile(
+    r"\b(?:e-?mail|mail|inbox|mailbox|pop3|imap"
+    r"|ηλεκτρονικ\w*|ταχυδρομ\w*|μ[εέ]ιλ|ιμ[εέ]ιλ)", re.I)
+_EMAIL_ADDR_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _email_skill_name(skills: list[Skill]) -> str | None:
+    for s in skills:
+        if _EMAIL_HINT_RE.search(f"{s.name} {s.description}"):
+            return s.name
+    return None
+
+
+def force_email_skill(user_text: str, skills: list[Skill]) -> str | None:
+    """Route a mail request to whichever loaded skill provides email.
+
+    Deterministic because the email skill usually acts through ``run_shell``,
+    and the host-state router would otherwise defeat the combined request: "run
+    df -h and email me the result" matches the live-host patterns and is forced
+    to the ``shell`` skill, which owns the terminal but cannot send mail. It
+    runs ahead of the host guard so the mail intent wins. It only fires when an
+    email-capable skill is actually loaded, so a box that has none is
+    unaffected.
+    """
+    text = user_text or ""
+    if not text.strip() or _CODEISH_RE.search(text):
+        return None
+    target = _email_skill_name(skills)
+    if target is None:
+        return None
+    if _EMAIL_ADDR_RE.search(text) or _EMAIL_HINT_RE.search(text):
+        return target
+    return None
+
+
 def route_skill(
     user_text: str,
     skills: list[Skill],
@@ -525,7 +599,11 @@ def route_skill(
 
     # Deterministic first: live-host questions always go to the skill that
     # actually runs commands, no matter what the classifier decides (or caches).
-    forced = (force_visio_skill(user_text, skills) or force_sip_skill(user_text, skills)
+    # Email runs ahead of the host guard so a "run <cmd> and email me" request
+    # reaches the skill that can actually send, not the terminal-only shell.
+    forced = (force_visio_skill(user_text, skills)
+              or force_sip_skill(user_text, skills)
+              or force_email_skill(user_text, skills)
               or force_host_skill(user_text, skills))
     if forced:
         return forced

@@ -460,6 +460,16 @@ test('enumerated fields accept only the listed value', () => {
   assert.equal(sanitizeActions([{ type: 'window', action: 'arrange', arrangement: 'spiral' }], ctx)[0].arrangement, undefined);
 });
 
+test('the panel catalogue advertises maximize and normalize', () => {
+  const panel = LOCAL_ACTIONS.filter((a) => a.type === 'panel').map((a) => a.action);
+  assert.ok(panel.includes('maximize'), 'maximize must be in the catalogue');
+  assert.ok(panel.includes('normalize'), 'normalize must be in the catalogue');
+  // The model copies the printed dotted keys, so it must be offered them.
+  const menu = renderActionCatalogue();
+  assert.match(menu, /panel\.maximize/);
+  assert.match(menu, /panel\.normalize/);
+});
+
 test('a desktop number is clamped to the desktops that exist', () => {
   const state = stateWith([]);
   const ctx = { state, utterance: 'x', language: 'en', skills };

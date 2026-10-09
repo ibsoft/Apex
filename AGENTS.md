@@ -59,11 +59,90 @@ System prompt instructions for the model.
 
 - `tools:` can be a comma-separated list or YAML array. Empty means "all active
   tools".
-- A `model:` override is optional.
+- A `model:` override is optional, as are `require_tool: true` (first call of
+  every turn must call a tool) and `exclude_tools:` (never offer these, even
+  with `tools: ALL`).
 - User skills placed in `DATA_DIR/skills` shadow built-in skills with the same
   name.
 - The skill is picked up automatically on the next request; call
   `create_skill` if you need to generate one at runtime.
+
+### Runtime skill packs (the skill_creator skill)
+
+`skill_creator` builds a whole pack, not just the `.md`:
+
+```
+DATA_DIR/skills/<name>.md       definition        (create_skill)
+DATA_DIR/skills/<name>/         pack directory
+DATA_DIR/skills/<name>/.env     script secrets    (set_env scope=skill, 0600)
+DATA_DIR/skills/<name>/<script> helper scripts    (create_script, 0700 for .py/.sh/.bash/.js)
+backend/.env                    backend config    (set_env scope=backend)
+```
+
+- `list_tools` is how the model sees real tool names. `create_skill` validates
+  every name against the live registry: unknown names are rejected (the engine
+  would silently drop them), registered-but-disabled ones warn.
+- `set_env scope=backend` writes `config.ENV_FILE` and applies the value live
+  (`os.environ` + `setattr(config, ...)`); variables read at import time still
+  need a backend restart, and the reply says so. It never stores an empty
+  value - an empty line would pin `""` over the default forever (the SIP
+  mirror's lesson); removal is `remove=true`.
+- Env line editing is shared: `tools/envfile.py::upsert_env` is the one
+  implementation, and `sip_tools.write_env_file` is a thin wrapper over it.
+- Two frontmatter traps are handled in `create_skill`: a `---` line in the
+  system prompt would close the frontmatter early (rewritten to `***`), and a
+  description containing `": "` must not be hand-concatenated into YAML
+  `safe_load` rejects - the skill would be written but never load. Frontmatter
+  is emitted with `yaml.safe_dump`.
+- The skill panel refreshes through a `skills_changed` SSE event emitted in
+  `app.py` when a `create_skill` tool_result arrives; all three side-effect
+  events (`skills_changed`, `sudo_password`, `github_token`) share the single
+  generic `tool_result` branch - they used to sit in `elif` branches below it
+  and were unreachable.
+- Tests: `backend/tests/test_core_tools.py`, `backend/tests/test_skill_creator.py`
+  (pack tools + the SSE events).
+
+### Skill validation and testing (`skills/tooling.py`)
+
+The skill_creator does not stop when the files are written: it validates and
+tests the pack and repairs it until it works. The engine is
+`backend/skills/tooling.py` (pure functions, unit-tested); the agent-facing
+wrapper is three tools in `tools/core_tools.py`; the same engine is exposed as
+CLIs for humans. Never copy the rules into the prompt or a script - call the
+engine.
+
+- `validate_skill(target, registry=...)` is **static** (never executes the
+  skill): it checks frontmatter, name (matches the filename), description,
+  prompt (no `[TODO:`), tool names against the live registry, and every file in
+  the pack (Python compiles via `compile()`, `bash -n`, JSON parses, YAML
+  `safe_load`), plus warnings (missing `tests/` for executable code, world-
+  readable `.env`, tool names that are disabled). Errors fail it; warnings do
+  not.
+- `run_skill_tests` validates first, then runs the pack's `tests/` with pytest
+  (unit), each script's `--check`/`--help` entry point (functional, with
+  `--json` output required to carry a `status` field), and an integration check
+  that `SkillManager` parses the file and its tools resolve. Each stage is
+  PASS/FAIL/SKIP/BLOCKED; a validation failure short-circuits the rest as SKIP.
+  Once `--check` runs, budget for the 2-4s pty/test startup - the functional
+  stage is a real subprocess, not an import.
+- `skill_report` adds a completeness score (0-100) and a READY/BLOCKED/FAILED
+  verdict, plus a security scan (`shell=True`, `os.system`, string-command
+  subprocess, `eval`/`exec`, `pickle.loads`, `verify=False`, `chmod 777`).
+  READY needs score >= 90, a valid skill and tests PASS.
+- `create_skill_pack` is the scaffold used by `scripts/create_skill.py`; it
+  refuses to overwrite without `overwrite=true` and renders
+  `skills/creator_templates/*.tmpl`.
+- CLIs (thin wrappers, re-exec into `.venv` if PyYAML is missing):
+  `scripts/validate_skill.py`, `scripts/test_skill.py`, `scripts/test_all_skills.py`,
+  `scripts/skill_report.py`, `scripts/create_skill.py`; or
+  `python -m skills.tooling <cmd>` from `backend/`.
+- The prompt contract in `skills/definitions/skill_creator.md` is the repair
+  loop: create -> validate -> create tests -> test -> fix -> re-run until
+  `RESULT: PASS` and `Completeness >= 90`. A missing `tests/` directory for a
+  pack with executable code is a warning in validation and a SKIP in testing, so
+  it cannot reach READY - not a skipped test turned green.
+- Tests: `backend/tests/test_skill_tooling.py`.
+
 
 ## Adding an agent dot to the orb
 
@@ -83,15 +162,28 @@ Avoid overlapping labels; use `above = uy > 0.82` for bottom nodes.
 
 ## Extending chat message rendering
 
-`frontend/components/ChatUI.tsx` renders messages in `MessageBubble`. The helper
-`renderRichText` currently supports:
+`frontend/components/ChatUI.tsx` renders messages in `MessageBubble`. The body
+goes through three pure parsers (all node-tested, because the component is not):
 
-- plain URLs → clickable `<a>` links;
-- image URLs (by extension) → `<img>`;
-- markdown images `![alt](url)` → `<img>`;
-- `InlineImage` hides broken images on `onError`.
+1. `lib/markdown.ts::splitFencedCode` pulls fenced blocks out first. A
+   ```geometry block paints as SVG via `parseGeometry` (`lib/geometry.ts`) and
+   `GeometryBlock`; anything else is a `CodeBlock` (language label, COPY,
+   scrollable body). An unclosed fence runs to the end on purpose - that is what
+   a streaming reply looks like before its terminator arrives.
+2. `lib/math.ts::splitMath` splits the remaining prose into text and math
+   ($...$ / $$...$$, plus \( \) and \[ \]; a `\` escapes the next char, and
+   "costs $5 and $7" stays money). `MathSpan` calls KaTeX
+   (`renderToString`, `throwOnError:false`); KaTeX CSS is imported in
+   `app/layout.tsx`.
+3. `renderRichText` scans each text run for URLs/images into `<a>`/`<img>`;
+   `InlineImage` hides broken images on `onError`.
 
-Update the regex or add new token types there if you need richer rendering.
+The geometry DSL is a fixed 0..100 box (`viewBox "-5 -5 110 110"`); one
+directive per line, `#` comments, and a bad line is reported in the block rather
+than silently dropped. `SkillManager.build_system_prompt` appends a cross-skill
+note telling the model this syntax exists (skipped in voice mode, where a
+formula would be read out as raw TeX). Add new syntax in the pure parser and its
+test, then teach the model in that note.
 
 ## Backend conventions
 
@@ -696,6 +788,39 @@ settings merge, the env-file mirror and the per-call baresip process.
 - Tests: `backend/tests/test_visio_tools.py` (`PreviewTests`, routing), `test_visio_routes.py`
   (`VisioFrameRouteTests`), `test_preview_tools.py` (snapshot branch),
   `frontend/tests/windows.test.cjs` (visio URL shapes, `groupItemsByKind`).
+
+## Voice prompt, secrets and mail routing (`skills/manager.py`)
+
+`SkillManager.build_system_prompt` appends two cross-skill rules every turn, so
+do not re-state them in a skill prompt:
+
+- a **secrets** rule, placed after the skill body so it outranks the skill:
+  never read, `cat`, quote, summarise or return the contents of any `.env` file
+  (the backend's or a pack's); name the variable and leave editing to the
+  operator. SIP's `redact()` and the `set_env`/`create_script` guards already
+  keep secrets out of tool output; this is the model-facing half.
+- a **voice** rule (only when `voice_mode`), appended **last** so it is the final
+  word and outranks the `shell` skill's "return output verbatim": the whole reply
+  is spoken by TTS, word for word, so the reply *itself* must be 1-3 plain
+  sentences of meaning — no code blocks, tables, `Filesystem ...` lines, paths,
+  logs or exit codes (a `df -h` becomes "the disk is 71% full"). A prompt is a
+  request, not a guarantee, so the browser enforces it too:
+  `frontend/lib/voiceCommands.ts::speechSummary` strips fenced blocks and
+  markdown table rows from the reply before `voice.ts::speak` hands it to TTS.
+  The rule must never be the only defence — write the prompt *and* keep the
+  sanitizer in sync. Tests: `frontend/tests/voiceCommands.test.cjs`.
+
+`force_email_skill` is the fourth deterministic router (after VISIO and SIP,
+before the host guard, in `route_skill`). It matters because the email skill is
+user-made and acts through `run_shell`: "run df -h and email me the result"
+matches the host-state patterns and would otherwise be forced to `shell`, which
+owns the terminal but cannot send. The email skill is discovered, not
+hard-coded, from a skill's **name or description** only (never its prompt body —
+VAPT lists `smtp-user-enum`). Fires on an address or a mail word (EN + Greek),
+returns `None` when no email skill is loaded, and `_CODEISH_RE` still wins so
+"write a python function to send email" reaches the code skill. Tests:
+`test_skill_routing.py` (`ForceEmailSkillTests`, the route-bypass case) and
+`test_skills.py` (`VoicePromptTests`, `SecretPromptTests`).
 
 ## Common extension points
 
