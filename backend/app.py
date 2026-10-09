@@ -1720,13 +1720,16 @@ def create_app() -> Flask:
                             "output": ev.get("output", ""),
                             "running": False,
                         })
-                    elif ev["type"] == "tool_result" and ev.get("name") == "create_skill":
-                        # Notify the UI that the skill list has changed so the new
-                        # skill appears in the panel without a manual refresh.
-                        yield event_ss(ev)
-                        yield event_ss({"type": "skills_changed"})
-                        continue
-                    elif ev["type"] == "tool_result":
+                        # Per-tool side effects. These used to be `elif` branches
+                        # AFTER this one, so the branch above swallowed every
+                        # tool_result and none of them ever ran: the panel never
+                        # refreshed after create_skill, and the VAPT sudo and
+                        # CODE token popups never appeared. They share this
+                        # branch now; `ev` itself is yielded once, below.
+                        if ev.get("name") == "create_skill":
+                            # Notify the UI that the skill list has changed so
+                            # the new skill appears without a manual refresh.
+                            yield event_ss({"type": "skills_changed"})
                         # VAPT tools signal "sudo credential required" so the
                         # frontend can pop the centered password dialog.
                         from tools.vapt_tools import translate_sudo_marker

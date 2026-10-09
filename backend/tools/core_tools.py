@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+import yaml
 from ddgs import DDGS
 
 from tools.base import Tool, ToolContext  # noqa: F401
@@ -276,41 +277,302 @@ def build_core_tools(registry, cfg):
             output = f"[output truncated]\n{output}"
         return output
 
+    def t_list_tools(args, ctx: ToolContext):
+        all_tools = registry.all() if hasattr(registry, "all") else []
+        rows = [
+            {"name": t.name,
+             "description": (t.description or "")[:500],
+             "dangerous": bool(t.dangerous),
+             "enabled": bool(t.enabled)}
+            for t in sorted(all_tools, key=lambda t: t.name)
+        ]
+        return json.dumps(rows, ensure_ascii=False)
+
     def t_create_skill(args, ctx: ToolContext):
         name = (args.get("name") or "").strip()
-        description = (args.get("description") or "").strip()
+        description = " ".join((args.get("description") or "").split())
         system_prompt = (args.get("system_prompt") or "").strip()
         tools = args.get("tools") or []
         model = (args.get("model") or "").strip()
         overwrite = bool(args.get("overwrite", False))
+        require_tool = bool(args.get("require_tool", False))
+        exclude = args.get("exclude_tools") or []
         if not name or not description or not system_prompt:
             return "name, description, and system_prompt are required."
         if not re.match(r"^[\w-]+$", name):
             return "Skill name must contain only letters, numbers, hyphens, and underscores."
+        if isinstance(tools, str):
+            requested = [t.strip() for t in tools.split(",") if t.strip()]
+        elif isinstance(tools, list):
+            requested = [str(t).strip() for t in tools if str(t).strip()]
+        else:
+            return "tools must be a list of tool names, a comma-separated string, or [\"ALL\"]."
+        if isinstance(exclude, str):
+            exclude = [t.strip() for t in exclude.split(",") if t.strip()]
+        elif isinstance(exclude, list):
+            exclude = [str(t).strip() for t in exclude if str(t).strip()]
+        else:
+            return "exclude_tools must be a list of tool names."
+        # A name that does not exist would make the skill silently unable to do
+        # the one thing it was created for: the engine offers only registered
+        # tools, so an unknown name is dropped without a word. Reject here where
+        # the model can still see the error and retry.
+        unknown = [t for t in requested + exclude if t != "ALL" and registry.get(t) is None]
+        if unknown:
+            return (
+                "Unknown tool(s): " + ", ".join(sorted(set(unknown))) + ". "
+                "Call list_tools to see the exact names, then retry. A skill "
+                "listing a tool that does not exist can never use it."
+            )
+        disabled = [t for t in requested
+                    if t != "ALL" and registry.get(t) is not None and not registry.get(t).enabled]
         skills_dir = Path(cfg.DATA_DIR) / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
         file_path = skills_dir / f"{name}.md"
         if file_path.exists() and not overwrite:
             return f"Skill `{name}` already exists. Set overwrite=true to replace it."
 
-        meta_lines = [f"name: {name}", f"description: {description}"]
-        if tools:
-            if isinstance(tools, str):
-                meta_lines.append(f"tools: {tools}")
-            elif isinstance(tools, list):
-                if len(tools) == 1 and tools[0] == "ALL":
-                    meta_lines.append("tools: ALL")
-                else:
-                    meta_lines.append("tools: " + ", ".join(str(t) for t in tools))
+        # A line of exactly three dashes closes the frontmatter for the reader
+        # (skills/manager._parse), so a markdown horizontal rule inside the
+        # prompt would cut the skill in half. `***` renders identically.
+        system_prompt = re.sub(r"(?m)^-{3}[ \t]*$", "***", system_prompt)
+
+        # yaml.safe_dump, not hand-built lines: a description containing ": "
+        # (or a leading "*") would otherwise produce frontmatter that
+        # safe_load rejects, and the skill would be created but never load.
+        meta: dict = {"name": name, "description": description}
+        if requested:
+            meta["tools"] = ", ".join(requested)
         if model:
-            meta_lines.append(f"model: {model}")
-        content = "---\n" + "\n".join(meta_lines) + "\n---\n\n" + system_prompt + "\n"
+            meta["model"] = model
+        if require_tool:
+            meta["require_tool"] = True
+        if exclude:
+            meta["exclude_tools"] = ", ".join(exclude)
+        front = yaml.safe_dump(meta, sort_keys=False, width=1000, allow_unicode=True)
+        content = f"---\n{front}---\n\n" + system_prompt + "\n"
         file_path.write_text(content, encoding="utf-8")
 
         # Pick up the new skill immediately.
         from skills.manager import get_skill_manager
         get_skill_manager().refresh()
-        return f"Skill `{name}` created at {file_path}."
+        msg = f"Skill `{name}` created at {file_path}."
+        builtin = Path(__file__).resolve().parents[1] / "skills" / "definitions" / f"{name}.md"
+        if builtin.exists():
+            msg += (f" Note: user skills shadow built-ins of the same name - "
+                    f"`{name}` now replaces the built-in skill.")
+        if disabled:
+            msg += (f" Warning: currently disabled (feature flag off): "
+                    f"{', '.join(disabled)}. The skill cannot use it until enabled.")
+        msg += (f" Pack directory for scripts and the skill's .env: "
+                f"{skills_dir / name}/ (tools: create_script, set_env).")
+        return msg
+
+    def t_create_script(args, ctx: ToolContext):
+        skill = (args.get("skill") or "").strip()
+        filename = (args.get("filename") or "").strip()
+        content = args.get("content")
+        overwrite = bool(args.get("overwrite", False))
+        if not re.match(r"^[\w-]+$", skill):
+            return "create_script error: skill must be a valid skill name (letters, numbers, hyphens, underscores)."
+        skills_dir = Path(cfg.DATA_DIR) / "skills"
+        if not (skills_dir / f"{skill}.md").exists():
+            return (f"create_script error: no skill named `{skill}` - create the skill "
+                    f"first with create_skill.")
+        if not filename or "\\" in filename or filename.startswith("/"):
+            return "create_script error: filename must be a relative path with forward slashes, e.g. fetch.py."
+        if not isinstance(content, str) or not content.strip():
+            return "create_script error: content is required."
+        if len(content) > 200_000:
+            return "create_script error: content too large (200,000 character limit)."
+        base = (skills_dir / skill).resolve()
+        target = (base / filename).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError:
+            return "create_script error: filename escapes the skill's directory."
+        if target == base:
+            return "create_script error: filename must name a file."
+        if any(part == ".env" for part in Path(filename).parts):
+            return ("create_script error: the skill's .env is written by set_env "
+                    "(scope=skill), so it gets the right permissions.")
+        if target.exists() and not overwrite:
+            return f"create_script error: {target.name} already exists. Set overwrite=true to replace it."
+        suffix = target.suffix.lower()
+        # Only files that can actually run get +x; a .md or .json stays 0600.
+        executable = bool(args.get("executable", True)) and suffix in {".py", ".sh", ".bash", ".js"}
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if overwrite else os.O_EXCL)
+            fd = os.open(target, flags, 0o700)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            os.chmod(target, 0o700 if executable else 0o600)
+        except FileExistsError:
+            return f"create_script error: {target.name} already exists. Set overwrite=true to replace it."
+        except OSError as exc:
+            return f"create_script error: {exc}"
+        runner = {".py": "python3", ".sh": "bash", ".bash": "bash", ".js": "node"}.get(suffix)
+        run = f"{runner} {target}" if runner else str(target)
+        return (f"Script written to {target} "
+                f"({'executable' if executable else 'data file'}, {len(content)} chars).\n"
+                f"Run it from the skill with terminal_command: {run}")
+
+    def t_set_env(args, ctx: ToolContext):
+        key = (args.get("key") or "").strip()
+        scope = (args.get("scope") or "skill").strip().lower()
+        skill = (args.get("skill") or "").strip()
+        remove = bool(args.get("remove", False))
+        value = args.get("value")
+        if not re.match(r"^[A-Z_][A-Z0-9_]{0,63}$", key):
+            return "set_env error: key must be UPPER_SNAKE_CASE, e.g. MY_API_TOKEN."
+        if scope not in {"skill", "backend"}:
+            return "set_env error: scope must be 'skill' or 'backend'."
+        if remove:
+            if value not in (None, ""):
+                return "set_env error: pass either value or remove=true, not both."
+        else:
+            if not isinstance(value, str) or not value:
+                # An empty value in .env would pin "" and override the default
+                # forever - the same trap the SIP mirror documents. Deleting the
+                # line is the way to say "no value".
+                return ("set_env error: value must be a non-empty string. To clear a key, "
+                        "pass remove=true, which deletes its line.")
+            if len(value) > 4096:
+                return "set_env error: value too long (4,096 character limit)."
+
+        if scope == "skill":
+            if not re.match(r"^[\w-]+$", skill):
+                return "set_env error: skill is required for scope=skill (letters, numbers, hyphens, underscores)."
+            skills_dir = Path(cfg.DATA_DIR) / "skills"
+            if not (skills_dir / f"{skill}.md").exists():
+                return f"set_env error: no skill named `{skill}` - create the skill first."
+            env_path = skills_dir / skill / ".env"
+            where = f"the skill env file {env_path}"
+        else:
+            env_path = Path(getattr(cfg, "ENV_FILE", "") or
+                            Path(__file__).resolve().parents[1] / ".env")
+            where = f"the backend env file {env_path}"
+
+        if remove and not env_path.exists():
+            return f"set_env: {key} was not set (no file at {env_path} yet)."
+
+        try:
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            from tools.envfile import upsert_env
+            upsert_env(env_path, {key: "" if remove else value})
+        except OSError as exc:
+            return f"set_env error: could not write {env_path}: {exc}"
+
+        notes = []
+        if scope == "backend":
+            # Checked BEFORE the live apply below: setattr would make hasattr
+            # true and the unknown-key warning could never fire.
+            known = hasattr(cfg, key)
+            example = env_path.with_name(".env.example")
+            documented = False
+            try:
+                documented = example.exists() and bool(
+                    re.search(rf"(?m)^{re.escape(key)}=", example.read_text(encoding="utf-8")))
+            except OSError:
+                pass
+            if remove:
+                os.environ.pop(key, None)
+                if hasattr(cfg, key):
+                    # Best effort: "" reads as unset in the codebase's
+                    # `attr or fallback` pattern. A restart lands on the true
+                    # default, which is why the reply says so.
+                    setattr(cfg, key, "")
+                notes.append("cleared from this process; restart the backend for "
+                             "modules that read it at import time")
+            else:
+                os.environ[key] = value
+                setattr(cfg, key, value)
+                notes.append("applied live; a restart is still needed for modules "
+                             "that read it at import time")
+            if not known and not documented:
+                notes.append(f"warning: {key} is not a known config variable "
+                             f"(absent from config and .env.example) - only scripts "
+                             f"reading it via os.getenv will see it")
+
+        action = "removed" if remove else "set"
+        msg = f"{key} {action} in {where}."
+        if notes:
+            # First character only: str.capitalize() would lowercase the whole
+            # rest of the sentence, key names included.
+            joined = "; ".join(notes)
+            msg += " " + joined[0].upper() + joined[1:] + "."
+        return msg
+
+    def _skill_target(args) -> str:
+        return (args.get("skill") or args.get("path") or "").strip()
+
+    def t_validate_skill(args, ctx: ToolContext):
+        target = _skill_target(args)
+        if not target:
+            return "validate_skill error: `skill` is required (a skill name or a path to <name>.md)."
+        from skills import tooling
+        report = tooling.validate_skill(target, registry=registry)
+        head = "VALID" if report["valid"] else "INVALID"
+        lines = [f"{head}: {report.get('skill') or target}"]
+        for c in report["checks"]:
+            if c["status"] == "pass":
+                continue
+            lines.append(f"[{c['status'].upper()}] {c['name']}: {c['detail']}")
+        if report["valid"] and not report["warnings"]:
+            lines.append("All structural checks passed. Next: test_skill.")
+        return "\n".join(lines)
+
+    def t_test_skill(args, ctx: ToolContext):
+        target = _skill_target(args)
+        if not target:
+            return "test_skill error: `skill` is required (a skill name or a path to <name>.md)."
+        from skills import tooling
+        result = tooling.run_skill_tests(target, registry=registry)
+        lines = []
+        for key in ("validation", "compilation", "unit", "functional", "integration"):
+            item = result.get(key)
+            if key == "validation":
+                status = "PASS" if item and item.get("valid") else "FAIL"
+                detail = "" if status == "PASS" else "; ".join((item or {}).get("errors", []))
+            else:
+                status = (item or {}).get("status", "SKIP")
+                detail = (item or {}).get("detail", "")
+            lines.append(f"{key.capitalize():<14} {status}")
+            if detail and status not in ("PASS", "SKIP"):
+                lines.append(f"  {str(detail)[:600]}")
+        counts = result["counts"]
+        lines.append("")
+        lines.append(f"RESULT: {result['status']} (passed {counts['passed']}, "
+                     f"failed {counts['failed']}, skipped {counts['skipped']}, "
+                     f"blocked {counts['blocked']})")
+        if result["status"] != "PASS":
+            lines.append("Fix the FAIL/BLOCKED items above, then call test_skill again. "
+                         "Do not report success until RESULT is PASS.")
+        return "\n".join(lines)
+
+    def t_skill_report(args, ctx: ToolContext):
+        target = _skill_target(args)
+        if not target:
+            return "skill_report error: `skill` is required."
+        from skills import tooling
+        report = tooling.skill_report(target, registry=registry)
+        lines = [
+            f"Skill: {report['skill']}",
+            f"Completeness: {report['completeness']['score']}/100",
+            f"Status: {report['status']}",
+        ]
+        for key, val in report["completeness"]["breakdown"].items():
+            lines.append(f"  {key}: {val}")
+        if report["validation"]["errors"]:
+            lines.append("Validation errors:")
+            lines += [f"  - {e}" for e in report["validation"]["errors"]]
+        if report["security"]:
+            lines.append("Security findings (review, do not ignore):")
+            lines += [f"  - {f['file']}: {f['issue']}" for f in report["security"]]
+        if report["dependencies"]:
+            lines.append("Dependencies: " + ", ".join(report["dependencies"]))
+        return "\n".join(lines)
 
     return [
         Tool("current_time",
@@ -380,19 +642,102 @@ def build_core_tools(registry, cfg):
               },
               "required": ["command"]},
              t_run_shell, dangerous=True),
+        Tool("list_tools",
+             "List every tool the model can use: exact name, description, dangerous "
+             "and enabled flags. Call this before choosing a skill's `tools` list, "
+             "so every name written into the skill actually exists.",
+             {"type": "object", "properties": {}},
+             t_list_tools),
         Tool("create_skill",
-             "Create a new Apex skill by writing a markdown definition file.",
+             "Create a new Apex skill by writing a markdown definition file into "
+             "DATA_DIR/skills/. Names in `tools` are validated against the live "
+             "tool list (use list_tools first). Returns the skill's pack directory "
+             "for follow-up create_script / set_env calls.",
              {"type": "object",
               "properties": {
                   "name": {"type": "string", "description": "Short skill name (letters, numbers, hyphens, underscores)."},
                   "description": {"type": "string", "description": "One-line description of what the skill does."},
                   "system_prompt": {"type": "string", "description": "The system prompt that defines the skill's behavior."},
-                  "tools": {"type": "array", "items": {"type": "string"}, "description": "Tool names the skill may use, e.g. ['web_search', 'web_fetch'] or ['ALL']."},
+                  "tools": {"type": "array", "items": {"type": "string"}, "description": "Tool names the skill may use, e.g. ['web_search', 'web_fetch'] or ['ALL']. Every name must exist (see list_tools)."},
                   "model": {"type": "string", "description": "Optional model override for this skill."},
+                  "require_tool": {"type": "boolean", "default": False, "description": "Force the first model call of every turn to actually call a tool - for skills whose contract is 'do it', not 'explain it'."},
+                  "exclude_tools": {"type": "array", "items": {"type": "string"}, "description": "Tools this skill must never be offered, even with tools ALL (e.g. hide headless run_shell from a skill that promises visible commands)."},
                   "overwrite": {"type": "boolean", "default": False, "description": "Replace the skill file if it already exists."},
               },
               "required": ["name", "description", "system_prompt"]},
              t_create_skill, dangerous=True),
+        Tool("create_script",
+             "Write a helper script into a skill's pack directory "
+             "(DATA_DIR/skills/<skill>/). The skill must already exist. The skill "
+             "runs the script through terminal_command; returns the command to use. "
+             "Only .py/.sh/.bash/.js get +x (mode 0700, everything else 0600). The "
+             "skill's .env cannot be written here - use set_env for it.",
+             {"type": "object",
+              "properties": {
+                  "skill": {"type": "string", "description": "Name of the already-created skill this script belongs to."},
+                  "filename": {"type": "string", "description": "Path relative to the skill's directory, e.g. fetch.py or bin/run.sh. No leading slash, no .."},
+                  "content": {"type": "string", "description": "Full script source. Start with a shebang; read the skill's .env from a file next to the script."},
+                  "executable": {"type": "boolean", "default": True, "description": "Mark runnable (.py/.sh/.bash/.js) scripts executable."},
+                  "overwrite": {"type": "boolean", "default": False, "description": "Replace the script if it already exists."},
+              },
+              "required": ["skill", "filename", "content"],
+              "additionalProperties": False},
+             t_create_script, dangerous=True),
+        Tool("set_env",
+             "Set or remove an environment variable for a skill pack. scope=skill "
+             "(default) writes DATA_DIR/skills/<skill>/.env, which the skill's own "
+             "scripts read - use this for API keys the scripts need. scope=backend "
+             "writes the backend .env (the file config.py loads) and applies the "
+             "value live; use it only when a built-in backend tool needs the "
+             "variable. Values are never echoed back. An empty result means the "
+             "key was deleted (remove=true), never that it was set to empty.",
+             {"type": "object",
+              "properties": {
+                  "key": {"type": "string", "description": "UPPER_SNAKE_CASE variable name, e.g. WEATHER_API_KEY."},
+                  "value": {"type": "string", "description": "New non-empty value. Required unless remove=true."},
+                  "remove": {"type": "boolean", "default": False, "description": "Delete the key's line instead of setting it."},
+                  "scope": {"type": "string", "enum": ["skill", "backend"], "default": "skill", "description": "skill = the skill's own .env (for its scripts); backend = the backend config env file."},
+                  "skill": {"type": "string", "description": "Skill name. Required when scope=skill."},
+              },
+              "required": ["key"],
+              "additionalProperties": False},
+             t_set_env, dangerous=True),
+        Tool("validate_skill",
+             "Statically validate an Apex skill: frontmatter, name, description, "
+             "prompt, tool names (against the live registry), and every file in its "
+             "pack directory (Python compiles, shell syntax, JSON/YAML parse). Never "
+             "executes the skill, so it is always safe to call. Call it after every "
+             "create_skill / create_script / set_env change.",
+             {"type": "object",
+              "properties": {
+                  "skill": {"type": "string", "description": "Skill name (e.g. disk-monitor) or a path to its <name>.md file."},
+              },
+              "required": ["skill"],
+              "additionalProperties": False},
+             t_validate_skill),
+        Tool("test_skill",
+             "Validate a skill, then run its tests: unit tests in the pack's tests/ "
+             "directory, the --check entry point of each helper script, and an "
+             "integration check that the skill loads and its tools resolve. Returns "
+             "PASS/FAIL/SKIP/BLOCKED per stage. Fix failures and re-run until PASS.",
+             {"type": "object",
+              "properties": {
+                  "skill": {"type": "string", "description": "Skill name or a path to its <name>.md file."},
+              },
+              "required": ["skill"],
+              "additionalProperties": False},
+             t_test_skill, dangerous=True),
+        Tool("skill_report",
+             "Produce a completeness report (0-100) for a skill: validation, tests, "
+             "files, dependencies, security findings and a READY/BLOCKED/FAILED "
+             "verdict. Use it before declaring a generated skill finished.",
+             {"type": "object",
+              "properties": {
+                  "skill": {"type": "string", "description": "Skill name or a path to its <name>.md file."},
+              },
+              "required": ["skill"],
+              "additionalProperties": False},
+             t_skill_report, dangerous=True),
     ]
 
 

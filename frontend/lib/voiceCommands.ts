@@ -277,3 +277,29 @@ export function recognitionLanguage(
   // keep the standby recognizer on el-GR.
   return greekWakeWord || phase === "awake" || (phase === "standby" && armed) ? "el-GR" : "en-US";
 }
+
+/**
+ * The text the TTS engine should speak. The assistant's reply is spoken
+ * verbatim, so raw command output pasted into the message must never reach the
+ * voice: fenced code blocks (and tables, which are the shape of `df -h`, `ps`,
+ * `ls`) are removed, and heading/list markers are stripped. What remains is the
+ * prose summary. Pure and unit-tested so the guarantee does not depend on the
+ * model obeying a prompt.
+ */
+export function speechSummary(text: string): string {
+  if (!text) return "";
+  let s = text.replace(/\r\n?/g, "\n");
+  s = s.replace(/```[\s\S]*?```/g, " ");
+  s = s.replace(/~~~[\s\S]*?~~~/g, " ");
+  s = s.replace(/```[\s\S]*$/g, " ").replace(/~~~[\s\S]*$/g, " ");
+  s = s
+    .split("\n")
+    .filter((ln) => ((ln.match(/\|/g) || []).length < 2))
+    .join("\n");
+  s = s.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+  s = s.replace(/^\s{0,3}[-*+]\s+/gm, "");
+  s = s.replace(/^\s{0,3}\d+[.)]\s+/gm, "");
+  s = s.replace(/\*\*/g, "").replace(/__/g, "");
+  s = s.replace(/`([^`]*)`/g, "$1");
+  return s.replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim();
+}

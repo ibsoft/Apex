@@ -107,5 +107,80 @@ class ChatEphemeralTests(unittest.TestCase):
             self.assertIn('"conversation_id"', data)
 
 
+class ToolResultSideEffectTests(unittest.TestCase):
+    """`skills_changed`, `sudo_password` and `github_token` are emitted from
+    the generic tool_result branch of the chat stream.
+
+    They used to sit in `elif ev["type"] == "tool_result"` branches *below* the
+    generic one, so the generic branch swallowed every event and none of them
+    ever fired: a freshly created skill never appeared in the panel, and the
+    VAPT sudo / CODE token popups never opened.
+    """
+
+    def _stream(self, events):
+        app_module, db, skills, engine = ChatEphemeralTests()._setup()
+        engine.stream.return_value = iter(events)
+        with patch.object(app_module, 'get_db', return_value=db), \
+             patch.object(app_module, 'get_skill_manager', return_value=skills), \
+             patch.object(app_module, 'bearer_for_api', return_value=None), \
+             patch.object(app_module, 'is_subscription_access', return_value=False), \
+             patch.object(app_module, 'ProviderManager'), \
+             patch.object(app_module, 'make_registry'), \
+             patch.object(app_module, 'build_engine', return_value=engine), \
+             patch.object(app_module.config, 'MEMORY_ENABLED', False), \
+             patch.object(app_module.config, 'MEMORY_SUMMARIZE', False):
+            application = app_module.create_app()
+            client = application.test_client()
+            with client.session_transaction() as session:
+                session['user_id'] = 'alice'
+            response = client.post('/api/chat', json={
+                'message': 'create the skill',
+                'conversation_id': 'conversation',
+            })
+            self.assertEqual(response.status_code, 200)
+            data = response.get_data(as_text=True)
+        out = []
+        for line in data.splitlines():
+            if line.startswith('data: '):
+                try:
+                    out.append(json.loads(line[6:]))
+                except ValueError:
+                    pass
+        return out
+
+    def test_create_skill_tool_result_emits_skills_changed(self):
+        events = self._stream([
+            {'type': 'tool_result', 'name': 'create_skill',
+             'output': "Skill `demo` created."},
+            {'type': 'text_delta', 'content': 'Done.'},
+            {'type': 'done', 'usage': {}},
+        ])
+        types = [e.get('type') for e in events]
+        self.assertIn('skills_changed', types)
+        # The tool_result itself still reaches the client exactly once.
+        self.assertEqual(types.count('tool_result'), 1)
+
+    def test_sudo_marker_emits_sudo_password_event(self):
+        from tools.vapt_tools import SUDO_MARKER
+        events = self._stream([
+            {'type': 'tool_result', 'name': 'vapt_run',
+             'output': f"done\n{SUDO_MARKER}sudo credential required"},
+            {'type': 'done', 'usage': {}},
+        ])
+        sudo = [e for e in events if e.get('type') == 'sudo_password']
+        self.assertEqual(len(sudo), 1)
+        self.assertEqual(sudo[0].get('reason'), 'sudo credential required')
+
+    def test_ordinary_tool_results_emit_no_side_effect_events(self):
+        events = self._stream([
+            {'type': 'tool_result', 'name': 'web_search', 'output': 'results'},
+            {'type': 'done', 'usage': {}},
+        ])
+        types = [e.get('type') for e in events]
+        self.assertNotIn('skills_changed', types)
+        self.assertNotIn('sudo_password', types)
+        self.assertNotIn('github_token', types)
+
+
 if __name__ == '__main__':
     unittest.main()

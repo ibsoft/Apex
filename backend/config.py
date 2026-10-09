@@ -124,6 +124,10 @@ class Config:
     DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
     DB_PATH = Path(os.getenv("DB_PATH", DATA_DIR / "apex.db"))
     CHROMA_DIR = str(DATA_DIR / "chroma")
+    # The dotenv file load_dotenv() reads at import time (top of this module).
+    # Named here so tools that write env entries (set_env) and the tests that
+    # redirect them have one agreed target instead of re-deriving the path.
+    ENV_FILE = str(BASE_DIR / ".env")
     # Colon-separated search roots; OS permissions are always respected.
     FILE_SEARCH_ROOTS = os.getenv("FILE_SEARCH_ROOTS", "/")
 

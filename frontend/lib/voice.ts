@@ -31,6 +31,7 @@ import {
   pickWakeAck,
   recognitionLanguage,
   sliceAfterLastWake,
+  speechSummary,
   stripAckEcho,
   wakePattern,
   type ResultSnapshot,
@@ -264,7 +265,7 @@ export function useVoiceEngine(opts: {
     // A real response replaces the wake acknowledgement; its echo guard would
     // otherwise strip those same words from a later command.
     forgetAck();
-    const clean = (text || "").replace(/\s+/g, " ").trim();
+    const clean = speechSummary(text || "").replace(/\s+/g, " ").trim();
     if (!clean || !window.speechSynthesis) {
       finishSpeaking();
       return;

@@ -1,0 +1,21 @@
+"""Smoke tests for the $name skill pack.
+
+Replaced/extended by the skill's real tests. Kept dependency-free so it passes
+before any third-party package is installed.
+"""
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+PACK = Path(__file__).resolve().parent.parent
+
+
+def test_pack_has_readme() -> None:
+    assert (PACK / "README.md").exists()
+
+
+def test_python_scripts_parse() -> None:
+    scripts = sorted(PACK.glob("*.py")) + sorted(PACK.glob("scripts/*.py"))
+    for script in scripts:
+        ast.parse(script.read_text(encoding="utf-8"), filename=str(script))

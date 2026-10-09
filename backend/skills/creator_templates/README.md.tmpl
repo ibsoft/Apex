@@ -1,0 +1,17 @@
+# $name
+
+$description
+
+Part of APEX. The skill definition is `../$name.md`; this directory is the pack
+that holds helper scripts, tests and an optional (0600) `.env`.
+
+## Layout
+
+- `requirements.txt` — third-party Python packages, one per line.
+- `tests/` — pytest tests for the scripts in this pack.
+- `.env` — secrets read by the scripts (`Path(__file__).with_name(".env")`).
+  Written by `set_env`; never committed.
+
+## Run the tests
+
+    ../../.venv/bin/python -m pytest tests -q
