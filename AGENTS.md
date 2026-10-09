@@ -162,15 +162,28 @@ Avoid overlapping labels; use `above = uy > 0.82` for bottom nodes.
 
 ## Extending chat message rendering
 
-`frontend/components/ChatUI.tsx` renders messages in `MessageBubble`. The helper
-`renderRichText` currently supports:
+`frontend/components/ChatUI.tsx` renders messages in `MessageBubble`. The body
+goes through three pure parsers (all node-tested, because the component is not):
 
-- plain URLs → clickable `<a>` links;
-- image URLs (by extension) → `<img>`;
-- markdown images `![alt](url)` → `<img>`;
-- `InlineImage` hides broken images on `onError`.
+1. `lib/markdown.ts::splitFencedCode` pulls fenced blocks out first. A
+   ```geometry block paints as SVG via `parseGeometry` (`lib/geometry.ts`) and
+   `GeometryBlock`; anything else is a `CodeBlock` (language label, COPY,
+   scrollable body). An unclosed fence runs to the end on purpose - that is what
+   a streaming reply looks like before its terminator arrives.
+2. `lib/math.ts::splitMath` splits the remaining prose into text and math
+   ($...$ / $$...$$, plus \( \) and \[ \]; a `\` escapes the next char, and
+   "costs $5 and $7" stays money). `MathSpan` calls KaTeX
+   (`renderToString`, `throwOnError:false`); KaTeX CSS is imported in
+   `app/layout.tsx`.
+3. `renderRichText` scans each text run for URLs/images into `<a>`/`<img>`;
+   `InlineImage` hides broken images on `onError`.
 
-Update the regex or add new token types there if you need richer rendering.
+The geometry DSL is a fixed 0..100 box (`viewBox "-5 -5 110 110"`); one
+directive per line, `#` comments, and a bad line is reported in the block rather
+than silently dropped. `SkillManager.build_system_prompt` appends a cross-skill
+note telling the model this syntax exists (skipped in voice mode, where a
+formula would be read out as raw TeX). Add new syntax in the pure parser and its
+test, then teach the model in that note.
 
 ## Backend conventions
 

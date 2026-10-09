@@ -139,3 +139,24 @@ body {
 }
 .apex-scroll-slim::-webkit-scrollbar-thumb:hover { background: rgba(0, 229, 255, 0.42); }
 .apex-scroll-slim::-webkit-scrollbar-corner { background: transparent; }
+
+/* --- Rendered math (KaTeX) -------------------------------------------------
+   Readability on the dark world: binary/relation operators warm, big operators
+   violet, delimiters/punctuation cyan, numeric literals orange, variables the
+   default text colour. Scoped to `.apex-math` so KaTeX used anywhere else is
+   untouched. */
+.apex-math-block {
+  background: rgba(0, 229, 255, 0.04);
+  border: 1px solid rgba(0, 229, 255, 0.12);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.apex-math .katex { font-size: 1.02em; }
+.apex-math .katex .mbin,
+.apex-math .katex .mrel { color: #f5a623; }
+.apex-math .katex .mop { color: #bb9af7; }
+.apex-math .katex .mopen,
+.apex-math .katex .mclose,
+.apex-math .katex .mpunct { color: #7dcfff; }
+.apex-math-num { color: #ff9e64; }
+.apex-math .katex-error { color: #ff6b6b !important; }

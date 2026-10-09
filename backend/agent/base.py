@@ -47,6 +47,7 @@ class AgentContext:
     engine_name: str
     tools: ToolRegistry
     skill_tools: list[str]              # [] = all active
+    skill_name: str = ""                # active skill, for per-skill policy
     memory: object = None
     runtime: dict = field(default_factory=dict)
     voice_mode: bool = False

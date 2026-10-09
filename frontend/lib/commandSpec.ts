@@ -176,6 +176,8 @@ export const LOCAL_ACTIONS: LocalActionSpec[] = [
   },
   { type: "panel", action: "close", about: "Hide the side panel." },
   { type: "panel", action: "toggle", about: "Show the panel if it is hidden, hide it if it is showing." },
+  { type: "panel", action: "maximize", about: "Make the side panel wide so its content has more room." },
+  { type: "panel", action: "normalize", about: "Return the side panel to its normal (narrow) width." },
   ...(["list", "show", "run", "pause", "resume", "delete", "open"] as const).map<LocalActionSpec>((action) => ({
     type: "task",
     action,

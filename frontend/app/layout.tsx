@@ -3,6 +3,7 @@ import Script from "next/script";
 import { INSTALL_CAPTURE_SCRIPT } from "../lib/pwa";
 import "./globals.css";
 import "@xterm/xterm/css/xterm.css";
+import "katex/dist/katex.min.css";
 
 export const metadata: Metadata = {
   title: "APEX — Ghost In a Shell",

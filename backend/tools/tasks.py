@@ -430,6 +430,7 @@ def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
         provider=provider,
         provider_kind=provider_name,
         engine_name=engine_name,
+        skill_name=skill_name,
         tools=make_registry(memory=memory),
         skill_tools=list(getattr(skill_obj, "tools", []) or []),
         require_tool=bool(getattr(skill_obj, "require_tool", False)),

@@ -26,6 +26,13 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _csv(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return list(default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 # DATA_DIR is needed at module level, not only as a Config attribute: the secret
 # key is derived from a file inside it, and class bodies do not create closures
 # for the methods defined inside them.
@@ -205,6 +212,13 @@ class Config:
     ENABLE_RUN_SHELL = _bool("ENABLE_RUN_SHELL", False)
     RUN_SHELL_TIMEOUT = _int("RUN_SHELL_TIMEOUT", 60)
     MAX_TOOL_STEPS = _int("MAX_TOOL_STEPS", 12)
+    # The Skill Creator's contract is a create -> validate -> test -> fix repair
+    # loop, so one turn legitimately runs many tools; the per-turn cap above
+    # would cut it off mid-repair. Skills named here are not bounded by
+    # MAX_TOOL_STEPS - they use the larger safety ceiling below instead, which
+    # exists only to stop a runaway loop, not to shorten a working one.
+    MAX_TOOL_STEPS_EXEMPT = _csv("MAX_TOOL_STEPS_EXEMPT", ["skill_creator"])
+    MAX_TOOL_STEPS_EXEMPT_LIMIT = _int("MAX_TOOL_STEPS_EXEMPT_LIMIT", 100)
 
     # --- Scheduled tasks ----------------------------------------------------
     # Cron-backed jobs the agent creates and runs on its own (see
@@ -357,6 +371,27 @@ class Config:
     # instead of naming someone. A stranger must never be announced as a known
     # person just because the embedding drifted.
     VISIO_FACE_POSSIBLE_THRESHOLD = float(os.getenv("VISIO_FACE_POSSIBLE_THRESHOLD", "0.65"))
+
+    # --- Chat image attachments (vision) -------------------------------------
+    # An image attached to a chat turn goes straight to the chat model when that
+    # model can see, and otherwise through the VISIO vision model as a text
+    # description. This switch only governs the chat path; VISIO has its own.
+    CHAT_VISION_ENABLED = _bool("CHAT_VISION_ENABLED", True)
+    # Substrings (case-insensitive) that mark a chat model as vision-capable.
+    # Matching by substring lets versioned ids ("gpt-4o-mini-2024-...") and
+    # tagged Ollama names ("llama3.2-vision:11b") both hit. A false negative
+    # costs only the fallback description path, never correctness.
+    CHAT_VISION_MODELS = _csv("CHAT_VISION_MODELS", [
+        "gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-5", "o3", "o4", "chatgpt-4o",
+        "llava", "llama3.2-vision", "llama3.2:vision", "llama4",
+        "qwen-vl", "qwen2-vl", "qwen2.5-vl", "qwen3-vl",
+        "gemma3", "minicpm-v", "moondream", "pixtral",
+        "claude-3", "claude-4", "gemini",
+    ])
+    # Attached images are per-turn: they live under
+    # DATA_DIR/chat_images/<user>/ and are swept after this TTL.
+    CHAT_IMAGE_TTL_SECONDS = _int("CHAT_IMAGE_TTL_SECONDS", 3600)
+    CHAT_IMAGES_USER_MAX = _int("CHAT_IMAGES_USER_MAX", 20)
 
     # --- SIP skill (outbound phone calls) ------------------------------------
     # Off by default: this dials a real phone on a real account. A deployment

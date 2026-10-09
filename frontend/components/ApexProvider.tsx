@@ -167,7 +167,7 @@ type ApexContextType = {
   newConversation: () => Promise<void>;
   openConversation: (id: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
-  sendMessage: (text: string, opts?: { voice?: boolean; skill?: string }) => Promise<void>;
+  sendMessage: (text: string, opts?: { voice?: boolean; skill?: string; documentContext?: string; images?: { token: string; name?: string }[] }) => Promise<void>;
   setSkill: (name: string) => void;
   deleteSkill: (name: string) => Promise<void>;
   updateSettings: (patch: Settings) => Promise<void>;
@@ -1792,7 +1792,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   /* ---------- chat ---------- */
 
   const sendMessage = useCallback(
-    async (text: string, opts: { voice?: boolean; skill?: string } = {}) => {
+    async (text: string, opts: { voice?: boolean; skill?: string; documentContext?: string; images?: { token: string; name?: string }[] } = {}) => {
       let clean = text.trim();
       if (!clean || busy) return;
 
@@ -1942,6 +1942,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           skill: opts.skill ?? skillRef.current,
           voice_mode: !!opts.voice,
           ...(windowBlock ? { window_context: windowBlock } : {}),
+          ...(opts.documentContext ? { document_context: opts.documentContext } : {}),
+          ...(opts.images?.length ? { images: opts.images } : {}),
           ...(focusedTerminalId ? { focused_terminal: focusedTerminalId } : {}),
           // Set only when the operator named a window ("… on terminal 4"): it
           // tells the backend the request is already pinned to one session, so

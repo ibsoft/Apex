@@ -31,10 +31,11 @@ export type LocalCommand =
   | { type: "autonomy"; enabled: boolean }
   | { type: "silence" }
   | { type: "images"; query: string; source: "web" | "local" }
-  /* The chat panel itself: open/close, which tab is showing, and the two
-     input commands. `write` only fills the box, `send` only delivers it, so
-     the operator can compose first and commit second. */
-  | { type: "panel"; action: "open" | "close" | "toggle"; tab?: PanelTabName }
+  /* The chat panel itself: open/close, which tab is showing, whether it fills
+     the screen width (`maximize`/`normalize`), and the two input commands.
+     `write` only fills the box, `send` only delivers it, so the operator can
+     compose first and commit second. */
+  | { type: "panel"; action: "open" | "close" | "toggle" | "maximize" | "normalize"; tab?: PanelTabName }
   | { type: "chatinput"; action: "write" | "send"; text?: string }
   | { type: "lock"; action: "lock" }
   | { type: "signout" }
@@ -839,6 +840,19 @@ function parsePanelCommand(text: string, greek: boolean): LocalCommand | null {
   if (!clean) return null;
   const norm = normalize(clean);
 
+  /* Width commands come first because `expand` is claimed here and would
+     otherwise be read as "open" by the arm below. `minimize` stays on the
+     close arm on purpose: it is the established way to hide the panel, and
+     repurposing it as "shrink the width" would change a phrase operators
+     already use. */
+  if (/^(?:maximi[sz]e|expand|enlarge|widen|full[\s-]?screen)(?:\s+the)?(?:\s+chat)?\s+panel$/.test(norm)
+      || /^(?:make|set)(?:\s+the)?(?:\s+chat)?\s+panel\s+(?:wider|wide|full)$/.test(norm)) {
+    return { type: "panel", action: "maximize" };
+  }
+  if (/^(?:normali[sz]e|unmaximi[sz]e|restore|shrink|un[\s-]?shrink)(?:\s+the)?(?:\s+chat)?\s+panel$/.test(norm)
+      || /^(?:reset|return)(?:\s+the)?(?:\s+chat)?\s+panel(?:\s+to\s+(?:its\s+)?(?:norma?l|default|original))?$/.test(norm)) {
+    return { type: "panel", action: "normalize" };
+  }
   if (/^(?:open|show|expand|unhide)(?:\s+the)?(?:\s+chat)?\s+panel$/.test(norm)
       || /^(?:toggle|switch)(?:\s+the)?(?:\s+chat)?\s+panel$/.test(norm)) {
     return /toggle|switch/.test(norm) ? { type: "panel", action: "toggle" } : { type: "panel", action: "open" };
@@ -847,6 +861,8 @@ function parsePanelCommand(text: string, greek: boolean): LocalCommand | null {
     return { type: "panel", action: "close" };
   }
   if (greek) {
+    if (/^(?:μεγιστοποιησε|μεγαλωσε|αναπτυξε|πλατυνε)(?:\s+το)?\s*πανελ$/.test(norm)) return { type: "panel", action: "maximize" };
+    if (/^(?:κανονικοποιησε|επαναφερε|μικρυνε|σμικρυνε)(?:\s+το)?\s*πανελ$/.test(norm)) return { type: "panel", action: "normalize" };
     if (/^(?:ανοιξε|δειξε|εμφανισε)(?:\s+το)?\s*πανελ$/.test(norm)) return { type: "panel", action: "open" };
     if (/^(?:κλεισε|κρυψε|συμπτυξε|παραθεσε)\s*(?:το|την|τη)?\s*πανελ$/.test(norm)) return { type: "panel", action: "close" };
     if (/^(?:εναλλαξε|αλλαξε|τροπε)\s*(?:το|την|τη)?\s*πανελ$/.test(norm)) return { type: "panel", action: "toggle" };

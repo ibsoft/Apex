@@ -550,7 +550,33 @@ export const api = {
         const body: any = await resp.json().catch(() => null);
         throw new ApiError(body?.error ?? `${resp.status} ${resp.statusText}`, resp.status);
       }
-      return resp.json() as Promise<{ ok: boolean; total: number; files: { filename: string; chunks?: number; error?: string }[] }>;
+      return resp.json() as Promise<{ ok: boolean; total: number; files: { filename: string; chunks?: number; preview?: string; error?: string }[] }>;
+    },
+  },
+
+  vision: {
+    /**
+     * Upload one image for the current chat turn. Images are ephemeral: the
+     * returned token is only offered to the next chat call and the server
+     * sweeps it after its TTL.
+     */
+    upload: async (file: File) => {
+      const form = new FormData();
+      form.append("image", file);
+      const resp = await fetch(`${BASE}/api/vision/upload`, {
+        method: "POST",
+        credentials: CRED,
+        // FormData sets its own multipart Content-Type boundary, so only the
+        // CSRF header is added here.
+        headers: csrfToken ? { "X-APEX-CSRF": csrfToken } : {},
+        body: form,
+      });
+      if (resp.status === 401) throw new ApiError("unauthorized", 401);
+      if (!resp.ok) {
+        const body: any = await resp.json().catch(() => null);
+        throw new ApiError(body?.error ?? `${resp.status} ${resp.statusText}`, resp.status);
+      }
+      return resp.json() as Promise<{ ok: boolean; token: string; name: string; mime: string }>;
     },
   },
 
@@ -563,6 +589,10 @@ export const api = {
       model?: string;
       voice_mode?: boolean;
       store_messages?: boolean;
+      /** Bounded preview of documents attached this turn (see /api/memory/upload). */
+      document_context?: string;
+      /** Ephemeral image tokens for this turn (see /api/vision/upload). */
+      images?: { token: string; name?: string }[];
     },
     onEvent: (ev: ChatEvent) => void,
   ): Promise<void> {

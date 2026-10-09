@@ -76,6 +76,26 @@ class SecretPromptTests(unittest.TestCase):
                 self.assertIn("of any `.env` file", prompt)
 
 
+class RenderPromptTests(unittest.TestCase):
+    """The model is told the chat panel can render math and geometry, so it
+    emits the syntax instead of an ASCII sketch. Absent in voice mode, where
+    the reply is spoken and a formula would be read out as raw TeX."""
+
+    def setUp(self):
+        definitions = Path(__file__).resolve().parents[1] / "skills" / "definitions"
+        self.mgr = SkillManager(definitions)
+
+    def test_math_and_geometry_syntax_is_documented(self):
+        prompt = self.mgr.build_system_prompt("general")
+        self.assertIn("inline math as $...$", prompt)
+        self.assertIn("```geometry", prompt)
+        self.assertIn("0..100 coordinate box", prompt)
+
+    def test_the_rule_is_absent_in_voice_mode(self):
+        prompt = self.mgr.build_system_prompt("general", voice_mode=True)
+        self.assertNotIn("```geometry", prompt)
+
+
 class SkillManagerTests(unittest.TestCase):
     def test_code_skill_model_expanded_from_config(self):
         mgr = SkillManager()

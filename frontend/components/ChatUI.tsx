@@ -6,10 +6,17 @@
    Styled to sit on the APEX world: glassy dark, cyan + gold, monospace caps.
 */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Maximize2, Minimize2, Paperclip, ImagePlus } from "lucide-react";
+import katex from "katex";
 import { useApex, Message } from "./ApexProvider";
 import { api } from "../lib/api";
 import { CHAT_INPUT_EVENT, PANEL_EVENT, type PanelTabName } from "../lib/panelBridge";
+import { splitFencedCode } from "../lib/markdown";
+import { tokenize, type TokenType } from "../lib/highlight";
+import { splitMath } from "../lib/math";
+import { parseGeometry, type GeoElement } from "../lib/geometry";
+import { type ChatAttachment, attachmentsFromUpload, buildDocumentContext } from "../lib/attachments";
 import FileDownloads, { backendFileHref } from "./FileDownloads";
 import AppsPanel from "./AppsPanel";
 import TasksPanel from "./TasksPanel";
@@ -264,6 +271,218 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+/** Token colours for fenced code. Tuned for the dark world background: warm
+ *  accents for literals, cool for structure, dim for comments. */
+const CODE_COLORS: Record<TokenType, React.CSSProperties> = {
+  plain: { color: "#e6f0ff" },
+  comment: { color: "#6b7d93", fontStyle: "italic" },
+  string: { color: "#9ece6a" },
+  number: { color: "#ff9e64" },
+  keyword: { color: "#bb9af7" },
+  builtin: { color: "#7dcfff" },
+  type: { color: "#2ac3de" },
+  function: { color: "#7aa2f7" },
+  property: { color: "#73daca" },
+  operator: { color: "#89ddff" },
+  punct: { color: "#a9b1d6" },
+  tag: { color: "#f7768e" },
+  attr: { color: "#e0af68" },
+};
+
+/** A fenced code block shown in its own bubble: a language label, a copy
+ *  button and a horizontally scrollable monospace body. Kept separate from
+ *  the message bubble's prose so the operator can copy just the snippet. */
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore clipboard errors
+    }
+  }, [code]);
+  const tokens = useMemo(() => tokenize(code, language), [code, language]);
+  return (
+    <div style={{
+      margin: "6px 0", borderRadius: 8, overflow: "hidden",
+      border: `1px solid ${C.line}`, background: "rgba(0,0,0,0.34)",
+      maxWidth: "100%",
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "3px 6px 3px 9px", borderBottom: `1px solid ${C.line}`,
+        background: "rgba(255,255,255,0.03)",
+      }}>
+        <span style={{
+          fontSize: 8.5, letterSpacing: "0.14em", fontFamily: "var(--font-mono)",
+          color: C.dim, textTransform: "uppercase",
+        }}>
+          {language || "code"}
+        </span>
+        <button
+          onClick={handleCopy}
+          aria-label="Copy code"
+          style={{
+            background: "none", border: "none", cursor: "pointer", padding: "2px 4px",
+            fontSize: 8.5, letterSpacing: "0.1em", fontFamily: "var(--font-mono)",
+            color: copied ? C.cyan : C.dim,
+          }}
+        >
+          {copied ? "COPIED" : "COPY"}
+        </button>
+      </div>
+      <pre className="apex-scroll" style={{
+        margin: 0, padding: "8px 10px", overflowX: "auto",
+        fontSize: 11.5, lineHeight: 1.55, fontFamily: "var(--font-mono)",
+        color: "#e6f0ff", whiteSpace: "pre",
+      }}>
+        <code>
+          {tokens.map((t, i) => (
+            <span key={i} style={CODE_COLORS[t.type]}>{t.value}</span>
+          ))}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+/** One KaTeX expression. The segmenter decides what is math; this only paints
+ *  it. `throwOnError:false` renders a TeX error in place (red source) instead
+ *  of throwing, so a malformed formula cannot blank the whole reply. */
+function MathSpan({ tex, display }: { tex: string; display: boolean }) {
+  const html = useMemo(() => {
+    try {
+      const rendered = katex.renderToString(tex, {
+        displayMode: display,
+        throwOnError: false,
+        output: "htmlAndMathml",
+        strict: false,
+      });
+      // KaTeX paints digits as ordinary atoms; tag the plain-numeric ones so CSS
+      // can give numbers their own colour (variables stay default).
+      return rendered.replace(
+        /<span class="mord">(\d[\d.,]*)<\/span>/g,
+        '<span class="mord apex-math-num">$1</span>',
+      );
+    } catch {
+      return "";
+    }
+  }, [tex, display]);
+  if (!html) {
+    return (
+      <code style={{ fontFamily: "var(--font-mono)", fontSize: 11.5, color: C.gold }}>{tex}</code>
+    );
+  }
+  return (
+    <span
+      className={`apex-math ${display ? "apex-math-block" : "apex-math-inline"}`}
+      style={display
+        ? { display: "block", overflowX: "auto", margin: "6px 0", color: C.text }
+        : { color: C.text }}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+/** Split a prose segment into text and math, so links/images still render in
+ *  the text around a formula. */
+function renderMath(text: string): React.ReactNode[] {
+  return splitMath(text).map((seg, i) =>
+    seg.type === "math" ? (
+      <MathSpan key={`m-${i}`} tex={seg.text} display={seg.display} />
+    ) : (
+      <React.Fragment key={`t-${i}`}>{renderRichText(seg.text)}</React.Fragment>
+    ),
+  );
+}
+
+function GeometryShape({ el }: { el: GeoElement }) {
+  const stroke = C.cyan;
+  switch (el.kind) {
+    case "line":
+      return <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2} stroke={stroke} strokeWidth={1} />;
+    case "rect":
+      return <rect x={el.x} y={el.y} width={el.w} height={el.h} fill="none" stroke={stroke} strokeWidth={1} />;
+    case "circle":
+      return <circle cx={el.cx} cy={el.cy} r={el.r} fill="none" stroke={stroke} strokeWidth={1} />;
+    case "poly": {
+      const points = el.points.map(([x, y]) => `${x},${y}`).join(" ");
+      return el.closed
+        ? <polygon points={points} fill={`${C.cyan}12`} stroke={stroke} strokeWidth={1} />
+        : <polyline points={points} fill="none" stroke={stroke} strokeWidth={1} />;
+    }
+    case "point":
+      return (
+        <g>
+          <circle cx={el.x} cy={el.y} r={1.2} fill={stroke} />
+          {el.label && <text x={el.x + 2} y={el.y - 2} fontSize={4} fill={C.text}>{el.label}</text>}
+        </g>
+      );
+    case "text":
+      return <text x={el.x} y={el.y} fontSize={4} fill={C.text}>{el.label}</text>;
+    case "angle": {
+      const [vx, vy] = el.vertex;
+      const a1 = Math.atan2(el.a[1] - vy, el.a[0] - vx);
+      const a2 = Math.atan2(el.b[1] - vy, el.b[0] - vx);
+      const sx = vx + el.r * Math.cos(a1);
+      const sy = vy + el.r * Math.sin(a1);
+      const ex = vx + el.r * Math.cos(a2);
+      const ey = vy + el.r * Math.sin(a2);
+      let delta = a2 - a1;
+      while (delta <= -Math.PI) delta += 2 * Math.PI;
+      while (delta > Math.PI) delta -= 2 * Math.PI;
+      const sweep = delta > 0 ? 1 : 0;
+      const d = `M ${sx} ${sy} A ${el.r} ${el.r} 0 0 ${sweep} ${ex} ${ey}`;
+      return (
+        <g>
+          <line x1={vx} y1={vy} x2={el.a[0]} y2={el.a[1]} stroke={C.dim} strokeWidth={0.5} strokeDasharray="2 1.5" />
+          <line x1={vx} y1={vy} x2={el.b[0]} y2={el.b[1]} stroke={C.dim} strokeWidth={0.5} strokeDasharray="2 1.5" />
+          <path d={d} fill="none" stroke={stroke} strokeWidth={1} />
+        </g>
+      );
+    }
+  }
+}
+
+/** A fenced ```geometry block painted as SVG. A parse error is shown under the
+ *  diagram so a malformed directive is visible instead of silently missing. */
+function GeometryBlock({ source }: { source: string }) {
+  const geo = useMemo(() => parseGeometry(source), [source]);
+  return (
+    <div style={{
+      margin: "6px 0", borderRadius: 8, overflow: "hidden",
+      border: `1px solid ${C.line}`, background: "rgba(0,0,0,0.24)", maxWidth: "100%",
+    }}>
+      <div style={{
+        padding: "3px 9px", borderBottom: `1px solid ${C.line}`,
+        fontSize: 8.5, letterSpacing: "0.14em", fontFamily: "var(--font-mono)",
+        color: C.dim, textTransform: "uppercase", background: "rgba(255,255,255,0.03)",
+      }}>
+        geometry
+      </div>
+      <svg
+        viewBox={geo.viewBox}
+        preserveAspectRatio="xMidYMid meet"
+        role="img"
+        aria-label="geometry diagram"
+        style={{ width: "100%", maxWidth: 340, display: "block", padding: "8px 10px", boxSizing: "border-box" }}
+      >
+        {geo.elements.map((el, i) => <GeometryShape key={i} el={el} />)}
+      </svg>
+      {geo.error && (
+        <div style={{
+          padding: "4px 9px", borderTop: `1px solid ${C.line}`, fontSize: 9.5,
+          fontFamily: "var(--font-mono)", color: C.gold,
+        }}>
+          {geo.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === "user";
   return (
@@ -275,7 +494,19 @@ function MessageBubble({ msg }: { msg: Message }) {
         border: isUser ? `1px solid ${C.cyan}33` : "1px solid rgba(255,255,255,0.08)",
         color: C.text,
       }}>
-        {msg.content ? renderRichText(msg.content) : (msg.streaming ? "…" : "")}
+        {msg.content ? (
+          splitFencedCode(msg.content).map((seg, i) =>
+            seg.type === "code" ? (
+              ["geometry", "geo"].includes(seg.language.trim().toLowerCase()) ? (
+                <GeometryBlock key={i} source={seg.code} />
+              ) : (
+                <CodeBlock key={i} language={seg.language} code={seg.code} />
+              )
+            ) : (
+              <React.Fragment key={i}>{renderMath(seg.text)}</React.Fragment>
+            ),
+          )
+        ) : (msg.streaming ? "…" : "")}
         {msg.streaming && <span className="apex-blink" style={{ color: C.cyan }}>▊</span>}
       </div>
       {!isUser && <FileDownloads tools={msg.meta?.tools} />}
@@ -461,6 +692,15 @@ export default function ChatUI() {
   useEffect(() => {
     a.setChatCollapsed(collapsed);
   }, [collapsed, a.setChatCollapsed]);
+  const [maximized, setMaximized] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("apex:panel-maximized") === "1";
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("apex:panel-maximized", maximized ? "1" : "0");
+    } catch {}
+  }, [maximized]);
   const [histOpen, toggleHist] = useState(false);
   const [memSearch, setMemSearch] = useState("");
   const unreadTasks = a.tasks.filter((t) => t.unread).length;
@@ -471,6 +711,17 @@ export default function ChatUI() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendDisabled, setSendDisabled] = useState(false);
   const [confirmSkillDelete, setConfirmSkillDelete] = useState<string | null>(null);
+  const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [attachError, setAttachError] = useState("");
+  const chatFileInputRef = useRef<HTMLInputElement>(null);
+  // Images attached to the next turn. `url` is a local object URL used only for
+  // the thumbnail; it is revoked once the turn is sent (the server token is
+  // what the backend reads).
+  const [chatImages, setChatImages] = useState<{ token: string; name: string; url: string }[]>([]);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const chatImageInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const hasPreview = a.windows.length > 0;
 
@@ -501,16 +752,87 @@ export default function ChatUI() {
   }, [collapsed, tab, a.user?.id, a.busy, a.activeId, a.skill, hasPreview]);
 
   const send = useCallback(async (text?: string) => {
-    const body = (text ?? draft).trim();
-    if (!body || a.busy) return;
+    const typed = (text ?? draft).trim();
+    const attachments = chatAttachments;
+    const images = chatImages;
+    if ((!typed && attachments.length === 0 && images.length === 0) || a.busy) return;
+    // Attaching a document without a question is a request for a summary; the
+    // alternative is a chip that can never be sent on its own.
+    const body = typed || (attachments.length ? "Summarize the attached document." : "What is in this image?");
+    const documentContext = buildDocumentContext(attachments);
     setDraft("");
     setSendDisabled(true);
     try {
-      await a.sendMessage(body, { voice: false, skill: a.skill });
+      await a.sendMessage(body, {
+        voice: false,
+        skill: a.skill,
+        documentContext,
+        images: images.map(({ token, name }) => ({ token, name })),
+      });
+      setChatAttachments([]);
+      setAttachError("");
+      for (const img of images) URL.revokeObjectURL(img.url);
+      setChatImages([]);
+      setImageError("");
     } finally {
       setSendDisabled(false);
     }
-  }, [a, draft]);
+  }, [a, draft, chatAttachments, chatImages]);
+
+  const uploadChatFiles = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setAttachBusy(true);
+    setAttachError("");
+    try {
+      const res = await api.memory.upload(files);
+      const added = attachmentsFromUpload(res.files ?? []);
+      const failed = (res.files ?? []).filter((f) => f.error);
+      if (added.length) setChatAttachments((prev) => [...prev, ...added]);
+      if (failed.length) {
+        setAttachError(failed.map((f) => `${f.filename}: ${f.error}`).join("; "));
+      }
+    } catch (err: any) {
+      setAttachError(err?.message ?? "Upload failed");
+    } finally {
+      setAttachBusy(false);
+    }
+  }, []);
+
+  const uploadChatImages = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setImageBusy(true);
+    setImageError("");
+    try {
+      const next: { token: string; name: string; url: string }[] = [];
+      for (const file of Array.from(files)) {
+        try {
+          const up = await api.vision.upload(file);
+          next.push({ token: up.token, name: up.name || file.name, url: URL.createObjectURL(file) });
+        } catch (err: any) {
+          setImageError(err?.message ?? `Could not attach ${file.name}`);
+        }
+      }
+      if (next.length) setChatImages((prev) => [...prev, ...next]);
+    } finally {
+      setImageBusy(false);
+    }
+  }, []);
+
+  const removeChatImage = useCallback((index: number) => {
+    setChatImages((prev) => {
+      const found = prev[index];
+      if (found) URL.revokeObjectURL(found.url);
+      return prev.filter((_, j) => j !== index);
+    });
+  }, []);
+
+  // Revoke any thumbnail object URLs still alive when the panel unmounts.
+  useEffect(() => () => {
+    setChatImages((prev) => {
+      for (const img of prev) URL.revokeObjectURL(img.url);
+      return prev;
+    });
+  }, []);
 
   /* Panel and chat-input command consumers.
 
@@ -522,18 +844,25 @@ export default function ChatUI() {
   useEffect(() => {
     const onPanel = (event: Event) => {
       const detail = (event as CustomEvent).detail as {
-        action: "open" | "close" | "toggle";
+        action: "open" | "close" | "toggle" | "maximize" | "normalize";
         tab?: PanelTabName;
         respond: (message: string) => void;
       };
-      if (detail.action === "close") setCollapsed(true);
-      else setCollapsed(false);
+      if (detail.action === "close") {
+        setCollapsed(true);
+      } else {
+        setCollapsed(false);
+        if (detail.action === "maximize") setMaximized(true);
+        else if (detail.action === "normalize") setMaximized(false);
+      }
       if (detail.tab) setTab(TAB_FROM_COMMAND[detail.tab] ?? "chat");
       event.preventDefault();
       detail.respond(
-        detail.tab
-          ? `Opening ${detail.tab}.`
-          : detail.action === "close" ? "Closing the panel." : "Opening the panel.",
+        detail.action === "maximize" ? "Maximizing the panel."
+          : detail.action === "normalize" ? "Restoring the panel."
+          : detail.tab
+            ? `Opening ${detail.tab}.`
+            : detail.action === "close" ? "Closing the panel." : "Opening the panel.",
       );
     };
     window.addEventListener(PANEL_EVENT, onPanel);
@@ -655,7 +984,7 @@ export default function ChatUI() {
         </button>
       ) : (
         <aside style={{
-          position: "fixed", right: 0, top: 0, bottom: 0, width: "min(392px, 100vw)", zIndex: 50,
+          position: "fixed", right: 0, top: 0, bottom: 0, width: maximized ? "min(880px, 100vw)" : "min(392px, 100vw)", zIndex: 50,
           display: "flex", flexDirection: "column",
           background: C.bg, backdropFilter: "blur(22px)",
           borderLeft: `1px solid ${C.line}`,
@@ -701,6 +1030,15 @@ export default function ChatUI() {
                   )}
                 </>
               )}
+              <button
+                onClick={() => setMaximized((v) => !v)}
+                aria-label={maximized ? "Restore panel width" : "Maximize panel"}
+                aria-pressed={maximized}
+                title={maximized ? "Restore width" : "Maximize"}
+                style={{ background: "none", border: "none", color: maximized ? C.cyan : C.dim, cursor: "pointer", lineHeight: 1, display: "flex", alignItems: "center" }}
+              >
+                {maximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              </button>
               <button onClick={() => setCollapsed(true)} aria-label="Collapse"
                 style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 16, lineHeight: 1 }}>
                 ›
@@ -798,7 +1136,82 @@ export default function ChatUI() {
                   </div>
 
                   {/* input */}
+                  {(chatAttachments.length > 0 || chatImages.length > 0 || attachBusy || imageBusy || attachError || imageError) && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
+                      {chatImages.map((img, i) => (
+                        <span key={`${img.token}-${i}`} style={{
+                          display: "flex", alignItems: "center", gap: 5, padding: "2px 6px 2px 3px", borderRadius: 10,
+                          background: `${C.cyan}10`, border: `1px solid ${C.line}`, maxWidth: "100%",
+                          fontFamily: "var(--font-mono)", fontSize: 9, color: C.text,
+                        }}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={img.url} alt="" style={{ width: 22, height: 22, objectFit: "cover", borderRadius: 5 }} />
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }}>{img.name}</span>
+                          <button onClick={() => removeChatImage(i)}
+                            aria-label={`Remove ${img.name}`}
+                            style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0 }}>×</button>
+                        </span>
+                      ))}
+                      {chatAttachments.map((att, i) => (
+                        <span key={`${att.name}-${i}`} style={{
+                          display: "flex", alignItems: "center", gap: 4, padding: "2px 6px", borderRadius: 10,
+                          background: `${C.cyan}10`, border: `1px solid ${C.line}`, maxWidth: "100%",
+                          fontFamily: "var(--font-mono)", fontSize: 9, color: C.text,
+                        }}>
+                          <span style={{ color: C.cyan }}>DOC</span>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>{att.name}</span>
+                          <span style={{ color: C.dim }}>{att.chunks}</span>
+                          <button onClick={() => setChatAttachments((prev) => prev.filter((_, j) => j !== i))}
+                            aria-label={`Remove ${att.name}`}
+                            style={{ background: "none", border: "none", color: C.dim, cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0 }}>×</button>
+                        </span>
+                      ))}
+                      {(attachBusy || imageBusy) && <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>INGESTING…</span>}
+                      {attachError && <span style={{ fontSize: 9, color: C.gold, fontFamily: "var(--font-mono)" }}>{attachError}</span>}
+                      {imageError && <span style={{ fontSize: 9, color: C.gold, fontFamily: "var(--font-mono)" }}>{imageError}</span>}
+                    </div>
+                  )}
                   <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                    <input
+                      ref={chatFileInputRef}
+                      type="file"
+                      multiple
+                      accept=".txt,.md,.pdf,.json,.csv,.py,.js,.ts,.tsx,.html,.htm,.xml,.yaml,.yml"
+                      style={{ display: "none" }}
+                      onChange={(e) => { void uploadChatFiles(e.target.files); e.target.value = ""; }}
+                    />
+                    <button onClick={() => chatFileInputRef.current?.click()}
+                      disabled={!a.user || a.busy || attachBusy}
+                      aria-label="Attach a document to this message"
+                      title="Attach a document (embedded into memory)"
+                      style={{
+                        flexShrink: 0, padding: "8px 9px", borderRadius: 8, display: "flex", alignItems: "center",
+                        background: "transparent", border: `1px solid ${C.line}`,
+                        color: !a.user || a.busy || attachBusy ? C.dim : C.cyan,
+                        cursor: !a.user || a.busy || attachBusy ? "not-allowed" : "pointer",
+                      }}>
+                      <Paperclip size={14} />
+                    </button>
+                    <input
+                      ref={chatImageInputRef}
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      style={{ display: "none" }}
+                      onChange={(e) => { void uploadChatImages(e.target.files); e.target.value = ""; }}
+                    />
+                    <button onClick={() => chatImageInputRef.current?.click()}
+                      disabled={!a.user || a.busy || imageBusy}
+                      aria-label="Attach an image to this message"
+                      title="Attach an image"
+                      style={{
+                        flexShrink: 0, padding: "8px 9px", borderRadius: 8, display: "flex", alignItems: "center",
+                        background: "transparent", border: `1px solid ${C.line}`,
+                        color: !a.user || a.busy || imageBusy ? C.dim : C.cyan,
+                        cursor: !a.user || a.busy || imageBusy ? "not-allowed" : "pointer",
+                      }}>
+                      <ImagePlus size={14} />
+                    </button>
                     <textarea
                       ref={inputRef}
                       className="apex-scroll-slim"
@@ -807,12 +1220,12 @@ export default function ChatUI() {
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
                       }}
-                      placeholder={a.user ? "Type & press Enter, or tap the core & speak…" : "Sign in with OpenAI to start"}
+                      placeholder={a.user ? "Type & press Enter, or attach a document…" : "Sign in with OpenAI to start"}
                       rows={1}
                       disabled={!a.user || a.busy}
                       style={{ ...inputBase, flex: 1, resize: "none", lineHeight: 1.5, maxHeight: 90 }}
                     />
-                    <button onClick={() => void send()} disabled={!a.user || a.busy || !draft.trim()}
+                    <button onClick={() => void send()} disabled={!a.user || a.busy || (!draft.trim() && chatAttachments.length === 0 && chatImages.length === 0)}
                       style={{
                         padding: "8px 14px", borderRadius: 8, cursor: "pointer", letterSpacing: "0.1em",
                         fontFamily: "var(--font-mono)", fontSize: 11,

@@ -193,6 +193,22 @@ class SkillManager:
             parts.append(f"Available tools for this skill: {', '.join(skill.tools)}.")
         if extra:
             parts.append(extra)
+        if not voice_mode:
+            # The chat panel renders this syntax (KaTeX + a small SVG geometry
+            # language). A model that does not know the delimiters will answer
+            # with plain prose or an ASCII sketch; telling it once here covers
+            # every skill. Skipped in voice mode, where the reply is spoken and
+            # a formula or diagram would be read out as raw TeX.
+            parts.append(
+                "The chat panel renders LaTeX math and simple SVG geometry on "
+                "its own. Write inline math as $...$ and display math as "
+                "$$...$$. For a diagram, emit a fenced ```geometry block with "
+                "one directive per line in a 0..100 coordinate box: "
+                "line x1 y1 x2 y2; rect x y w h; circle cx cy r; "
+                "polygon/polyline x1 y1 x2 y2 ...; point x y [label]; "
+                "text x y label; angle vx vy ax ay bx by [r]. Use geometry only "
+                "when a picture explains it better than words."
+            )
         if voice_mode:
             # Last on purpose: this is the final word, so it outranks the skill
             # body (the shell skill says "return output verbatim").
