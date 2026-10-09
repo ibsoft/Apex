@@ -470,8 +470,18 @@ export default function ChatUI() {
   const [memUploading, setMemUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sendDisabled, setSendDisabled] = useState(false);
+  const [confirmSkillDelete, setConfirmSkillDelete] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const hasPreview = a.windows.length > 0;
+
+  useEffect(() => {
+    if (!confirmSkillDelete) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setConfirmSkillDelete(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmSkillDelete]);
 
   useEffect(() => {
     if (collapsed || tab !== "chat" || !a.user || a.busy || hasPreview) return;
@@ -747,7 +757,7 @@ export default function ChatUI() {
                           </button>
                           {!s.builtin && (
                             <button
-                              onClick={() => a.deleteSkill(s.name)}
+                              onClick={() => setConfirmSkillDelete(s.name)}
                               title="Delete custom skill"
                               style={{
                                 padding: "0 4px",
@@ -1048,6 +1058,77 @@ export default function ChatUI() {
             {tab === "tasks" && <TasksPanel />}
           </div>
         </aside>
+      )}
+
+      {confirmSkillDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Delete skill ${confirmSkillDelete}`}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setConfirmSkillDelete(null);
+          }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 200,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "radial-gradient(ellipse 90% 80% at 50% 45%, rgba(4,8,15,0.55) 0%, rgba(4,8,15,0.9) 100%)",
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            style={{
+              width: "min(440px, 92vw)", padding: "24px 24px 20px", borderRadius: 18,
+              background: "rgba(6,10,20,0.96)", border: `1px solid ${C.line}`,
+              boxShadow: "0 0 60px rgba(255,77,77,0.12), 0 18px 50px rgba(0,0,0,0.65)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+              <span style={{
+                width: 12, height: 12, borderRadius: "50%", flex: "0 0 auto",
+                background: "#ff4d4d", boxShadow: "0 0 18px #ff4d4d",
+              }} />
+              <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: "0.1em", color: "#f0f6ff", fontFamily: "var(--font-mono)" }}>
+                DELETE SKILL
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: "rgba(170,192,215,0.85)", lineHeight: 1.7, marginBottom: 18, fontFamily: "var(--font-mono)" }}>
+              Delete the custom skill&nbsp;
+              <span style={{ color: C.gold }}>{confirmSkillDelete}</span>?
+              <br />
+              Its definition, scripts and saved environment variables are removed permanently. This cannot be undone.
+            </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <button
+                autoFocus
+                onClick={() => {
+                  const name = confirmSkillDelete;
+                  setConfirmSkillDelete(null);
+                  if (name) void a.deleteSkill(name);
+                }}
+                style={{
+                  flex: 1, padding: "12px 0", borderRadius: 10, cursor: "pointer",
+                  color: "#1a0404", fontWeight: 700, letterSpacing: "0.12em",
+                  fontFamily: "var(--font-mono)", fontSize: 12,
+                  background: "linear-gradient(135deg, #ff8a8a 0%, #ff4d4d 55%, #c62828 100%)",
+                  boxShadow: "0 0 22px rgba(255,77,77,0.3)", border: "none",
+                }}
+              >
+                DELETE
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmSkillDelete(null)}
+                style={{
+                  padding: "12px 18px", borderRadius: 10, cursor: "pointer",
+                  background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.14)",
+                  color: "rgba(170,192,215,0.85)", fontFamily: "var(--font-mono)", fontSize: 11,
+                }}
+              >
+                CANCEL
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );
