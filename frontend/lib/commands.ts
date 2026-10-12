@@ -1315,6 +1315,16 @@ export function parseThinkHard(text: string, language = "en"): { message: string
   return { message, thinkHard: true };
 }
 
+/** "/steer <instruction>" - extra instructions for the turn already running.
+ * Returns the instruction text (possibly empty for a bare "/steer"), or null
+ * when the message is not a steer at all. The caller keeps the text queued
+ * until the backend confirms it was folded into the running generation. */
+export function parseSteerCommand(text: string): { instruction: string } | null {
+  const m = /^\/steer\b[:\s]*([\s\S]*)$/i.exec((text ?? "").trim());
+  if (!m) return null;
+  return { instruction: m[1].trim() };
+}
+
 export function formatDuration(totalSeconds: number, language = "en"): string {
   const greek = isGreek(language);
   const hours = Math.floor(totalSeconds / 3600);

@@ -9,7 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize2, Minimize2, Paperclip, ImagePlus, Volume2, VolumeX } from "lucide-react";
 import katex from "katex";
-import { useApex, Message } from "./ApexProvider";
+import { useApex, Message, QueuedMessage } from "./ApexProvider";
 import { api } from "../lib/api";
 import { CHAT_INPUT_EVENT, PANEL_EVENT, type PanelTabName } from "../lib/panelBridge";
 import { splitFencedCode } from "../lib/markdown";
@@ -487,6 +487,14 @@ function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === "user";
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
+      {msg.meta?.steer && (
+        <span style={{
+          fontSize: 8.5, letterSpacing: "0.16em", fontFamily: "var(--font-mono)",
+          color: C.gold, marginBottom: 3,
+        }}>
+          STEER · ADDED TO THE RUNNING REPLY
+        </span>
+      )}
       <div style={{
         maxWidth: "92%", padding: "8px 11px", borderRadius: 12,
         fontSize: 12.5, lineHeight: 1.5, wordBreak: "break-word",
@@ -516,12 +524,45 @@ function MessageBubble({ msg }: { msg: Message }) {
   );
 }
 
-function MensajeList({ messages }: { messages: Message[] }) {
+function QueuedBubble({ item, onCancel }: { item: QueuedMessage; onCancel: (id: string) => void }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", opacity: 0.72 }}>
+      <span style={{
+        fontSize: 8.5, letterSpacing: "0.16em", fontFamily: "var(--font-mono)",
+        color: item.steer ? C.gold : C.dim, marginBottom: 3,
+      }}>
+        {item.steer ? "STEER · QUEUED FOR THE RUNNING REPLY" : "QUEUED · SENDS WHEN THIS REPLY ENDS"}
+      </span>
+      <div style={{
+        maxWidth: "92%", padding: "8px 11px", borderRadius: 12, fontSize: 12.5, lineHeight: 1.5,
+        wordBreak: "break-word", color: C.text,
+        background: "transparent",
+        border: `1px dashed ${item.steer ? C.lineGold : C.line}`,
+        display: "flex", alignItems: "flex-start", gap: 8,
+      }}>
+        <span style={{ flex: 1 }}>{item.content}</span>
+        <button onClick={() => onCancel(item.id)} aria-label="Remove queued message" title="Remove from queue"
+          style={{
+            flexShrink: 0, background: "transparent", border: `1px solid ${C.line}`, borderRadius: 6,
+            color: C.dim, cursor: "pointer", fontSize: 11, lineHeight: 1, padding: "2px 5px",
+          }}>
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MensajeList({ messages, queued = [], cancelQueued }: {
+  messages: Message[];
+  queued?: QueuedMessage[];
+  cancelQueued?: (id: string) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
-  if (messages.length === 0) {
+  }, [messages, queued]);
+  if (messages.length === 0 && queued.length === 0) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 24 }}>
         <div>
@@ -538,6 +579,7 @@ function MensajeList({ messages }: { messages: Message[] }) {
     <div ref={ref} className="apex-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 12, padding: "12px 14px" }}>
       <div aria-hidden style={{ height: 4 }} />
       {messages.map((m) => <MessageBubble key={m.id} msg={m} />)}
+      {queued.map((q) => <QueuedBubble key={q.id} item={q} onCancel={cancelQueued ?? (() => {})} />)}
       <div aria-hidden style={{ height: 6 }} />
     </div>
   );
@@ -755,9 +797,9 @@ export default function ChatUI() {
     const typed = (text ?? draft).trim();
     const attachments = chatAttachments;
     const images = chatImages;
-    if ((!typed && attachments.length === 0 && images.length === 0) || a.busy) return;
-    // Attaching a document without a question is a request for a summary; the
-    // alternative is a chip that can never be sent on its own.
+    if (!typed && attachments.length === 0 && images.length === 0) return;
+    // No busy guard: while a reply is streaming the provider queues the message
+    // instead of dropping it (and shows it as a queued bubble).
     const body = typed || (attachments.length ? "Summarize the attached document." : "What is in this image?");
     const documentContext = buildDocumentContext(attachments);
     setDraft("");
@@ -1086,7 +1128,7 @@ export default function ChatUI() {
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
             {tab === "chat" && (
               <>
-                <MensajeList messages={a.messages} />
+                <MensajeList messages={a.messages} queued={a.queued} cancelQueued={a.cancelQueued} />
                 <TimersPanel />
                 <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.line}`, display: "flex", flexDirection: "column", gap: 8 }}>
                   {/* skills */}
@@ -1189,14 +1231,14 @@ export default function ChatUI() {
                       onChange={(e) => { void uploadChatFiles(e.target.files); e.target.value = ""; }}
                     />
                     <button onClick={() => chatFileInputRef.current?.click()}
-                      disabled={!a.user || a.busy || attachBusy}
+                      disabled={!a.user || attachBusy}
                       aria-label="Attach a document to this message"
                       title="Attach a document (embedded into memory)"
                       style={{
                         flexShrink: 0, padding: "8px 9px", borderRadius: 8, display: "flex", alignItems: "center",
                         background: "transparent", border: `1px solid ${C.line}`,
-                        color: !a.user || a.busy || attachBusy ? C.dim : C.cyan,
-                        cursor: !a.user || a.busy || attachBusy ? "not-allowed" : "pointer",
+                        color: !a.user || attachBusy ? C.dim : C.cyan,
+                        cursor: !a.user || attachBusy ? "not-allowed" : "pointer",
                       }}>
                       <Paperclip size={14} />
                     </button>
@@ -1209,14 +1251,14 @@ export default function ChatUI() {
                       onChange={(e) => { void uploadChatImages(e.target.files); e.target.value = ""; }}
                     />
                     <button onClick={() => chatImageInputRef.current?.click()}
-                      disabled={!a.user || a.busy || imageBusy}
+                      disabled={!a.user || imageBusy}
                       aria-label="Attach an image to this message"
                       title="Attach an image"
                       style={{
                         flexShrink: 0, padding: "8px 9px", borderRadius: 8, display: "flex", alignItems: "center",
                         background: "transparent", border: `1px solid ${C.line}`,
-                        color: !a.user || a.busy || imageBusy ? C.dim : C.cyan,
-                        cursor: !a.user || a.busy || imageBusy ? "not-allowed" : "pointer",
+                        color: !a.user || imageBusy ? C.dim : C.cyan,
+                        cursor: !a.user || imageBusy ? "not-allowed" : "pointer",
                       }}>
                       <ImagePlus size={14} />
                     </button>
@@ -1228,20 +1270,22 @@ export default function ChatUI() {
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
                       }}
-                      placeholder={a.user ? "Type & press Enter, or attach a document…" : "Sign in with OpenAI to start"}
+                      placeholder={a.user ? (a.busy ? "Reply in progress — type to queue, or /steer to add instructions…" : "Type & press Enter, or attach a document…") : "Sign in with OpenAI to start"}
                       rows={1}
-                      disabled={!a.user || a.busy}
+                      disabled={!a.user}
                       style={{ ...inputBase, flex: 1, resize: "none", lineHeight: 1.5, maxHeight: 90 }}
                     />
-                    <button onClick={() => void send()} disabled={!a.user || a.busy || (!draft.trim() && chatAttachments.length === 0 && chatImages.length === 0)}
+                    <button onClick={() => void send()}
+                      disabled={!a.user || (!draft.trim() && chatAttachments.length === 0 && chatImages.length === 0)}
+                      title={a.busy ? "Queue this message until the reply finishes" : "Send"}
                       style={{
                         padding: "8px 14px", borderRadius: 8, cursor: "pointer", letterSpacing: "0.1em",
                         fontFamily: "var(--font-mono)", fontSize: 11,
-                        background: a.busy ? "transparent" : `${C.cyan}16`,
-                        border: `1px solid ${a.busy ? C.dim : C.cyan}`,
-                        color: a.busy ? C.dim : C.cyan,
+                        background: `${C.cyan}16`,
+                        border: `1px solid ${C.cyan}`,
+                        color: C.cyan,
                       }}>
-                      {a.busy ? "⟳" : "SEND"}
+                      {a.busy && (draft.trim() || chatAttachments.length > 0 || chatImages.length > 0) ? "QUEUE" : "SEND"}
                     </button>
                   </div>
                 </div>
@@ -1264,7 +1308,7 @@ export default function ChatUI() {
                       padding: "7px 9px", borderRadius: 8, cursor: c.id === a.activeId ? "default" : "pointer",
                       background: c.id === a.activeId ? `${C.cyan}10` : "transparent",
                       border: `1px solid ${c.id === a.activeId ? C.cyan : "rgba(255,255,255,0.05)"}`,
-                    }} onClick={() => { if (c.id !== a.activeId) void a.openConversation(c.id); }}>
+                    }} onClick={() => { if (!a.busy && c.id !== a.activeId) void a.openConversation(c.id); }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.title || "Untitled"}</div>
                         <div style={{ fontSize: 8.5, color: C.dim, fontFamily: "var(--font-mono)" }}>
@@ -1375,6 +1419,21 @@ export default function ChatUI() {
                       Read responses aloud
                     </label>
                   </Row>
+                  <Row label="Interruptions">
+                    <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={!!a.settings.voice_interrupt_enabled}
+                        onChange={(e) => void a.updateSettings({ voice_interrupt_enabled: e.target.checked })} />
+                      Stop speaking when you talk (&ldquo;continue&rdquo; resumes)
+                    </label>
+                  </Row>
+                  {!!a.settings.voice_interrupt_enabled && (
+                    <Row label="Interrupt sensitivity">
+                      <input type="range" min={1} max={10}
+                        value={Number(a.settings.voice_interrupt_sensitivity ?? 6)}
+                        onChange={(e) => void a.updateSettings({ voice_interrupt_sensitivity: Number(e.target.value) })} />
+                      <span style={{ fontSize: 9, color: C.dim, fontFamily: "var(--font-mono)" }}>{Number(a.settings.voice_interrupt_sensitivity ?? 6)}</span>
+                    </Row>
+                  )}
                 </SettingsCard>
                 <SettingsCard title="Personality">
                   <Row label="SOUL.md · personality">

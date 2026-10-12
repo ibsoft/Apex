@@ -37,6 +37,7 @@ from flask import (
 
 from agent.factory import build_engine, make_registry
 from agent.base import AgentContext
+from agent.steer import INBOX as STEER_INBOX
 from auth import (
     OAuthError,
     bearer_for_api,
@@ -1159,6 +1160,7 @@ def create_app() -> Flask:
             "sip_enabled", "sip_server", "sip_user", "sip_password", "sip_transport",
             "sip_port", "sip_display_name", "sip_domain", "sip_outbound_proxy",
             "sip_notify_to", "sip_tts_engine", "sip_tts_voice",
+            "voice_interrupt_enabled", "voice_interrupt_sensitivity",
         }
         if "visio_provider" in data and data["visio_provider"] not in ("openai", "ollama"):
             return jsonify({"error": "VISIO provider must be openai or ollama"}), 400
@@ -1217,8 +1219,10 @@ def create_app() -> Flask:
                 value = normalize_soul(value)
             if key == "think_hard_model":
                 value = str(value or "").strip()
-            if key in {"think_hard_model_enabled", "visio_enabled"}:
+            if key in {"think_hard_model_enabled", "visio_enabled", "voice_interrupt_enabled"}:
                 value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+            if key == "voice_interrupt_sensitivity":
+                value = _clamp_int(value, 1, 10)
             if key in SIP_FIELDS:
                 if key == "sip_enabled":
                     value = str(value).strip().lower() in {"1", "true", "yes", "on"}
@@ -1817,6 +1821,13 @@ def create_app() -> Flask:
                         needed, reason = translate_github_marker(ev.get("output") or "")
                         if needed:
                             yield event_ss({"type": "github_token", "reason": reason})
+                    elif ev["type"] == "steer_applied":
+                        # The running turn folded an operator instruction in.
+                        # Record it as its own user message so the steering
+                        # survives a reload instead of living only in the stream.
+                        if store_messages:
+                            db.add_message(conv["id"], "user",
+                                           ev.get("content", ""), {"steer": True})
                     elif ev["type"] == "error":
                         error_seen = True
                     elif ev["type"] == "done":
@@ -1853,6 +1864,34 @@ def create_app() -> Flask:
         resp.headers["Cache-Control"] = "no-cache, no-transform"
         resp.headers["X-Accel-Buffering"] = "no"
         return resp
+
+    # ---- mid-turn steering ----------------------------------------------------
+    @app.post("/api/steer")
+    def steer():
+        """Hand an extra instruction to the turn that is already streaming.
+
+        The client keeps the steer in its own queue until the running turn
+        answers with a ``steer_applied`` event, so ``active`` is only a hint:
+        a turn that never drains this (a different engine, or one that finished
+        first) leaves the client to send it as an ordinary message afterwards.
+        """
+        user = require_user()
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.get_json(silent=True) or {}
+        instruction = (data.get("instruction") or "").strip()
+        conv_id = str(data.get("conversation_id") or "")
+        if not instruction:
+            return jsonify({"error": "empty instruction"}), 400
+        if not conv_id:
+            return jsonify({"error": "conversation_id required"}), 400
+        conv = get_db().get_conversation(conv_id)
+        # A conversation owned by someone else is indistinguishable from one
+        # that does not exist - 404, never 403.
+        if conv is None or conv["user_id"] != user["id"]:
+            return jsonify({"error": "not allowed"}), 404
+        active = STEER_INBOX.push(conv_id, instruction)
+        return jsonify({"ok": True, "active": bool(active)})
 
     # ---- Obsidian attachments -------------------------------------------------
     @app.route("/api/obsidian/file", methods=["GET"])

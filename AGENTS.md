@@ -185,6 +185,44 @@ note telling the model this syntax exists (skipped in voice mode, where a
 formula would be read out as raw TeX). Add new syntax in the pure parser and its
 test, then teach the model in that note.
 
+## Streaming replies: the queue and mid-turn steering
+
+The composer no longer freezes while a reply streams. `ApexProvider` keeps a
+single ordered queue (`queueRef` is the list, `queued` state is only its render
+mirror, `busyRef` is the synchronous "a turn is running" gate).
+
+- `sendMessage` handles `/steer <instruction>` **before** its busy check
+  (`parseSteerCommand`, a pure helper tested in `commands.test.js`): with a turn
+  running it queues the instruction and POSTs `/api/steer`; with none it just
+  sends the text.
+- A plain message typed while busy is **enqueued, not dropped**, and rendered by
+  `QueuedBubble` with a QUEUED tag; the operator can cancel it. A queued `/steer`
+  is tagged STEER. When the turn ends an effect drains the queue one item at a
+  time (`sendRef`/`busyRef` are read, not the closure's `busy`, which is a
+  render stale by then).
+- Switching or creating a conversation is blocked while busy: the queue is not
+  per-conversation, so a drain must land in the thread it was typed in.
+- **A steer is only removed from the queue when `steer_applied` arrives.** That
+  event is the model's confirmation it was folded in; until then the instruction
+  is safe, so an engine that cannot consume steers (or a turn that ended first)
+  simply leaves it to be sent as an ordinary message. Never drop a steer on the
+  POST result alone.
+- The server half is `backend/agent/steer.py` (`SteerInbox`, process-wide
+  `INBOX`) and `POST /api/steer` (ownership checked like `/api/chat`; another
+  owner answers 404). Only `agent/responses.py` calls `INBOX.begin`/`end` - it is
+  the engine that knows how to consume a steer, and `begin` is what makes
+  `push` report `active`.
+- **A text-only answer is a single model call, so a steer has no step to wait
+  for.** When one appears mid-stream the engine abandons the current call
+  (`chunks.close()`), keeps the partial text, appends the instruction as a user
+  message and starts a fresh call - and drains again after every tool round,
+  where no model call is in flight to catch it. Each steer costs a step, so the
+  `MAX_TOOL_STEPS` ceiling still bounds the turn.
+- `app.py` records an applied steer as its own user message (`{"steer": true}`)
+  as the event streams through, so it is in history after a reload - the local
+  `messages` list the engine edits is never persisted.
+- Tests: `backend/tests/test_steer.py`, `frontend/tests/commands.test.cjs`.
+
 ## Backend conventions
 
 - All local paths are resolved with `Path.resolve()` and checked to stay inside
@@ -428,6 +466,40 @@ transpiling the `.ts` source on the fly.
 - The echo guard is cleared by `fireCommand`, `speak`, `sleepVoice`,
   `cancelSpeech` and `stopRecognition`, so its words can never be stripped from
   a later real command.
+
+### Interrupting a reply by talking (barge-in + "continue")
+
+Beyond the always-on wake-word barge-in (saying the wake word during `speaking`
+cuts the reply), the operator can opt into *voice-activity* interruption with a
+checkbox + sensitivity slider in the settings tab
+(`voice_interrupt_enabled`, `voice_interrupt_sensitivity` 1..10, persisted
+through `/api/settings`). Both are client-side behaviour; the backend only
+validates and stores them.
+
+- While `speaking`, a second mic stream opened with
+  `{ echoCancellation: true, noiseSuppression: true, autoGainControl: true }`
+  feeds an `AnalyserNode`; echo cancellation is what keeps the assistant's own
+  voice out of the "user is talking" signal. A run of loud frames (RMS above a
+  sensitivity-derived threshold) calls `voiceInterrupt`.
+- The pure decision logic — `sensitivityToThreshold`, `vadStep`,
+  `initialVadState` — lives in `voiceCommands.ts` and is unit tested; `voice.ts`
+  only wires it to the analyser and the `speaking` phase. The VAD is gated for
+  ~400 ms at the start of a reply so its opening words cannot cut it off, and it
+  ignores every phase except `speaking`.
+- **A wake-word barge-in and a voice-activity interrupt are different actions.**
+  The wake word is a deliberate new command, so it keeps no remainder. A
+  voice-activity interrupt may be accidental: `voiceInterrupt` saves the untold
+  remainder (the part of the in-progress chunk after the last `onboundary`
+  `charIndex`, plus the queued chunks) into `resumeRef`, arms the follow-up
+  window so the user's words are collected, and drops the TTS echo from the
+  accumulator. Saying "continue" (`isResumeCommand`, EN + Greek) then resumes
+  from where it stopped.
+- `resumeRef` is only consumed when it actually holds a remainder; a plain
+  "continue" with nothing to resume still reaches the agent as a normal request.
+  A fresh `speak()`, a completed reply, sleep, and mic-off all clear it, so a
+  stray "continue" can never resurrect an old reply.
+- If an engine never fires boundary events, `spoken` stays 0 and the in-progress
+  chunk replays in full — a small repeat, never a lost tail.
 
 ## Terminals (model-opened, never requested from the user)
 

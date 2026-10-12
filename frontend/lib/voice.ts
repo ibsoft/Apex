@@ -25,16 +25,21 @@ import {
   accumulateResults,
   commandText,
   emptyResultSnapshot,
+  initialVadState,
+  isResumeCommand,
   isSleepCommand,
   isWakeOnlyText,
   isWakeWordFragment,
   pickWakeAck,
   recognitionLanguage,
+  sensitivityToThreshold,
   sliceAfterLastWake,
   speechSummary,
   stripAckEcho,
+  vadStep,
   wakePattern,
   type ResultSnapshot,
+  type VadState,
 } from "./voiceCommands";
 
 export type VoicePhase = "standby" | "awake" | "thinking" | "speaking";
@@ -114,14 +119,18 @@ export function useVoiceEngine(opts: {
   followUpSeconds: number;
   voiceName: string;
   responseLanguage: string;
+  /** Let talking over the reply cut the speech off (and "continue" resume it). */
+  interruptEnabled: boolean;
+  /** 1..10 slider; higher = interrupt more eagerly. */
+  interruptSensitivity: number;
   onPhase: (p: VoicePhase) => void;
   onWake?: () => void;
   onCommand: (text: string) => void | Promise<void>;
 }): VoiceEngine {
-  const { enabled, wakeWord, followUpSeconds, voiceName, responseLanguage, onPhase, onWake, onCommand } = opts;
+  const { enabled, wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand } = opts;
 
-  const cfgRef = useRef({ wakeWord, followUpSeconds, voiceName, responseLanguage, onPhase, onWake, onCommand });
-  cfgRef.current = { wakeWord, followUpSeconds, voiceName, responseLanguage, onPhase, onWake, onCommand };
+  const cfgRef = useRef({ wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand });
+  cfgRef.current = { wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand };
 
   const recRef = useRef<SpeechRecognitionLike | null>(null);
   const phaseRef = useRef<VoicePhase>("standby");
@@ -155,6 +164,17 @@ export function useVoiceEngine(opts: {
   const followUpLangTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCommand = useRef("");
   const [lastHeard, setLastHeard] = useState<string>("");
+
+  // Interruption + resume state. resumeRef holds the untold remainder of a
+  // reply cut off by voice activity, so "continue" can speak on from there;
+  // inProgressRef tracks how much of the current chunk was already spoken
+  // (via utterance boundary events). speakSinceRef gates the VAD for the first
+  // moments of a reply so the assistant's own opening words cannot cut it.
+  const resumeRef = useRef<string[] | null>(null);
+  const inProgressRef = useRef<{ text: string; spoken: number } | null>(null);
+  const speakSinceRef = useRef(0);
+  const vadRef = useRef<{ stop: () => void } | null>(null);
+  const vadStateRef = useRef<VadState>(initialVadState());
 
   const recognitionLang = (): string => recognitionLanguage(
     cfgRef.current.responseLanguage,
@@ -193,6 +213,7 @@ export function useVoiceEngine(opts: {
     pendingCommand.current = "";
     needsWakeSliceRef.current = false;
     lastWakeAckRef.current = null;
+    resumeRef.current = null;
     forgetAck(true);
     accRef.current = emptyResultSnapshot(lastResultLenRef.current);
     if (commandTimer.current) clearTimeout(commandTimer.current);
@@ -205,6 +226,8 @@ export function useVoiceEngine(opts: {
 
   const finishSpeaking = () => {
     queueRef.current = [];
+    resumeRef.current = null; // nothing left to resume
+    inProgressRef.current = null;
     setSegmentsLeft(0);
     if (commandTimer.current) clearTimeout(commandTimer.current);
     pendingCommand.current = "";
@@ -241,6 +264,7 @@ export function useVoiceEngine(opts: {
   const cancelSpeech = () => {
     commandEpoch.current += 1;
     queueRef.current = [];
+    inProgressRef.current = null;
     setSegmentsLeft(0);
     forgetAck(true);
     try {
@@ -270,8 +294,27 @@ export function useVoiceEngine(opts: {
       finishSpeaking();
       return;
     }
+    // A fresh reply supersedes any saved "continue" remainder.
+    resumeRef.current = null;
     queueRef.current = splitIntoChunks(clean);
     setSegmentsLeft(queueRef.current.length);
+    speakSinceRef.current = Date.now();
+    setPhase("speaking");
+    spinQueue();
+  };
+
+  /** Resume a reply cut off by an accidental voice interruption. */
+  const resumeSpeaking = () => {
+    const chunks = resumeRef.current;
+    if (!chunks?.length) return;
+    resumeRef.current = null;
+    commandEpoch.current += 1;
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {}
+    queueRef.current = chunks;
+    setSegmentsLeft(chunks.length);
+    speakSinceRef.current = Date.now();
     setPhase("speaking");
     spinQueue();
   };
@@ -289,6 +332,17 @@ export function useVoiceEngine(opts: {
     const utt = new SpeechSynthesisUtterance(next);
     utt.rate = 1.02;
     utt.pitch = 1.0;
+    // Track how far this chunk got, so an interruption can resume from the
+    // current word instead of repeating the whole sentence. Engines that never
+    // fire boundary events keep spoken=0 and the chunk replays in full - a
+    // small repeat, never a lost tail.
+    inProgressRef.current = { text: next, spoken: 0 };
+    utt.onboundary = (e: any) => {
+      if (inProgressRef.current?.text === next) {
+        const idx = typeof e?.charIndex === "number" ? e.charIndex : inProgressRef.current.spoken;
+        inProgressRef.current.spoken = Math.max(0, Math.min(next.length, idx));
+      }
+    };
     const want = cfgRef.current.voiceName.toLowerCase();
     const wantsGreek = cfgRef.current.responseLanguage === "el";
     const voices = synth.getVoices();
@@ -303,12 +357,14 @@ export function useVoiceEngine(opts: {
       utt.lang = picked.lang;
     }
     utt.onend = () => {
+      if (inProgressRef.current?.text === next) inProgressRef.current = null;
       const left = queueRef.current.length;
       setSegmentsLeft(left);
       if (left === 0) finishSpeaking();
       else spinQueue();
     };
     utt.onerror = (e: any) => {
+      if (inProgressRef.current?.text === next) inProgressRef.current = null;
       if (e?.error && e.error !== "interrupted" && e.error !== "canceled") {
         finishSpeaking();
       } else if (queueRef.current.length === 0) {
@@ -442,6 +498,14 @@ export function useVoiceEngine(opts: {
   const fireCommand = (raw: string) => {
     const text = raw.replace(/\s+/g, " ").trim();
     if (!text) return;
+    // "continue" after an accidental interruption resumes the reply from where
+    // it was cut off - consumed here so it never reaches the agent. Without a
+    // saved remainder it falls through and the agent answers normally.
+    if (isResumeCommand(text, cfgRef.current.responseLanguage) && resumeRef.current?.length) {
+      vlog("resume after interruption:", text);
+      resumeSpeaking();
+      return;
+    }
     if (isSleepCommand(text, cfgRef.current.responseLanguage)) {
       sleepVoice();
       return;
@@ -472,6 +536,47 @@ export function useVoiceEngine(opts: {
       finishSpeaking,
       (error) => setError(error instanceof Error ? error.message : String(error)),
     );
+  };
+
+  /**
+   * Voice-activity interruption: the user spoke over the reply, so cut the
+   * speech off. The untold remainder is saved for "continue", and the
+   * microphone is re-armed so whatever the user is saying becomes the next
+   * command. This is distinct from a wake-word barge-in (a deliberate new
+   * command: no remainder is kept).
+   */
+  const voiceInterrupt = () => {
+    if (phaseRef.current !== "speaking") return;
+    vlog("voice activity: interrupting the reply");
+    const partial = inProgressRef.current;
+    const remainder: string[] = [];
+    if (partial?.text) {
+      const cut = Math.min(Math.max(partial.spoken, 0), partial.text.length);
+      const rest = partial.text.slice(cut).trim();
+      if (rest) remainder.push(rest);
+    }
+    remainder.push(...queueRef.current);
+    resumeRef.current = remainder.length ? remainder : null;
+    cancelSpeech();
+    // Keep the mic warm for the sentence the user started: arm a follow-up
+    // window without a wake word so their words are collected right away.
+    const fu = Math.max(cfgRef.current.followUpSeconds, 8);
+    followUpUntilRef.current = Date.now() + fu * 1000;
+    armedRef.current = true;
+    needsWakeSliceRef.current = false;
+    postSpeechDeafUntilRef.current = 0; // the user is talking NOW; do not deafen
+    accRef.current = emptyResultSnapshot(lastResultLenRef.current); // drop TTS echo
+    pendingCommand.current = "";
+    clearFollowUpLangTimer();
+    followUpLangTimer.current = setTimeout(() => {
+      if (!armedRef.current) return;
+      armedRef.current = false;
+      vlog("interrupt follow-up window closed");
+      syncRecognitionLanguage();
+    }, fu * 1000);
+    setPhase("awake");
+    syncRecognitionLanguage();
+    sweepIdleAwait();
   };
 
   const sweepIdleAwait = () => {
@@ -798,6 +903,7 @@ export function useVoiceEngine(opts: {
     forgetAck(true);
     lastWakeAckRef.current = null;
     pendingCommand.current = "";
+    resumeRef.current = null;
   };
 
   const startHealthCheck = () => {
@@ -879,6 +985,103 @@ export function useVoiceEngine(opts: {
     if (activeRef.current && !stoppingRef.current) syncRecognitionLanguage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [responseLanguage, wakeWord]);
+
+  /*
+   * Interruption detection: while a reply is being spoken, a second mic stream
+   * (with echo cancellation, so the assistant's own voice is largely removed)
+   * feeds an analyser. When the RMS level stays above the sensitivity-derived
+   * threshold for a few frames the speech is cut. The loop runs whenever voice
+   * is on AND interruptions are enabled, but only ever acts in the "speaking"
+   * phase; the analyser's own stream is closed on disable.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof navigator === "undefined") return;
+    if (!active || !cfgRef.current.interruptEnabled) {
+      vadRef.current?.stop?.();
+      vadRef.current = null;
+      vadStateRef.current = initialVadState();
+      return;
+    }
+    if (vadRef.current) return; // already running
+
+    let ctx: AudioContext | null = null;
+    let analyser: AnalyserNode | null = null;
+    let stream: MediaStream | null = null;
+    let raf = 0;
+    let stopped = false;
+    let buffer: Float32Array<ArrayBuffer> | null = null;
+    const tick = () => {
+      if (stopped || !ctx || !analyser || !buffer) return;
+      analyser.getFloatTimeDomainData(buffer);
+      let sum = 0;
+      for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
+      const rms = Math.sqrt(sum / buffer.length);
+      if (phaseRef.current === "speaking") {
+        // Give echo cancellation a moment at the start of the reply so the
+        // assistant's opening words cannot cut its own speech off.
+        if (Date.now() - speakSinceRef.current > 400) {
+          const threshold = sensitivityToThreshold(cfgRef.current.interruptSensitivity);
+          const { state, fire } = vadStep(vadStateRef.current, rms, threshold);
+          vadStateRef.current = state;
+          if (fire) {
+            vlog("interrupt fired, rms=", rms.toFixed(3), "threshold=", threshold);
+            vadStateRef.current = initialVadState();
+            voiceInterrupt();
+          }
+        }
+      } else {
+        vadStateRef.current = initialVadState();
+      }
+      raf = requestAnimationFrame(tick);
+    };
+
+    const start = () => {
+      const AC = (window as any).AudioContext ?? (window as any).webkitAudioContext;
+      if (!AC) return;
+      void navigator.mediaDevices
+        // AEC is what separates the user's voice from the assistant's voice
+        // coming out of the same speakers.
+        .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+        .then((media: MediaStream) => {
+          if (stopped) {
+            media.getTracks().forEach((t) => t.stop());
+            return;
+          }
+          stream = media;
+          const audioCtx: AudioContext = new AC();
+          ctx = audioCtx;
+          const src = audioCtx.createMediaStreamSource(media);
+          const node = audioCtx.createAnalyser();
+          analyser = node;
+          node.fftSize = 2048;
+          node.smoothingTimeConstant = 0.1;
+          src.connect(node);
+          buffer = new Float32Array(node.fftSize);
+          raf = requestAnimationFrame(tick);
+        })
+        .catch((err) => {
+          vlog("interrupt VAD unavailable:", err instanceof Error ? err.message : err);
+        });
+    };
+    start();
+    vadRef.current = {
+      stop: () => {
+        stopped = true;
+        cancelAnimationFrame(raf);
+        try {
+          stream?.getTracks().forEach((t) => t.stop());
+        } catch {}
+        try {
+          void ctx?.close();
+        } catch {}
+      },
+    };
+    return () => {
+      vadRef.current?.stop?.();
+      vadRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, interruptEnabled]);
 
   return {
     supported: SRClassAvailable(),

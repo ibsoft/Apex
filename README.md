@@ -239,6 +239,24 @@ this project does not provide a public OpenAI OAuth client-registration process.
 
 ## Using the assistant
 
+### Typing while a reply is streaming
+
+The composer stays live while APEX is writing, so you never have to wait for it
+to finish. A message you send then is **queued** (shown with a QUEUED tag) and
+sent automatically, in order, once the current reply ends; the **×** on a queued
+bubble removes it.
+
+To change what the running reply is *doing* instead of waiting your turn, prefix
+the message with **`/steer`**:
+
+```
+/steer make it more concise, and stop running more commands
+```
+
+While a reply is streamed the instruction is folded into that generation (a
+STEER tag confirms it landed, and it is kept in the transcript). With nothing
+running, `/steer` simply sends the text as a normal message.
+
 ### Skills
 
 Skills are selected from the chat UI header. Each skill is a system prompt plus
@@ -466,6 +484,14 @@ Controls (also in the settings panel):
 | Follow-up window | `FOLLOW_UP_SECONDS` | `30`    | seconds of hands-free follow-ups after a reply (0 = off) |
 | Speak replies    | `tts_enabled`       | on      | reads answers aloud                       |
 | TTS voice        | `VOICE`             | auto    | browser voice name, e.g. `Google UK English Female` |
+| Interruptions    | —                   | off     | talking over a spoken reply cuts it off   |
+| Interrupt sensitivity | —              | `6`     | 1 (hardest to trigger) … 10 (easiest)     |
+
+Saying the wake word during a reply always cuts it off and starts a new command.
+With **Interruptions** on, talking over the reply stops the speech too — useful
+if you want to jump in without the wake word. If the break was an accident, say
+**"continue"** (or **«συνέχισε»**) and APEX resumes the reply from where it
+stopped.
 
 If the browser's SpeechRecognition is unavailable (Firefox, older Safari) the
 mic button shows a warning; typing still works.
@@ -590,6 +616,7 @@ Conversations
 
 Chat & memory
   /api/chat               POST, SSE stream (voice_mode:true for voice turns)
+  /api/steer              POST — fold a "/steer" instruction into the running turn
   /api/memory             GET/POST/DELETE (+/search, +/upload)
 
 Obsidian

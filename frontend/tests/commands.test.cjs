@@ -10,7 +10,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
-const { parseLocalCommand, formatDuration, parseThinkHard } = moduleExports;
+const { parseLocalCommand, formatDuration, parseThinkHard, parseSteerCommand } = moduleExports;
 const skills = ['general', 'code', 'research', 'translator', 'obsidian', 'shell',
   'skill_creator', 'FILE_SEARCH', 'EDITOR', 'custom', 'custom helper'].map(name => ({ name }));
 const now = new Date(2026, 8, 23, 10, 15).getTime();
@@ -700,4 +700,24 @@ test('the greek imperative survives sigma folding', () => {
   // This is the trap that has already silently broken one parser.
   assert.deepEqual(parse('βγες έξω'), { type: 'signout' });
   assert.deepEqual(parse('βγεσ'), { type: 'signout' });
+});
+
+test('/steer captures the instruction that follows it', () => {
+  assert.deepEqual(parseSteerCommand('/steer make it JSON'), { instruction: 'make it JSON' });
+  assert.deepEqual(parseSteerCommand('  /Steer: use the small model  '), { instruction: 'use the small model' });
+  // The instruction keeps its own punctuation and newlines.
+  assert.deepEqual(parseSteerCommand('/steer stop; focus on tests'), { instruction: 'stop; focus on tests' });
+});
+
+test('a bare /steer parses to an empty instruction (caller treats it as a no-op)', () => {
+  assert.deepEqual(parseSteerCommand('/steer'), { instruction: '' });
+  assert.deepEqual(parseSteerCommand('/steer   '), { instruction: '' });
+});
+
+test('/steer only matches the exact verb at the start', () => {
+  // "steering wheel" and "/steering" are ordinary messages, not a steer.
+  assert.equal(parseSteerCommand('steering wheel is broken'), null);
+  assert.equal(parseSteerCommand('/steering wheel'), null);
+  assert.equal(parseSteerCommand('please /steer this'), null);
+  assert.equal(parseSteerCommand(''), null);
 });

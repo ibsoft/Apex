@@ -177,6 +177,87 @@ export function stripAckEcho(text: string, ack: string | null | undefined): stri
   return kept.join(" ").trim();
 }
 
+/* ---------- resume after an accidental interruption ---------- */
+
+/* The user interrupts APEX by talking, gets cut off, then realises it was an
+ * accident and says "continue". The voice engine only consumes this phrase when
+ * it actually has a saved reply remainder (see voice.ts); a plain "continue"
+ * with nothing to resume still reaches the agent as a normal request. */
+const ENGLISH_RESUME = /^(?:continue|go\s*on|carry\s*on|keep\s*going|resume|proceed|pick\s*(?:it|things)?\s*up)(?:[\s,]+(?:please|now|thanks|thank\s*you))?$/i;
+/* Written in normalized space (final sigma folded: "πες" -> "πεσ"). */
+const GREEK_RESUME = /^(?:συνεχισ(?:ε)?|συνεχεια|πεσ\s+το\s+υπολοιπο|πεσ\s+τα\s+υπολοιπα)(?:[\s,]+(?:σε\s+παρακαλω|παρακαλω|ευχαριστω))?$/;
+
+export function isResumeCommand(text: string, language = "en"): boolean {
+  const phrase = text.trim().replace(/[.!?,;:··;]+$/g, "").trim();
+  if (ENGLISH_RESUME.test(phrase)) return true;
+  if (language !== "el") return false;
+  return GREEK_RESUME.test(normalize(phrase).replace(/\s+/g, " "));
+}
+
+/* ---------- voice-activity interruption (barge-in) ---------- */
+
+/* While the assistant is speaking, a separate mic analyser measures loudness.
+ * The user talking at the same time raises the RMS level; a run of loud frames
+ * cuts the speech off. These pure helpers map the 1..10 sensitivity slider onto
+ * an RMS threshold and make the sustained-loudness decision with hysteresis, so
+ * browser tests can pin the exact behaviour. */
+
+export type VadState = { loud: number; quiet: number; fired: boolean };
+
+export function initialVadState(): VadState {
+  return { loud: 0, quiet: 0, fired: false };
+}
+
+/** Consecutive loud frames (at ~60 fps one is ~17 ms) that cut speech. */
+export const VAD_LOUD_FRAMES = 4;
+/** Quiet frames below the hysteresis band needed before firing again. */
+export const VAD_REARM_FRAMES = 4;
+
+export function clampSensitivity(sensitivity: number, min = 1, max = 10): number {
+  if (!Number.isFinite(sensitivity)) return 6;
+  return Math.max(min, Math.min(max, Math.round(Number(sensitivity))));
+}
+
+/** Map the 1..10 slider onto an RMS threshold (1 = hardest to interrupt). */
+export function sensitivityToThreshold(sensitivity: number): number {
+  const s = clampSensitivity(sensitivity);
+  return Number((0.11 - (s - 1) * 0.009).toFixed(4));
+}
+
+/**
+ * Feed one measured RMS frame into the state machine.
+ *
+ * - rms >= threshold accumulates a loud run; a run of `VAD_LOUD_FRAMES` fires
+ *   once, and stays fired (no re-fire) until the level drops below
+ *   `threshold * 0.6` for `VAD_REARM_FRAMES` quiet frames.
+ * - levels inside the hysteresis band (threshold*0.6 .. threshold) neither add
+ *   loudness nor reset the quiet counter, so a short dip in a loud burst does
+ *   not re-arm mid-interruption.
+ */
+export function vadStep(
+  state: VadState,
+  rms: number,
+  threshold: number,
+  loudFrames = VAD_LOUD_FRAMES,
+  rearmFrames = VAD_REARM_FRAMES,
+): { state: VadState; fire: boolean } {
+  let { loud, quiet, fired } = state;
+  if (rms >= threshold) {
+    quiet = 0;
+    loud += 1;
+    if (!fired && loud >= loudFrames) {
+      return { state: { loud, quiet, fired: true }, fire: true };
+    }
+  } else if (rms < threshold * 0.6) {
+    loud = 0;
+    quiet += 1;
+    if (fired && quiet >= rearmFrames) fired = false;
+  } else {
+    quiet = 0; // hysteresis band: hold position
+  }
+  return { state: { loud, quiet, fired }, fire: false };
+}
+
 /* ---------- utterance accumulation (pause-safe endpointing) ---------- */
 
 export type ResultSnapshot = {

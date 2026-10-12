@@ -43,6 +43,7 @@ import { sendChatInputCommand, sendPanelCommand, PANEL_TAB_NAMES } from "../lib/
 import {
   formatDuration,
   parseLocalCommand,
+  parseSteerCommand,
   parseTerminalTarget,
   parseThinkHard,
   type LocalCommand,
@@ -98,11 +99,23 @@ export type Message = {
     voice?: boolean;
     usage?: any;
     error?: boolean;
+    /** A mid-turn `/steer` instruction, once the backend confirmed it landed. */
+    steer?: boolean;
   };
   streaming?: boolean;
 };
 
 export type Settings = Record<string, any>;
+
+/** A message the operator typed while a reply was streaming. It is shown as a
+ * queued bubble and sent (in order) once the running turn ends. A `steer` item
+ * was also handed to the running turn; if the backend confirms it landed it
+ * leaves the queue and appears in the transcript instead. */
+export type QueuedMessage = { id: string; content: string; steer: boolean };
+
+type QueuedItem = QueuedMessage & {
+  opts: { voice?: boolean; skill?: string; documentContext?: string; images?: { token: string; name?: string }[] };
+};
 
 export type TimerItem = { id: string; name: string; fireAt: number };
 export type ReminderItem = { id: string; name: string; fireAt: number };
@@ -168,6 +181,9 @@ type ApexContextType = {
   openConversation: (id: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   sendMessage: (text: string, opts?: { voice?: boolean; skill?: string; documentContext?: string; images?: { token: string; name?: string }[] }) => Promise<void>;
+  /** Messages typed while a reply is streaming; sent in order once it ends. */
+  queued: QueuedMessage[];
+  cancelQueued: (id: string) => void;
   setSkill: (name: string) => void;
   deleteSkill: (name: string) => Promise<void>;
   updateSettings: (patch: Settings) => Promise<void>;
@@ -215,6 +231,7 @@ export const useApex = () => {
 };
 
 let msgSeq = 0;
+let queueSeq = 0;
 /* How often the TASKS tab asks the backend what changed. Kept in step with
    TASKS_TICK_SECONDS (20s) so the tab shows a run that just became due at
    roughly the moment it fired, rather than up to a full tick later. */
@@ -260,6 +277,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [routedSkill, setRoutedSkill] = useState<string | null>(null);
   const [memory, setMemory] = useState<MemoryEntry[]>([]);
   const [busy, setBusy] = useState(false);
+  const [queued, setQueued] = useState<QueuedMessage[]>([]);
   const [orb, setOrb] = useState<OrbState>("idle");
   const [voiceEnabled, setVoiceEnabledState] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -307,11 +325,17 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   settingsRef.current = settings;
   const userRef = useRef(user);
   userRef.current = user;
+  /* The composer stays live during a reply, so a second send must not start a
+     competing turn: busyRef is the synchronous gate (state lags a render) and
+     queueRef is the authoritative list of messages waiting for the turn to end
+     (the `queued` state is only its rendered mirror). */
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const queueRef = useRef<QueuedItem[]>([]);
   const windowsRef = useRef(windows);
   windowsRef.current = windows;
   const focusedWindowIdRef = useRef(focusedWindowId);
-  focusedWindowIdRef.current = focusedWindowId;
-  const activeDesktopRef = useRef(activeDesktop);
+  focusedWindowIdRef.current = focusedWindowId;  const activeDesktopRef = useRef(activeDesktop);
   activeDesktopRef.current = activeDesktop;
   const timersRef = useRef(timers);
   timersRef.current = timers;
@@ -1089,6 +1113,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     followUpSeconds: Number(settings.follow_up_seconds ?? cfg?.follow_up_seconds ?? 30),
     voiceName: settings.voice ?? cfg?.voice ?? "",
     responseLanguage: settings.response_language ?? cfg?.response_language ?? "en",
+    interruptEnabled: settings.voice_interrupt_enabled === true,
+    interruptSensitivity: Number(settings.voice_interrupt_sensitivity ?? 6),
     onPhase: onVoicePhase,
     onCommand: (text: string) => {
       if (!userRef.current) return;
@@ -1791,11 +1817,63 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   /* ---------- chat ---------- */
 
+  const syncQueued = useCallback(() => {
+    setQueued(queueRef.current.map(({ id, content, steer }) => ({ id, content, steer })));
+  }, []);
+
+  const enqueue = useCallback((text: string, opts: QueuedItem["opts"], steer: boolean) => {
+    const id = `q_${Date.now().toString(36)}_${queueSeq++}`;
+    queueRef.current = [...queueRef.current, { id, content: text, steer, opts }];
+    syncQueued();
+    return id;
+  }, [syncQueued]);
+
+  const cancelQueued = useCallback((id: string) => {
+    queueRef.current = queueRef.current.filter((q) => q.id !== id);
+    syncQueued();
+  }, [syncQueued]);
+
+  /* A "/steer" instruction aimed at the running turn. It is queued exactly like
+     any other message - so it is never lost - and handed to the backend too. If
+     the running turn folds it in it emits `steer_applied`, which moves it from
+     the queue into the transcript; if it does not (wrong engine, or the turn
+     finished first) it simply stays queued and is sent as a normal message. */
+  const sendSteer = useCallback((convId: string, instruction: string) => {
+    enqueue(instruction, { skill: skillRef.current }, true);
+    if (!convId) return;
+    void api.steer({ conversation_id: convId, instruction }).catch(() => {
+      /* Offline or rejected: the queued copy is still delivered after the turn. */
+    });
+  }, [enqueue]);
+
   const sendMessage = useCallback(
     async (text: string, opts: { voice?: boolean; skill?: string; documentContext?: string; images?: { token: string; name?: string }[] } = {}) => {
       let clean = text.trim();
-      if (!clean || busy) return;
+      if (!clean) return;
 
+      // "/steer <instruction>" targets the turn that is already running. While
+      // one is, the instruction is queued and handed to the backend to fold into
+      // that generation; with nothing running it is just the message itself.
+      const steerCmd = parseSteerCommand(clean);
+      if (steerCmd) {
+        const instruction = steerCmd.instruction;
+        if (!instruction) return; // a bare "/steer" is a no-op
+        if (busyRef.current) {
+          sendSteer(activeIdRef.current ?? "", instruction);
+          return;
+        }
+        clean = instruction;
+      }
+
+      // The composer stays live during a reply, so a message typed then must
+      // wait its turn - not be dropped. It is shown as a queued bubble and sent
+      // by the drain effect once the running turn ends.
+      if (busyRef.current) {
+        enqueue(clean, { ...opts }, false);
+        return;
+      }
+
+      busyRef.current = true;
       try {
         setBusy(true);
         setError(null);
@@ -1971,6 +2049,23 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           } else if (ev.type === "text_delta") {
             spoken += ev.content ?? "";
             pushAssistant({ streaming: true, content: spoken });
+          } else if (ev.type === "steer_applied") {
+            // The running turn folded an instruction in. Move it out of the
+            // queue and into the transcript so the operator sees it landed;
+            // prefer the instruction the backend echoed over the local copy.
+            const idx = queueRef.current.findIndex((q) => q.steer);
+            if (idx >= 0) {
+              const [item] = queueRef.current.splice(idx, 1);
+              queueRef.current = [...queueRef.current];
+              syncQueued();
+              setByConv((m) => ({
+                ...m,
+                [convId]: [
+                  ...(m[convId] ?? []),
+                  mkMsg("user", ev.content || item.content, { meta: { steer: true } }),
+                ],
+              }));
+            }
           } else if (ev.type === "tool_call") {
             streamedTools = [...streamedTools, { name: ev.name, args: ev.arguments, running: true }];
             pushAssistant({
@@ -2093,6 +2188,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         setOrb("idle");
       } finally {
         setBusy(false);
+        busyRef.current = false;
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
@@ -2100,6 +2196,18 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   );
 
   sendRef.current = sendMessage;
+
+  /* Drain the queue: when a turn ends, send whatever the operator typed while
+     it was streaming - one at a time, in order. Each send flips `busy` back on,
+     so this runs again only after that turn ends too. `sendRef` is the latest
+     callback, so it sees the just-cleared busy flag. */
+  useEffect(() => {
+    if (busy || queueRef.current.length === 0) return;
+    const [next, ...rest] = queueRef.current;
+    queueRef.current = rest;
+    syncQueued();
+    void sendRef.current?.(next.content, next.opts);
+  }, [busy, syncQueued]);
 
   /* ---------- settings ---------- */
 
@@ -2226,6 +2334,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       skills,
       memory,
       busy,
+      queued,
+      cancelQueued,
       orb,
       voiceActive: voice.active,
       voiceEnabled,
@@ -2307,7 +2417,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       setGithubToken,
       closeGithubPrompt,
     }),
-    [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
+    [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, queued, cancelQueued, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
      windows, focusedWindowId, activeDesktop, desktopSet, desktopNext, desktopPrev, windowMoveToDesktop, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, windowOpen, windowClose, windowCloseAll, windowFocus, windowToggleMaximize, windowToggleMinimize, windowArrange, windowNext, windowPrevious,
      windowSetNote, windowToggleNotes, windowUpdate, setChatCollapsed,

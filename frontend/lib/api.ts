@@ -278,6 +278,11 @@ export type ChatEventMeta = {
 export type ChatEvent =
   | ChatEventMeta
   | { type: "text_delta"; content: string }
+  /* The running turn folded in a `/steer` instruction the operator sent
+     mid-stream. The client moves that instruction from its queue into the
+     transcript; if this never arrives the instruction is sent as a normal
+     message after the turn instead. */
+  | { type: "steer_applied"; content: string }
   | { type: "tool_call"; name: string; id: string; arguments: any }
   | { type: "tool_result"; name: string; output: string }
   | { type: "memory"; action: string; detail: any }
@@ -632,5 +637,22 @@ export const api = {
         }
       }
     }
+  },
+
+  /** Hand an extra instruction to the turn that is already streaming.
+   * `active` is only a hint; the caller keeps the instruction queued until a
+   * `steer_applied` event confirms it was folded into the running generation. */
+  async steer(payload: { conversation_id: string; instruction: string }): Promise<{ ok: boolean; active: boolean }> {
+    const resp = await fetch(`${BASE}/api/steer`, {
+      method: "POST",
+      credentials: CRED,
+      headers: requestHeaders({ method: "POST" }),
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const body: any = await resp.json().catch(() => null);
+      throw new ApiError(body?.error ?? `steer failed (${resp.status})`, resp.status);
+    }
+    return resp.json();
   },
 };
