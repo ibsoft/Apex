@@ -7,7 +7,7 @@
 */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Maximize2, Minimize2, Paperclip, ImagePlus } from "lucide-react";
+import { Maximize2, Minimize2, Paperclip, ImagePlus, Volume2, VolumeX } from "lucide-react";
 import katex from "katex";
 import { useApex, Message } from "./ApexProvider";
 import { api } from "../lib/api";
@@ -1002,6 +1002,21 @@ export default function ChatUI() {
               {engine} · {provider} · {model}
             </div>
             <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+              <button
+                onClick={() => a.setVoiceEnabled(!a.voiceEnabled)}
+                aria-pressed={a.voiceEnabled}
+                aria-label={a.voiceEnabled ? "Turn microphone off" : "Turn microphone on"}
+                title={a.voiceEnabled ? "Microphone on" : "Microphone off"}
+                style={{
+                  width: 24, height: 24, borderRadius: "50%", padding: 0, cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: a.voiceEnabled ? `${C.cyan}18` : "transparent",
+                  border: `1px solid ${a.voiceEnabled ? C.cyan : C.line}`,
+                  color: a.voiceEnabled ? C.cyan : C.dim,
+                }}
+              >
+                {a.voiceEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
+              </button>
               {a.user && (
                 <>
                   <button
@@ -1119,21 +1134,14 @@ export default function ChatUI() {
                   </div>
 
                   {/* voice status */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 9.5, fontFamily: "var(--font-mono)", letterSpacing: "0.06em", color: C.dim }}>
-                    <button onClick={() => a.setVoiceEnabled(!a.voiceEnabled)} aria-pressed={a.voiceEnabled}
-                      style={{
-                        padding: "3px 10px", borderRadius: 12, cursor: "pointer", letterSpacing: "0.1em",
-                        background: a.voiceEnabled ? `${C.cyan}18` : "transparent",
-                        border: `1px solid ${a.voiceEnabled ? C.cyan : C.line}`,
-                        color: a.voiceEnabled ? C.cyan : C.dim,
-                      }}>
-                      {a.voiceEnabled ? "MIC ON" : "MIC OFF"}
-                    </button>
-                    {a.voiceEnabled && !a.voiceActive && <span className="apex-blink">PENDING PERMISSION…</span>}
-                    {a.voiceError && <span style={{ color: C.gold }}>{a.voiceError}</span>}
-                    {a.voiceEnabled && a.voiceActive && <span>{a.orb === "listening" ? "AWAITING COMMAND…" : `SAY "${wake}"…`}</span>}
-                    <span style={{ marginLeft: "auto" }} />
-                  </div>
+                  {(a.voiceEnabled || a.voiceError) && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 9.5, fontFamily: "var(--font-mono)", letterSpacing: "0.06em", color: C.dim }}>
+                      {a.voiceEnabled && !a.voiceActive && <span className="apex-blink">PENDING PERMISSION…</span>}
+                      {a.voiceError && <span style={{ color: C.gold }}>{a.voiceError}</span>}
+                      {a.voiceEnabled && a.voiceActive && <span>{a.orb === "listening" ? "AWAITING COMMAND…" : `SAY "${wake}"…`}</span>}
+                      <span style={{ marginLeft: "auto" }} />
+                    </div>
+                  )}
 
                   {/* input */}
                   {(chatAttachments.length > 0 || chatImages.length > 0 || attachBusy || imageBusy || attachError || imageError) && (
@@ -1176,7 +1184,7 @@ export default function ChatUI() {
                       ref={chatFileInputRef}
                       type="file"
                       multiple
-                      accept=".txt,.md,.pdf,.json,.csv,.py,.js,.ts,.tsx,.html,.htm,.xml,.yaml,.yml"
+                      accept=".txt,.md,.pdf,.json,.csv,.py,.js,.ts,.tsx,.html,.htm,.xml,.yaml,.yml,.docx,.xlsx"
                       style={{ display: "none" }}
                       onChange={(e) => { void uploadChatFiles(e.target.files); e.target.value = ""; }}
                     />
@@ -1423,7 +1431,7 @@ export default function ChatUI() {
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept=".txt,.md,.pdf,.json,.csv,.py,.js,.ts,.html,.yaml,.yml"
+                    accept=".txt,.md,.pdf,.json,.csv,.py,.js,.ts,.html,.yaml,.yml,.docx,.xlsx"
                     style={{ display: "none" }}
                     onChange={(e) => setMemFiles(e.target.files)}
                   />

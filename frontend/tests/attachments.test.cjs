@@ -20,31 +20,32 @@ const { buildDocumentContext, attachmentsFromUpload } = loadTs('lib/attachments.
 
 test('an attachment becomes a clearly labelled, bounded document block', () => {
   const block = buildDocumentContext([
-    { name: 'spec.pdf', chunks: 3, preview: 'The system shall...' },
+    { name: 'spec.pdf', chunks: 3, preview: 'The system shall...', path: '/data/uploads/u/spec.pdf' },
   ]);
   assert.match(block, /Attached document: spec\.pdf/);
   assert.match(block, /3 chunks in long-term memory/);
   assert.match(block, /The system shall\.\.\./);
+  assert.match(block, /on disk at \/data\/uploads\/u\/spec\.pdf/);
 });
 
 test('a single chunk reads in the singular', () => {
-  const block = buildDocumentContext([{ name: 'a.txt', chunks: 1, preview: 'hi' }]);
+  const block = buildDocumentContext([{ name: 'a.txt', chunks: 1, preview: 'hi', path: '' }]);
   assert.match(block, /1 chunk in long-term memory/);
 });
 
 test('an empty preview is not sent to the model', () => {
-  assert.equal(buildDocumentContext([{ name: 'empty.txt', chunks: 0, preview: '   ' }]), '');
+  assert.equal(buildDocumentContext([{ name: 'empty.txt', chunks: 0, preview: '   ', path: '' }]), '');
   assert.equal(buildDocumentContext([]), '');
 });
 
 test('the upload response maps to chips and drops failures', () => {
   const chips = attachmentsFromUpload([
-    { filename: 'ok.md', chunks: 4, preview: 'body' },
+    { filename: 'ok.md', chunks: 4, preview: 'body', path: '/data/uploads/u/ok.md' },
     { filename: 'bad.pdf', error: 'PDF support requires PyPDF2' },
-    { filename: 'zero.txt', chunks: 0, preview: '' },
+    { filename: 'zero.txt', chunks: 0, preview: '', path: '/data/uploads/u/zero.txt' },
   ]);
   assert.deepEqual(chips, [
-    { name: 'ok.md', chunks: 4, preview: 'body' },
-    { name: 'zero.txt', chunks: 0, preview: '' },
+    { name: 'ok.md', chunks: 4, preview: 'body', path: '/data/uploads/u/ok.md' },
+    { name: 'zero.txt', chunks: 0, preview: '', path: '/data/uploads/u/zero.txt' },
   ]);
 });

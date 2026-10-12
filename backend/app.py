@@ -1379,7 +1379,7 @@ def create_app() -> Flask:
         if not files:
             return jsonify({"error": "no files provided"}), 400
 
-        from memory.documents import extract_text, chunk_text
+        from memory.documents import extract_text, chunk_text, store_upload, sweep_uploads
 
         max_size = 10 * 1024 * 1024
         chunk_size = int(request.form.get("chunk_size") or 800)
@@ -1395,10 +1395,14 @@ def create_app() -> Flask:
                 results.append({"filename": f.filename, "error": "file too large (>10MB)"})
                 continue
             try:
+                # Keep the original bytes on disk so a later skill (e.g. the EMAIL
+                # pack's --attach) can send the document itself, not just its text.
+                path = store_upload(config, str(user["id"]), f.filename, data)
+                sweep_uploads(config, str(user["id"]))
                 text = extract_text(f.filename, data)
                 chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
                 if not chunks:
-                    results.append({"filename": f.filename, "chunks": 0})
+                    results.append({"filename": f.filename, "chunks": 0, "path": str(path)})
                     continue
                 source = Path(f.filename).name
                 items = [
@@ -1415,6 +1419,7 @@ def create_app() -> Flask:
                     "filename": f.filename,
                     "chunks": len(ids),
                     "preview": text[:2000],
+                    "path": str(path),
                 })
             except Exception as exc:
                 results.append({"filename": f.filename, "error": str(exc)})

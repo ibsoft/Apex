@@ -511,6 +511,24 @@ in `app.py` and guarded by `require_user`. Tests:
 `Document.blocks`; block iteration happens at the XML level, and doc images are
 embedded as base64 data URIs.
 
+## Multipart uploads bypass the /be rewrite
+
+`GET/POST /be/api/*` goes through the Next rewrite to
+`http://127.0.0.1:5001/api/*`. The rewrite clone-streams request bodies, which
+re-sends them to gunicorn **chunked** (no Content-Length); gunicorn closes on
+chunked bodies, so any upload past ~100 KB dies client-side as a connection
+reset ("Failed to fetch") — symptoms look like a server fault but the backend
+never sees the request.
+
+Multipart uploads therefore **must not** use the rewrite. They go through
+`frontend/app/api/upload/{memory,vision}/route.ts`, which read the whole
+(`arrayBuffer`) body — Flask caps these at 10 MB — and forward it to the backend
+with the original Content-Length, which gunicorn accepts at any size. The
+forwarder copies `content-type`, `cookie` and `X-APEX-CSRF` and truncation-check
+returns 413. `memory.upload` in `lib/api.ts` posts to `/api/upload/memory` and
+`vision.upload` to `/api/upload/vision`. Add a new upload endpoint the same way
+(a `forwardUpload` call in a route handler) instead of calling it through `/be`.
+
 ## EDITOR skill (Word / Excel generation)
 
 The `EDITOR` skill creates downloadable Office documents via two tools defined

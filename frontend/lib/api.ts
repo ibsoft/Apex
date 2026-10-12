@@ -537,7 +537,10 @@ export const api = {
     upload: async (files: FileList | File[]) => {
       const form = new FormData();
       for (const f of files) form.append("files", f);
-      const resp = await fetch(`${BASE}/api/memory/upload`, {
+      // /api/upload/memory is a Next route handler that relays to Flask with a
+      // real Content-Length; the /be/api rewrite chunk-streams upload bodies,
+      // which gunicorn closes (browser sees "Failed to fetch").
+      const resp = await fetch("/api/upload/memory", {
         method: "POST",
         credentials: CRED,
         // FormData sets its own multipart Content-Type boundary, so only the
@@ -550,7 +553,7 @@ export const api = {
         const body: any = await resp.json().catch(() => null);
         throw new ApiError(body?.error ?? `${resp.status} ${resp.statusText}`, resp.status);
       }
-      return resp.json() as Promise<{ ok: boolean; total: number; files: { filename: string; chunks?: number; preview?: string; error?: string }[] }>;
+      return resp.json() as Promise<{ ok: boolean; total: number; files: { filename: string; chunks?: number; preview?: string; path?: string; error?: string }[] }>;
     },
   },
 
@@ -563,7 +566,9 @@ export const api = {
     upload: async (file: File) => {
       const form = new FormData();
       form.append("image", file);
-      const resp = await fetch(`${BASE}/api/vision/upload`, {
+      // Route-handler relay (see /api/upload/memory) so large images are not
+      // chunk-streamed into gunicorn, which would drop the connection.
+      const resp = await fetch("/api/upload/vision", {
         method: "POST",
         credentials: CRED,
         // FormData sets its own multipart Content-Type boundary, so only the
