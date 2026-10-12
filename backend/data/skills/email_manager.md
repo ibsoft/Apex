@@ -17,7 +17,7 @@ Commands
 - `check [--last N] [--all]` - inbox summary: message count, then the newest N headers with the server's own numbers (default 10, newest first). Messages already read are hidden; add `--all` to list every message, where read ones carry a `[read]` marker.
 - `read <n> [--raw] [--full] [--body]` - one message: headers plus text body (HTML is converted to text when there is no plain part). Attachments are listed by name and size only, never printed. The body is capped at 3000 characters to fit the tool result; `--full` removes the cap. `--raw` prints the raw RFC822 source. `--body` prints only the body with signatures and quoted replies removed. Reading a message marks it read, so `check` will not list it again.
 - `unread <n>` - mark a message unread again so `check` lists it.
-- `send --to A [--to B] --subject S [--body TEXT | --body-file FILE | piped text] [--html] [--attach FILE]` - send one message. Confirm the recipient(s) and the subject with the operator first unless they were already explicit.
+- `send --to A [--to B] --subject S [--body TEXT | --body-file FILE | piped text] [--html] [--attach FILE]...` - send one message. Confirm the recipient(s) and the subject with the operator first unless they were already explicit. `--attach` may be repeated to send several files in one message; each takes an absolute path.
 - `sent [--last N]` - list messages this script has sent, newest first, with the id to show each one (default 10).
 - `sent-read <id> [--full]` - show one stored sent message: recipient(s), subject, date, body and attachment names.
 
@@ -30,6 +30,12 @@ When the operator asks you to run a command and email the output (for example "r
     run_shell: df -h | python3 /home/ioannisb/Development/Apex/backend/data/skills/email_manager/mail.py send --to the@address --subject "df -h output"
 
 The command runs in the background, so no terminal window opens. If the operator gave no subject, choose a short one that names the command. Do not paste the command output into chat unless asked - a short summary is enough. The message and its content are recorded in the sent history automatically. Run only the command the operator asked for; never a destructive or privileged command to fill an email.
+
+Sending documents as attachments
+Documents can be attached to any send: `--attach /absolute/path/to/file`, repeated for more than one. Reasons to find the path yourself rather than guessing:
+- When the operator attaches a document to this chat turn and asks you to email it, the turn's document block tells you exactly where the original was saved (`The original file is on disk at <path>`). Attach that path; do not re-type the file.
+- Files APEX generated (EDITOR Word/Excel) live under `backend/data/generated/editor/<user_id>/`; find the newest one with `ls -t` on that directory.
+- A path with spaces must be quoted. After sending, tell the operator the attachment names, not the sizes.
 
 How to run it
 Call `run_shell` with the command above as the `command` argument and leave `on_screen` false. Do not use `terminal_command` in this skill: it opens a visible terminal window, which is exactly what the operator does not want for mail. A mail turn is only ever the script plus your summary - no window appears.

@@ -47,6 +47,7 @@ ENV_PATH = Path(__file__).resolve().with_name(".env")
 DB_PATH = Path(__file__).resolve().with_name("mail.sqlite3")
 BODY_CAP = 3000        # keep read output (headers + body) inside run_shell's 4000-char result
 LIST_BUDGET = 3800     # same reason, for the inbox listing
+MAX_ATTACH_TOTAL = 25 * 1024 * 1024   # most SMTP relays reject larger combined attachments
 
 
 class MailError(Exception):
@@ -631,11 +632,14 @@ def cmd_send(cfg, to, subject, body, body_file, html, attach):
     else:
         msg.set_content(text)
     total = len(text.encode())
+    attached = []
     for item in attach:
         path = Path(item).expanduser()
         if not path.is_file():
             raise MailError(f"--attach not found: {path}")
         data = path.read_bytes()
+        if not data:
+            raise MailError(f"--attach is empty: {path}")
         ctype, _ = mimetypes.guess_type(path.name)
         if ctype and "/" in ctype:
             maintype, subtype = ctype.split("/", 1)
@@ -645,6 +649,12 @@ def cmd_send(cfg, to, subject, body, body_file, html, attach):
             msg.add_attachment(data, maintype="application",
                                subtype="octet-stream", filename=path.name)
         total += len(data)
+        attached.append((path.name, len(data)))
+    if sum(size for _, size in attached) > MAX_ATTACH_TOTAL:
+        raise MailError(
+            f"total attachment size exceeds the {MAX_ATTACH_TOTAL // (1024 * 1024)} MB "
+            f"limit (got {sum(size for _, size in attached) // 1024} KB); "
+            f"send smaller or fewer files")
 
     s = smtp_connect(cfg)
     try:
@@ -669,6 +679,9 @@ def cmd_send(cfg, to, subject, body, body_file, html, attach):
           f"({total} bytes body+attachments)")
     for addr in recipients:
         print(f"  -> {addr}")
+    for name, size in attached:
+        kb = f"{size / 1024:.1f} KB" if size >= 1024 else f"{size} B"
+        print(f"  attached: {name} ({kb})")
 
 
 def cmd_sent(cfg, last):

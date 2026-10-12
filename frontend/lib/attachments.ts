@@ -16,6 +16,9 @@ export type ChatAttachment = {
   chunks: number;
   /** Bounded leading slice of the extracted text, echoed to the model. */
   preview: string;
+  /** Absolute path of the original file persisted on the server, so a skill
+   *  (e.g. the EMAIL pack's --attach) can send the document itself. */
+  path: string;
 };
 
 /** The non-persisted prompt block for the attached documents, or "" if there
@@ -26,7 +29,10 @@ export function buildDocumentContext(attachments: ChatAttachment[]): string {
   return usable
     .map((a) => {
       const count = a.chunks === 1 ? "1 chunk" : `${a.chunks} chunks`;
-      return `--- Attached document: ${a.name} (${count} in long-term memory) ---\n${a.preview.trim()}`;
+      const saved = a.path
+        ? `\n(The original file is on disk at ${a.path}; attach it with a file-path taking tool, e.g. the EMAIL skill's --attach.)`
+        : "";
+      return `--- Attached document: ${a.name} (${count} in long-term memory) ---\n${a.preview.trim()}${saved}`;
     })
     .join("\n\n");
 }
@@ -34,7 +40,7 @@ export function buildDocumentContext(attachments: ChatAttachment[]): string {
 /** Build attachment chips from the memory-upload response, dropping failed
  *  files and keeping only the fields the composer needs. */
 export function attachmentsFromUpload(
-  files: { filename: string; chunks?: number; preview?: string; error?: string }[],
+  files: { filename: string; chunks?: number; preview?: string; path?: string; error?: string }[],
 ): ChatAttachment[] {
   return files
     .filter((f) => !f.error)
@@ -42,5 +48,6 @@ export function attachmentsFromUpload(
       name: f.filename,
       chunks: f.chunks ?? 0,
       preview: f.preview ?? "",
+      path: f.path ?? "",
     }));
 }
