@@ -75,6 +75,7 @@ System prompt instructions for the model.
 DATA_DIR/skills/<name>.md       definition        (create_skill)
 DATA_DIR/skills/<name>/         pack directory
 DATA_DIR/skills/<name>/.env     script secrets    (set_env scope=skill, 0600)
+DATA_DIR/skills/<name>/.env-example   key-only mirror of .env (write_env_example)
 DATA_DIR/skills/<name>/<script> helper scripts    (create_script, 0700 for .py/.sh/.bash/.js)
 backend/.env                    backend config    (set_env scope=backend)
 ```
@@ -87,6 +88,16 @@ backend/.env                    backend config    (set_env scope=backend)
   need a backend restart, and the reply says so. It never stores an empty
   value - an empty line would pin `""` over the default forever (the SIP
   mirror's lesson); removal is `remove=true`.
+- **A pack `.env` always has a key-only `.env-example` sibling.** Nothing is
+  private in an env file except its values, so the example - comments, names,
+  ordering, every value masked - is the sharable/shippable form. `set_env`
+  (scope=skill) refreshes it on every write or removal, and
+  `create_skill_pack` ships one from the start, so the convention holds with
+  no extra step. The implementation is `write_env_example` in
+  `tools/envfile.py`, the file that owns env line editing - never copy its
+  masking into a prompt or a script. The backend's own `backend/.env.example`
+  is separate: hand-authored and tracked, and deliberately *not* touched by
+  the mirror (values there default to documented examples, not to zero).
 - Env line editing is shared: `tools/envfile.py::upsert_env` is the one
   implementation, and `sip_tools.write_env_file` is a thin wrapper over it.
 - Two frontmatter traps are handled in `create_skill`: a `---` line in the
@@ -184,6 +195,44 @@ than silently dropped. `SkillManager.build_system_prompt` appends a cross-skill
 note telling the model this syntax exists (skipped in voice mode, where a
 formula would be read out as raw TeX). Add new syntax in the pure parser and its
 test, then teach the model in that note.
+
+## Streaming replies: the queue and mid-turn steering
+
+The composer no longer freezes while a reply streams. `ApexProvider` keeps a
+single ordered queue (`queueRef` is the list, `queued` state is only its render
+mirror, `busyRef` is the synchronous "a turn is running" gate).
+
+- `sendMessage` handles `/steer <instruction>` **before** its busy check
+  (`parseSteerCommand`, a pure helper tested in `commands.test.js`): with a turn
+  running it queues the instruction and POSTs `/api/steer`; with none it just
+  sends the text.
+- A plain message typed while busy is **enqueued, not dropped**, and rendered by
+  `QueuedBubble` with a QUEUED tag; the operator can cancel it. A queued `/steer`
+  is tagged STEER. When the turn ends an effect drains the queue one item at a
+  time (`sendRef`/`busyRef` are read, not the closure's `busy`, which is a
+  render stale by then).
+- Switching or creating a conversation is blocked while busy: the queue is not
+  per-conversation, so a drain must land in the thread it was typed in.
+- **A steer is only removed from the queue when `steer_applied` arrives.** That
+  event is the model's confirmation it was folded in; until then the instruction
+  is safe, so an engine that cannot consume steers (or a turn that ended first)
+  simply leaves it to be sent as an ordinary message. Never drop a steer on the
+  POST result alone.
+- The server half is `backend/agent/steer.py` (`SteerInbox`, process-wide
+  `INBOX`) and `POST /api/steer` (ownership checked like `/api/chat`; another
+  owner answers 404). Only `agent/responses.py` calls `INBOX.begin`/`end` - it is
+  the engine that knows how to consume a steer, and `begin` is what makes
+  `push` report `active`.
+- **A text-only answer is a single model call, so a steer has no step to wait
+  for.** When one appears mid-stream the engine abandons the current call
+  (`chunks.close()`), keeps the partial text, appends the instruction as a user
+  message and starts a fresh call - and drains again after every tool round,
+  where no model call is in flight to catch it. Each steer costs a step, so the
+  `MAX_TOOL_STEPS` ceiling still bounds the turn.
+- `app.py` records an applied steer as its own user message (`{"steer": true}`)
+  as the event streams through, so it is in history after a reload - the local
+  `messages` list the engine edits is never persisted.
+- Tests: `backend/tests/test_steer.py`, `frontend/tests/commands.test.cjs`.
 
 ## Backend conventions
 
@@ -428,6 +477,40 @@ transpiling the `.ts` source on the fly.
 - The echo guard is cleared by `fireCommand`, `speak`, `sleepVoice`,
   `cancelSpeech` and `stopRecognition`, so its words can never be stripped from
   a later real command.
+
+### Interrupting a reply by talking (barge-in + "continue")
+
+Beyond the always-on wake-word barge-in (saying the wake word during `speaking`
+cuts the reply), the operator can opt into *voice-activity* interruption with a
+checkbox + sensitivity slider in the settings tab
+(`voice_interrupt_enabled`, `voice_interrupt_sensitivity` 1..10, persisted
+through `/api/settings`). Both are client-side behaviour; the backend only
+validates and stores them.
+
+- While `speaking`, a second mic stream opened with
+  `{ echoCancellation: true, noiseSuppression: true, autoGainControl: true }`
+  feeds an `AnalyserNode`; echo cancellation is what keeps the assistant's own
+  voice out of the "user is talking" signal. A run of loud frames (RMS above a
+  sensitivity-derived threshold) calls `voiceInterrupt`.
+- The pure decision logic — `sensitivityToThreshold`, `vadStep`,
+  `initialVadState` — lives in `voiceCommands.ts` and is unit tested; `voice.ts`
+  only wires it to the analyser and the `speaking` phase. The VAD is gated for
+  ~400 ms at the start of a reply so its opening words cannot cut it off, and it
+  ignores every phase except `speaking`.
+- **A wake-word barge-in and a voice-activity interrupt are different actions.**
+  The wake word is a deliberate new command, so it keeps no remainder. A
+  voice-activity interrupt may be accidental: `voiceInterrupt` saves the untold
+  remainder (the part of the in-progress chunk after the last `onboundary`
+  `charIndex`, plus the queued chunks) into `resumeRef`, arms the follow-up
+  window so the user's words are collected, and drops the TTS echo from the
+  accumulator. Saying "continue" (`isResumeCommand`, EN + Greek) then resumes
+  from where it stopped.
+- `resumeRef` is only consumed when it actually holds a remainder; a plain
+  "continue" with nothing to resume still reaches the agent as a normal request.
+  A fresh `speak()`, a completed reply, sleep, and mic-off all clear it, so a
+  stray "continue" can never resurrect an old reply.
+- If an engine never fires boundary events, `spoken` stays 0 and the in-progress
+  chunk replays in full — a small repeat, never a lost tail.
 
 ## Terminals (model-opened, never requested from the user)
 
@@ -848,6 +931,121 @@ returns `None` when no email skill is loaded, and `_CODEISH_RE` still wins so
   `backend/memory/store.py` for persistence.
 - New UI panel: add it inside `frontend/components/ChatUI.tsx` or create a new
   component and wire it through `ApexProvider` if it needs shared state.
+
+## Telegram channel (text/voice chat from the phone)
+
+`backend/tools/telegram_tools.py` is the whole feature (handlers, pairing,
+poller, settings) and `backend/tools/telegram.py` is its route module
+(`/api/telegram/status|token|clear|pair|unpair`). `frontend/components/
+TelegramSettings.tsx` is the settings card built on the same `shell()` modal
+pattern as `SipSettings.tsx` (token modal + pairing dialog with a live poll).
+
+- **The token is a single-home secret: the settings DB and nowhere else.**
+  There is deliberately no env-file mirror. `SETTING_KEYS` is the exact write
+  surface (`telegram_enabled`, `telegram_voice_replies`, `telegram_tts_engine`,
+  `telegram_tts_voice`); `telegram_bot_token` is written *only* by
+  `POST /api/telegram/token`, which validates the shape with
+  `re.fullmatch(r"\d{1,12}:[A-Za-z0-9_-]{25,45}", ...)` and checks `getMe`
+  against the live API (10 s `_ME_CACHE`). A settings POST that includes a
+  `telegram_bot_token` key is ignored — there is a test for it. `public_settings`
+  relabels the flag to `telegram_bot_token_set` (`MANAGED_KEYS`) so a stored
+  secret can never be round-tripped.
+- **Clearing must be hard.** `revoke_token` drops the DB row, calls
+  `unlink_pair`, `cancel_all_pairing_codes`, deletes `os.environ[
+  "TELEGRAM_BOT_TOKEN"]` and sets `config.TELEGRAM_BOT_TOKEN = ""` — a cleared
+  token must not resurrect from an env fallback. `telegram_clear_config` is the
+  route-level wrapper.
+- **Pairing is one valid code, one chat, one user.** Codes are 6 chars
+  (no vowels / `0Ol1`, so a code cannot spell a word), in memory only, per
+  user, TTL `TELEGRAM_PAIRING_TTL_SECONDS` (default 600). Any existing code is
+  cancelled when a new one is generated. Redemption is rate-limited before it
+  is checked: `_REDEEM_LIMIT` (8) attempts per chat per `_REDEEM_WINDOW` (15
+  min) fail silently. `_handle_message` **only ever answers `chat.type ==
+  "private"`**, pairs only a `/start` carrying a valid unexpired code, and
+  groups/other accounts get nothing. After pairing, only the paired chat runs
+  turns; it runs as the browser user who redeemed the code.
+- **Secrets and caps on the bot side.** Media download streams with a hard cap
+  (`_MEDIA_MAX_BYTES`, 40 MB); a download past the cap is deleted and returns
+  `None`, and temp media files are cleaned in `finally`. `redact()` masks
+  `TELEGRAM_BOT_TOKEN=...` and `sip_password` values, so no handler output can
+  leak the token back to the model.
+- **The poller is a daemon thread, not a route.** `ensure_poller` starts it
+  when routes register (so a restart is needed after enabling for the first
+  time in a deployment that never started it). `_poll_loop` is one long-polling
+  `getUpdates` loop; every exception is caught, redacted and recorded in
+  `_LAST_ERROR` with a 5 s backoff (guard against an unbound `cfg` in the
+  except path). The frontend reads health through the status endpoint, which
+  also carries `tts_available`, `whisper_ready`, `ffmpeg_available` and
+  `paired_username` but never the token.
+- **Voice replies are a reply to the operator's *voice*, never the default.**
+  `_handle_message` marks a message `was_voice` when it carried voice media;
+  `_reply` synthesizes a spoken ogg/opus note only for that case (and only while
+  `telegram_voice_replies` is on) and always falls back to text. A **text**
+  message is answered with plain text — fast, full-length, tools and all — with
+  no synthesis on the path at all. `run_message_turn(spoken_reply=...)` tells
+  the model the answer will be read aloud (1-3 spoken sentences) only for voice
+  notes; text turns get the unrestricted "answer fully, run the command" prompt.
+- **The engine sees `ctx.history` verbatim.** `run_message_turn` (and
+  `run_task_turn` in `tasks.py`) stores the new message in the DB *and* appends
+  it to `history` — the model's `messages` are `[system] + ctx.history`, so a
+  message that is only stored is a message the model never received, and it
+  answers whatever the previous turn was (it "re-runs the last command"). The
+  chat-UI path in `app.py` folds the new message into history the same way; do
+  not reorder the two. This is the same class of bug as the window-remount
+  cursor one: the DB is not the model's input. Tests:
+  `TelegramTurnTests::test_the_just_sent_message_is_the_models_last_instruction`.
+- **A turn announces itself as "typing…"**. `_chat_action` fires a
+  `sendChatAction` before the model runs, because an agent turn is seconds long
+  and the operator otherwise sees a silent bot and re-sends the message.
+  Voice replies additionally send `record_voice` when the note is produced.
+- **Voice replies reuse the SIP speech pipeline.** `effective_settings` reads
+  `TELEGRAM_*` with `SIP_WHISPER_*` fallbacks; voice notes go through
+  `sip_tools.synthesize` (edge-tts per `response_language`, `espeak` fallback)
+  and `sip_tools.to_opus_ogg` (ffmpeg). A whisper/ffmpeg miss is a normal
+  `telegram_*_available=false` status, never a raised error.
+- **Tool registration is unconditional and settings-gated.** `load_default_
+  tools` registers `telegram_send`/`telegram_status`/`telegram_send_file` for
+  every skill (`TELEGRAM_TOOLS` in `agent/base.py`), the same way SIP is
+  registered; the handler re-reads the settings so enabling in the tab applies
+  on the next turn. `telegram_send` refuses to run without a
+  `ToolContext.user_id`.
+- **`telegram_send_file` ships local files to the paired chat, and the path
+  allowlist is the security boundary.** The model picks the path, so only
+  operator-owned files travel: resolved to realpath, must be a regular readable
+  file under an allowed root (the service home, `config.DATA_DIR` — generated
+  editor/visio files — or `/tmp`), refused if any component is `.env`, `shadow`,
+  `settings.db`, `credentials.json`, `.aws`, `.gnupg`, or if it sits under
+  `/etc`/`/var`, capped at `_SEND_MAX_BYTES` (50 MB). **The tool also accepts a
+  signed APEX URL** (`/api/editor/download/…`, `/api/visio/frame/…`,
+  `/api/files/download/…`, shell/fm/image-browser/obsidian shapes); it is
+  normalized (host, `/be` prefix stripped) and resolved to the real file via
+  `preview_tools._resolve_source`, which re-runs the generator's own
+  ownership/containment checks against `ctx.user_id`. A refusal is a plain
+  string reason, never a raise. Images ≤ `_PHOTO_MAX_BYTES` (10 MB) go via
+  `sendPhoto` so they render inline; everything else (and larger images) is a
+  `sendDocument`, preserving the original bytes. Caption is clipped to 1024.
+- **Files are delivered mechanically, not by model memory.** The browser opens
+  a visio snapshot from the `visio_frame` SSE event; on Telegram no browser
+  exists, so `run_message_turn` installs a `push_event` hook
+  (`_attach_telegram_emit`) that delivers that same event as a `sendPhoto` to
+  the paired chat. And any `/api/...` signed link the model types into its
+  reply instead of calling the tool — a pasted `image_url`, a generated file
+  it echoed — is resolved and sent by `_deliver_links_in_reply`, which
+  replaces the bare link with a `[sent: name]` marker. Both share the per-turn
+  `_DELIVERED` map (`_reset_delivered` at the start of every telegram turn),
+  so a link the event already delivered, or that `telegram_send_file` sent, is
+  never sent twice in the same turn. The tool wrapper refuses a link that is
+  already in the map ("Already sent …"). The Telegram system-prompt block
+  (in `run_message_turn`) tells the model to attach produced files via
+  this tool and never answer "open it here" links. Tests:
+  `TelegramSendFileTests`, `TelegramAutoDeliveryTests`.
+- **Route tests must use the app test client** (handlers call `jsonify`, which
+  needs an app context) — like the SIP route tests. Module-global state
+  (pairing codes, `_REDEEM_ATTEMPTS`, `_ME_CACHE`) is reset in the base
+  `TelegramTestCase.setUp`, not in a subclass; `TelegramPairingTests` inherits
+  that setUp but has no client. The pair-modal e2e state lives only in the
+  browser session.
+- Tests: `backend/tests/test_telegram_tools.py`.
 
 ## Notepad application
 

@@ -221,6 +221,13 @@ export type AppConfig = {
   sip_tts_engine: string;
   sip_tts_voice: string;
   sip_configured: boolean;
+  /** Telegram bot. The token itself is never returned, only `_set` flags. */
+  telegram_enabled: boolean;
+  telegram_bot_token_set: boolean;
+  telegram_paired: boolean;
+  telegram_voice_replies: boolean;
+  telegram_tts_engine: string;
+  telegram_tts_voice: string;
   memory_enabled: boolean;
   embedding: string | null;
   wake_word: string;
@@ -266,6 +273,31 @@ export type SipStatus = {
   max_duration_seconds: number;
 };
 
+/** GET /api/telegram/status. Never contains the token or pairing secrets. */
+export type TelegramStatus = {
+  ok: boolean;
+  telegram_enabled: boolean;
+  token_set: boolean;
+  configured: boolean;
+  /** getMe result, or null when the token is invalid or Telegram is unreachable. */
+  bot: { id?: number; username?: string; first_name?: string } | null;
+  bot_error: string | null;
+  paired: boolean;
+  paired_username: string;
+  pairing_code_active: boolean;
+  pairing_code_ttl_seconds: number;
+  voice_replies: boolean;
+  tts_engine: string;
+  tts_available: boolean;
+  response_language: string;
+  ffmpeg_available: boolean;
+  whisper_ready: boolean;
+  running: boolean;
+  last_error: string;
+  last_error_at: number;
+  env_file: string;
+};
+
 export type ChatEventMeta = {
   type: "meta";
   conversation_id: string;
@@ -278,6 +310,11 @@ export type ChatEventMeta = {
 export type ChatEvent =
   | ChatEventMeta
   | { type: "text_delta"; content: string }
+  /* The running turn folded in a `/steer` instruction the operator sent
+     mid-stream. The client moves that instruction from its queue into the
+     transcript; if this never arrives the instruction is sent as a normal
+     message after the turn instead. */
+  | { type: "steer_applied"; content: string }
   | { type: "tool_call"; name: string; id: string; arguments: any }
   | { type: "tool_result"; name: string; output: string }
   | { type: "memory"; action: string; detail: any }
@@ -447,6 +484,21 @@ export const api = {
   sip: {
     status: () => json<SipStatus>("/api/sip/status"),
     clearPassword: () => json<{ ok: boolean; sip_password_set: boolean }>("/api/sip/clear-password", { method: "POST" }),
+  },
+
+  /** Telegram bot. Name says "telegram"; nothing secret is ever returned. */
+  telegram: {
+    status: () => json<TelegramStatus>("/api/telegram/status"),
+    setToken: (token: string) =>
+      json<{ ok: boolean; bot_id?: number; bot_username?: string; env_file_warning?: string }>("/api/telegram/token", {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      }),
+    clear: () => json<{ ok: boolean; token_set: boolean; paired: boolean }>("/api/telegram/clear", { method: "POST" }),
+    /** Generate a new pairing code. The operator sends it to the bot to pair their chat. */
+    pair: () =>
+      json<{ ok: boolean; code: string; ttl_seconds: number; expires_at: number; bot_username?: string }>("/api/telegram/pair", { method: "POST" }),
+    unpair: () => json<{ ok: boolean; paired: boolean }>("/api/telegram/unpair", { method: "POST" }),
   },
 
   settings: {
@@ -632,5 +684,22 @@ export const api = {
         }
       }
     }
+  },
+
+  /** Hand an extra instruction to the turn that is already streaming.
+   * `active` is only a hint; the caller keeps the instruction queued until a
+   * `steer_applied` event confirms it was folded into the running generation. */
+  async steer(payload: { conversation_id: string; instruction: string }): Promise<{ ok: boolean; active: boolean }> {
+    const resp = await fetch(`${BASE}/api/steer`, {
+      method: "POST",
+      credentials: CRED,
+      headers: requestHeaders({ method: "POST" }),
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const body: any = await resp.json().catch(() => null);
+      throw new ApiError(body?.error ?? `steer failed (${resp.status})`, resp.status);
+    }
+    return resp.json();
   },
 };

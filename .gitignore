@@ -231,3 +231,18 @@ __marimo__/
 
 # APEX-managed Codex OAuth credentials and local state
 /backend/data/codex/
+
+# ---- APEX runtime state (never commit) -------------------------------------
+# backend/data/ holds everything APEX writes at runtime: the SQLite settings
+# database (which stores the Telegram bot token, SIP password and pairing
+# state), conversations/memory (chroma), uploaded images, visio snapshots,
+# generated editor/shell documents and user-created skill packs. None of it is
+# source and all of it is private to this machine, so the whole directory is
+# gitignored and untracked.
+/backend/data/
+
+# Frontend build output (was accidentally committed at some point) and the
+# locally-issued mkcert/Next dev TLS certificate + ITS PRIVATE KEY.
+frontend/.next/
+frontend/.next-https/
+frontend/certificates/

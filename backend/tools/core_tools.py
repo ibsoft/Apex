@@ -459,8 +459,12 @@ def build_core_tools(registry, cfg):
 
         try:
             env_path.parent.mkdir(parents=True, exist_ok=True)
-            from tools.envfile import upsert_env
+            from tools.envfile import upsert_env, write_env_example
             upsert_env(env_path, {key: "" if remove else value})
+            if scope == "skill":
+                # Keep the pack's key-only .env-example in step with its real
+                # .env, so the pack can be shared/shipped without its secrets.
+                write_env_example(env_path)
         except OSError as exc:
             return f"set_env error: could not write {env_path}: {exc}"
 

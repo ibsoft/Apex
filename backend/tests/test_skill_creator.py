@@ -231,6 +231,28 @@ class SetEnvTests(PackTestCase):
         self.assertIn("MY_API_TOKEN=s3cret-value", self.env_file.read_text())
         self.assertNotIn("s3cret-value", out)
 
+    def test_skill_scope_keeps_a_key_only_env_example(self):
+        self.tools["set_env"].call(
+            {"key": "MY_API_TOKEN", "value": "s3cret-value", "scope": "skill",
+             "skill": "demo"}, self.ctx)
+        example = self.pack / ".env-example"
+        self.assertTrue(example.exists())
+        text = example.read_text()
+        self.assertIn("MY_API_TOKEN=", text)
+        self.assertNotIn("s3cret-value", text)
+        self.assertNotIn("MY_API_TOKEN=s3cret-value", text)
+
+    def test_remove_refreshes_the_env_example(self):
+        self.env_file.write_text("KEEP=1\nGONE=bye\n")
+        os.chmod(self.env_file, 0o600)
+        self.tools["set_env"].call(
+            {"key": "GONE", "remove": True, "scope": "skill", "skill": "demo"},
+            self.ctx)
+        text = (self.pack / ".env-example").read_text()
+        self.assertNotIn("GONE", text)
+        self.assertIn("KEEP=", text)
+        self.assertNotIn("keepme", text)
+
     def test_skill_scope_preserves_other_lines(self):
         self.env_file.write_text("OTHER_KEY=keepme\nMY_API_TOKEN=old\n")
         os.chmod(self.env_file, 0o600)

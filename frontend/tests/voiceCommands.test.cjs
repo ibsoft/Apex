@@ -11,9 +11,10 @@ const compiled = ts.transpileModule(source, {
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
 const {
-  wakePattern, isWakeOnlyText, isWakeWordFragment, isSleepCommand, recognitionLanguage,
+  wakePattern, isWakeOnlyText, isWakeWordFragment, isSleepCommand, isResumeCommand, recognitionLanguage,
   accumulateResults, commandText, emptyResultSnapshot, sliceAfterLastWake,
   wakeAcks, pickWakeAck, stripAckEcho, speechSummary,
+  clampSensitivity, sensitivityToThreshold, initialVadState, vadStep,
 } = moduleExports;
 
 test('Greek default wake aliases preserve command text and recognize Unicode boundaries', () => {
@@ -95,6 +96,71 @@ test('Greek sleep phrases accept accents and punctuation only when Greek is sele
   for (const phrase of ['σταμάτα το χρονόμετρο', 'άκυρο το προηγούμενο ραντεβού', 'βάλε χρονόμετρο', 'σιωπή']) {
     assert.equal(isSleepCommand(phrase, 'el'), false, phrase);
   }
+});
+
+test('resume phrases are recognised for a cut-off reply', () => {
+  for (const phrase of ['continue', 'Continue.', 'continue please', 'go on', 'carry on', 'keep going',
+    'resume', 'proceed', 'continue, thank you', 'go on now']) {
+    assert.equal(isResumeCommand(phrase, 'en'), true, phrase);
+    assert.equal(isResumeCommand(phrase, 'el'), true, phrase);
+  }
+  for (const phrase of ['continue writing the essay', 'keep going down the road', 'carry on driving',
+    'please proceed to the gate', 'the meeting will resume']) {
+    assert.equal(isResumeCommand(phrase, 'en'), false, phrase);
+  }
+});
+
+test('Greek resume phrases fold accents and final sigma', () => {
+  for (const phrase of ['συνέχισε', 'Συνέχισε.', 'συνέχεια', 'συνέχισε σε παρακαλώ',
+    'πες το υπόλοιπο', 'πες τα υπόλοιπα', 'ΣΥΝΈΧΙΣΕ', 'συνέχισε, ευχαριστώ']) {
+    assert.equal(isResumeCommand(phrase, 'el'), true, phrase);
+    assert.equal(isResumeCommand(phrase, 'en'), false, phrase);
+  }
+});
+
+test('interrupt sensitivity maps monotonically onto an RMS threshold', () => {
+  assert.equal(clampSensitivity(0), 1);
+  assert.equal(clampSensitivity(999), 10);
+  assert.equal(clampSensitivity(NaN), 6);
+  assert.equal(clampSensitivity(6), 6);
+  const low = sensitivityToThreshold(1);
+  const high = sensitivityToThreshold(10);
+  const mid = sensitivityToThreshold(6);
+  assert.ok(low > mid && mid > high, 'higher sensitivity must mean a lower threshold');
+  assert.ok(high > 0, 'the most sensitive threshold must still be positive');
+});
+
+test('the VAD fires only on sustained loudness and re-arms after quiet', () => {
+  const t = sensitivityToThreshold(6);
+  let state = initialVadState();
+  let fired = 0;
+  // two loud frames only: no fire
+  state = vadStep(state, t + 0.01, t).state;
+  state = vadStep(state, t + 0.02, t).state;
+  assert.equal(fired, 0);
+  // four consecutive loud frames: fire exactly once
+  let res;
+  for (let i = 0; i < 8; i++) {
+    res = vadStep(state, t + 0.02, t);
+    state = res.state;
+    if (res.fire) fired += 1;
+  }
+  assert.equal(fired, 1, 'a sustained burst fires once, not once per frame');
+  // a dip inside the hysteresis band must not re-arm the trigger
+  state = vadStep(state, t * 0.7, t).state;
+  state = vadStep(state, t + 0.02, t).state;
+  res = vadStep(state, t + 0.02, t);
+  assert.equal(res.fire, false);
+  // quiet below the band for enough frames re-arms so the next burst can fire
+  let quiet = res.state;
+  for (let i = 0; i < 4; i++) quiet = vadStep(quiet, t * 0.2, t).state;
+  fired = 0;
+  for (let i = 0; i < 6; i++) {
+    res = vadStep(quiet, t + 0.02, t);
+    quiet = res.state;
+    if (res.fire) fired += 1;
+  }
+  assert.equal(fired, 1, 'after re-arming, a new sustained burst fires again');
 });
 
 test('Greek recognition switches to el-GR only for the command, keeping the English wake word responsive', () => {

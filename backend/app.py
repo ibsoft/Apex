@@ -37,6 +37,7 @@ from flask import (
 
 from agent.factory import build_engine, make_registry
 from agent.base import AgentContext
+from agent.steer import INBOX as STEER_INBOX
 from auth import (
     OAuthError,
     bearer_for_api,
@@ -178,11 +179,24 @@ from tools.sip_tools import (
     effective_settings as sip_settings,
     pending_reply as sip_pending_reply,
 )
+from tools.telegram_tools import (
+    MANAGED_KEYS as TELEGRAM_MANAGED_KEYS,
+    SETTING_KEYS as TELEGRAM_SETTING_KEYS,
+    enabled as telegram_enabled,
+    effective_settings as telegram_settings,
+    paired_link as telegram_paired_link,
+)
 
 SIP_TRANSPORTS = ALLOWED_TRANSPORTS
 SIP_TTS_ENGINES = ALLOWED_TTS_ENGINES
+TELEGRAM_TTS_ENGINES = ALLOWED_TTS_ENGINES
 #: Every settings key the SIP tab owns, mirrored into the env file on save.
 SIP_FIELDS = frozenset(SIP_ENV_KEYS)
+#: Every settings key the Telegram tab owns. The bot token is deliberately not
+#: here and never touches the env file: it is stored only through
+#: ``/api/telegram/token``, lives only in the settings DB, and is revoked by a
+#: hard clear that also kills the env fallback.
+TELEGRAM_FIELDS = frozenset(TELEGRAM_SETTING_KEYS)
 #: The free-text ones. A 200-character cap matches the VISIO fields; the
 #: password is included because a real account password longer than that is a
 #: paste accident, and it must never reach a baresip command line unvalidated.
@@ -192,12 +206,14 @@ SIP_TEXT_FIELDS = (
     "sip_tts_engine", "sip_tts_voice",
 )
 SIP_FIELD_MAX = 200
+#: Telegram text settings. The bot token is not here: it is stored through its
+#: own validated endpoint (/api/telegram/token), never through a settings POST.
+TELEGRAM_FIELD_MAX = 200
+TELEGRAM_TEXT_FIELDS = ("telegram_tts_voice",)
 
 #: Settings keys that hold a secret. They are stripped from every HTTP response
-#: by ``public_settings`` and replaced with a ``<key>_set`` boolean. SIP is the
-#: only one today; the list exists so the next credential does not have to
-#: rediscover this.
-SECRET_SETTING_KEYS = ("sip_password",)
+#: by ``public_settings`` and replaced with a ``<key>_set`` boolean.
+SECRET_SETTING_KEYS = ("sip_password", "telegram_bot_token")
 
 
 def _mirror_sip_to_env(config):
@@ -209,6 +225,22 @@ def _mirror_sip_to_env(config):
     ok, err = mirror_sip_to_env(config)
     if not ok:
         current_app.logger.warning("Could not mirror SIP settings to the env file: %s", err)
+
+
+def telegram_config_summary(config, rt):
+    """The Telegram fields /api/config hands to the settings panel.
+
+    ``telegram_bot_token_set`` is a flag, never the secret.
+    """
+    cfg = telegram_settings(config, rt)
+    return {
+        "telegram_enabled": cfg["telegram_enabled"],
+        "telegram_bot_token_set": bool(cfg["telegram_bot_token"]),
+        "telegram_paired": bool(telegram_paired_link(rt)),
+        "telegram_voice_replies": cfg["telegram_voice_replies"],
+        "telegram_tts_engine": cfg["telegram_tts_engine"],
+        "telegram_tts_voice": cfg["telegram_tts_voice"],
+    }
 
 
 def sip_config_summary(config, rt):
@@ -515,6 +547,7 @@ def create_app() -> Flask:
     from tools.notepad import register_notepad_routes
     from tools.tasks import register_task_routes
     from tools.sip import register_sip_routes
+    from tools.telegram import register_telegram_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
@@ -531,6 +564,7 @@ def create_app() -> Flask:
     register_filebrowser_routes(app, require_user, config)
     register_notepad_routes(app, require_user, config)
     register_sip_routes(app, require_user, config)
+    register_telegram_routes(app, require_user, config)
     # Registers the Tasks tab's REST surface and starts the runner thread that
     # fires due tasks. A no-op when TASKS_ENABLED is false.
     register_task_routes(app, require_user, config)
@@ -718,6 +752,10 @@ def create_app() -> Flask:
             if secret in rt:
                 rt[f"{secret}_set"] = bool(rt.get(secret))
                 del rt[secret]
+        # Bot-managed rows (paired chat id, …): the pairing flow owns them, so
+        # the browser must not be able to round-trip them through a settings save.
+        for managed in TELEGRAM_MANAGED_KEYS:
+            rt.pop(managed, None)
         return rt
 
     # ---- auth: session --------------------------------------------------------
@@ -1059,6 +1097,7 @@ def create_app() -> Flask:
                 "models": model_list(),
                 **visio_settings(config, rt),
                 **sip_config_summary(config, rt),
+                **telegram_config_summary(config, rt),
                 "think_hard_model": str(rt.get("think_hard_model") or config.THINK_HARD_MODEL or "").strip(),
                 "think_hard_model_enabled": _rt_bool(rt.get("think_hard_model_enabled")) if "think_hard_model_enabled" in rt else config.THINK_HARD_MODEL_ENABLED,
                 "memory_enabled": bool(mem),
@@ -1159,6 +1198,9 @@ def create_app() -> Flask:
             "sip_enabled", "sip_server", "sip_user", "sip_password", "sip_transport",
             "sip_port", "sip_display_name", "sip_domain", "sip_outbound_proxy",
             "sip_notify_to", "sip_tts_engine", "sip_tts_voice",
+            "telegram_enabled", "telegram_voice_replies",
+            "telegram_tts_engine", "telegram_tts_voice",
+            "voice_interrupt_enabled", "voice_interrupt_sensitivity",
         }
         if "visio_provider" in data and data["visio_provider"] not in ("openai", "ollama"):
             return jsonify({"error": "VISIO provider must be openai or ollama"}), 400
@@ -1195,6 +1237,13 @@ def create_app() -> Flask:
         # the password is a separate explicit action.
         if "sip_password" in data and not str(data["sip_password"] or "").strip():
             data.pop("sip_password")
+        for key in TELEGRAM_TEXT_FIELDS:
+            if key in data and (not isinstance(data[key], str) or len(data[key]) > TELEGRAM_FIELD_MAX):
+                return jsonify({"error": f"Invalid {key}"}), 400
+        if "telegram_enabled" in data and not isinstance(data["telegram_enabled"], (bool, int, str)):
+            return jsonify({"error": "Invalid telegram_enabled"}), 400
+        if "telegram_tts_engine" in data and str(data["telegram_tts_engine"]).lower() not in TELEGRAM_TTS_ENGINES:
+            return jsonify({"error": f"Telegram TTS engine must be one of {', '.join(TELEGRAM_TTS_ENGINES)}"}), 400
         sip_patch = {k for k in data if k in SIP_FIELDS}
         for key, value in data.items():
             if key not in allowed:
@@ -1217,14 +1266,25 @@ def create_app() -> Flask:
                 value = normalize_soul(value)
             if key == "think_hard_model":
                 value = str(value or "").strip()
-            if key in {"think_hard_model_enabled", "visio_enabled"}:
+            if key in {"think_hard_model_enabled", "visio_enabled", "voice_interrupt_enabled"}:
                 value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+            if key == "voice_interrupt_sensitivity":
+                value = _clamp_int(value, 1, 10)
             if key in SIP_FIELDS:
                 if key == "sip_enabled":
                     value = str(value).strip().lower() in {"1", "true", "yes", "on"}
                 elif key == "sip_transport":
                     value = str(value).strip().lower()
                 elif key == "sip_tts_engine":
+                    value = str(value).strip().lower()
+                else:
+                    value = str(value or "").strip()
+            if key in TELEGRAM_FIELDS:
+                if key == "telegram_enabled":
+                    value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+                elif key == "telegram_voice_replies":
+                    value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+                elif key == "telegram_tts_engine":
                     value = str(value).strip().lower()
                 else:
                     value = str(value or "").strip()
@@ -1677,6 +1737,7 @@ def create_app() -> Flask:
             voice_mode=voice_mode,
             user_name=session.get("name") or user.get("name") or "",
             response_language=rt.get("response_language") or config.RESPONSE_LANGUAGE,
+            telegram_enabled=telegram_enabled(rt),
             # Operator persona from the settings tab. Last so it stays the most
             # recent instruction; empty by default and never persisted to history.
             extra=soul_prompt_block(rt.get("soul")),
@@ -1817,6 +1878,13 @@ def create_app() -> Flask:
                         needed, reason = translate_github_marker(ev.get("output") or "")
                         if needed:
                             yield event_ss({"type": "github_token", "reason": reason})
+                    elif ev["type"] == "steer_applied":
+                        # The running turn folded an operator instruction in.
+                        # Record it as its own user message so the steering
+                        # survives a reload instead of living only in the stream.
+                        if store_messages:
+                            db.add_message(conv["id"], "user",
+                                           ev.get("content", ""), {"steer": True})
                     elif ev["type"] == "error":
                         error_seen = True
                     elif ev["type"] == "done":
@@ -1853,6 +1921,34 @@ def create_app() -> Flask:
         resp.headers["Cache-Control"] = "no-cache, no-transform"
         resp.headers["X-Accel-Buffering"] = "no"
         return resp
+
+    # ---- mid-turn steering ----------------------------------------------------
+    @app.post("/api/steer")
+    def steer():
+        """Hand an extra instruction to the turn that is already streaming.
+
+        The client keeps the steer in its own queue until the running turn
+        answers with a ``steer_applied`` event, so ``active`` is only a hint:
+        a turn that never drains this (a different engine, or one that finished
+        first) leaves the client to send it as an ordinary message afterwards.
+        """
+        user = require_user()
+        if not user:
+            return jsonify({"error": "unauthorized"}), 401
+        data = request.get_json(silent=True) or {}
+        instruction = (data.get("instruction") or "").strip()
+        conv_id = str(data.get("conversation_id") or "")
+        if not instruction:
+            return jsonify({"error": "empty instruction"}), 400
+        if not conv_id:
+            return jsonify({"error": "conversation_id required"}), 400
+        conv = get_db().get_conversation(conv_id)
+        # A conversation owned by someone else is indistinguishable from one
+        # that does not exist - 404, never 403.
+        if conv is None or conv["user_id"] != user["id"]:
+            return jsonify({"error": "not allowed"}), 404
+        active = STEER_INBOX.push(conv_id, instruction)
+        return jsonify({"ok": True, "active": bool(active)})
 
     # ---- Obsidian attachments -------------------------------------------------
     @app.route("/api/obsidian/file", methods=["GET"])
