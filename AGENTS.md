@@ -66,6 +66,14 @@ System prompt instructions for the model.
   name.
 - The skill is picked up automatically on the next request; call
   `create_skill` if you need to generate one at runtime.
+- `SkillManager.delete` removes a user skill from disk **completely**: the
+  `<name>.md` definition and the whole `<name>/` pack directory - scripts,
+  tests, README, the `.env` secrets and the `.env-example` - matching what the
+  UI confirmation promises ("definition, scripts and saved environment
+  variables are removed permanently"). It refuses built-ins and anything whose
+  source is not a direct child of the user skills directory, so a crafted name
+  can never reach outside it. `DELETE /api/skills/<name>` is that method behind
+  the browser's confirm modal.
 
 ### Runtime skill packs (the skill_creator skill)
 
