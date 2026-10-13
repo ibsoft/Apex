@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.base import AgentContext
-from skills.manager import SkillManager, _expand_config_vars, route_skill
+from skills.manager import Skill, SkillManager, _expand_config_vars, route_skill
 from tools.base import load_default_tools, ToolRegistry
 
 
@@ -240,6 +240,22 @@ class SkillDeleteTests(unittest.TestCase):
             self.assertIsNone(mgr.get("custom"))
             self.assertFalse((skills_dir / "custom.md").exists())
 
+    def test_delete_removes_the_pack_directory_with_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "skills"
+            skills_dir.mkdir()
+            (skills_dir / "custom.md").write_text("---\nname: custom\ndescription: x\n---\nbody")
+            pack = skills_dir / "custom"
+            pack.mkdir()
+            (pack / "run.py").write_text("print('hi')\n")
+            (pack / ".env").write_text("TOKEN=supersecret\n")
+            (pack / ".env-example").write_text("TOKEN=\n")
+            (pack / "tests").mkdir()
+            (pack / "tests" / "test_custom.py").write_text("def test_x():\n    assert True\n")
+            mgr = SkillManager(skills_dir)
+            self.assertTrue(mgr.delete("custom"))
+            self.assertFalse((skills_dir / "custom").exists())
+
     def test_delete_refuses_builtin_skill(self):
         mgr = SkillManager()
         self.assertFalse(mgr.delete("general"))
@@ -248,6 +264,22 @@ class SkillDeleteTests(unittest.TestCase):
     def test_delete_unknown_skill_returns_false(self):
         mgr = SkillManager()
         self.assertFalse(mgr.delete("does-not-exist"))
+
+    def test_delete_refuses_a_non_skill_file_outside_the_user_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_dir = Path(tmp) / "skills"
+            skills_dir.mkdir()
+            planted = Path(tmp) / "planted" / "precious.md"
+            planted.parent.mkdir()
+            planted.write_text("---\nname: precious\ndescription: x\n---\nbody")
+            mgr = SkillManager(skills_dir)
+            # A source that resolves outside the user skills directory is
+            # refused outright, so nothing outside it can be reached via delete.
+            fake = Skill(name="precious", description="x", system_prompt="body",
+                         builtin=False, source=str(planted))
+            with patch.object(SkillManager, "get", return_value=fake):
+                self.assertFalse(mgr.delete("precious"))
+            self.assertTrue(planted.exists())
 
 
 class SkillEndpointTests(unittest.TestCase):
@@ -266,6 +298,9 @@ class SkillEndpointTests(unittest.TestCase):
             skills_dir = Path(tmp) / "skills"
             skills_dir.mkdir()
             (skills_dir / "custom.md").write_text("---\nname: custom\ndescription: x\n---\nbody")
+            pack = skills_dir / "custom"
+            pack.mkdir()
+            (pack / ".env").write_text("TOKEN=supersecret\n")
             app_module, db, client = self._make_client()
             with patch.object(app_module, "get_db", return_value=db), \
                  patch.object(app_module, "get_skill_manager", return_value=SkillManager(skills_dir)):
@@ -273,6 +308,8 @@ class SkillEndpointTests(unittest.TestCase):
                 self.assertEqual(resp.status_code, 200)
                 self.assertEqual(resp.get_json(), {"ok": True})
                 self.assertFalse((skills_dir / "custom.md").exists())
+                self.assertFalse((skills_dir / "custom").exists(),
+                                 "the pack directory and its secrets go with it")
 
     def test_delete_builtin_skill_endpoint_returns_403(self):
         app_module, db, client = self._make_client()

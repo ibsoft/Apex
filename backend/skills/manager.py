@@ -16,6 +16,7 @@ surfaces ``/api/skills`` so any skill (built-in or user-made) is one click away.
 from __future__ import annotations
 
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -135,16 +136,35 @@ class SkillManager:
         return skills.get(name)
 
     def delete(self, name: str) -> bool:
-        """Delete a user-defined skill file. Built-in skills cannot be removed."""
+        """Delete a user-defined skill from disk and forget it.
+
+        Removes both halves of a user skill: its ``<name>.md`` definition and,
+        when it exists, the whole ``<name>/`` pack directory - scripts, tests,
+        README, the ``.env`` secrets and the ``.env-example``. The UI promises
+        "definition, scripts and saved environment variables are removed
+        permanently", which is exactly what this does. Built-in skills cannot
+        be removed; anything that is not a direct child of the user skills
+        directory is refused, so a crafted ``name`` can never reach outside it.
+        """
         skill = self.get(name)
         if skill is None or skill.builtin:
             return False
         path = Path(skill.source)
-        if path.exists() and path.is_file():
+        if not (path.is_file() and path.suffix.lower() == ".md"):
+            return False
+        root = Path(self._dir).resolve()
+        parent = path.resolve().parent
+        if not (parent == root or root in parent.parents):
+            return False
+        pack = path.with_suffix("")
+        try:
             path.unlink()
+            if pack.exists():
+                shutil.rmtree(pack)
             self.refresh()
             return True
-        return False
+        except OSError:
+            return False
 
     def select(self, name: str) -> Skill:
         skill = self.get(name)
