@@ -168,6 +168,7 @@ class SkillManager:
         extra: str = "",
         user_name: str = "",
         response_language: str = "en",
+        telegram_enabled: bool = False,
     ) -> str:
         skill = self.select(skill_name)
         base = skill.system_prompt.strip()
@@ -193,6 +194,14 @@ class SkillManager:
             parts.append(f"Available tools for this skill: {', '.join(skill.tools)}.")
         if extra:
             parts.append(extra)
+        if telegram_enabled:
+            parts.append(
+                "You can also message the operator on their paired Telegram chat "
+                "with the telegram_send tool, as text or as a spoken voice note. "
+                "Use it to deliver an answer or an alert to their phone; a normal "
+                "question in the chat needs no Telegram message. The Telegram "
+                "conversation itself is already you talking to the operator."
+            )
         if not voice_mode:
             # The chat panel renders this syntax (KaTeX + a small SVG geometry
             # language). A model that does not know the delimiters will answer

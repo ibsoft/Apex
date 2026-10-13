@@ -114,6 +114,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.task_tools import build_task_tools
     from tools.visio_tools import build_visio_tools
     from tools.sip_tools import build_sip_tools
+    from tools.telegram_tools import build_telegram_tools
 
     for tool in build_visio_tools(config):
         registry.register(tool)
@@ -121,6 +122,11 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     # turning SIP on in the settings tab takes effect on the next turn instead of
     # needing a backend restart.
     for tool in build_sip_tools(config):
+        registry.register(tool)
+    # Same story: the telegram handler re-reads the settings every call, so
+    # enabling it in the tab applies on the next turn. The poller thread is
+    # started by register_telegram_routes, not by tool registration.
+    for tool in build_telegram_tools(config):
         registry.register(tool)
     for tool in build_core_tools(registry, config):
         registry.register(tool)

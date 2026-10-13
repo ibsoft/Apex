@@ -179,11 +179,24 @@ from tools.sip_tools import (
     effective_settings as sip_settings,
     pending_reply as sip_pending_reply,
 )
+from tools.telegram_tools import (
+    MANAGED_KEYS as TELEGRAM_MANAGED_KEYS,
+    SETTING_KEYS as TELEGRAM_SETTING_KEYS,
+    enabled as telegram_enabled,
+    effective_settings as telegram_settings,
+    paired_link as telegram_paired_link,
+)
 
 SIP_TRANSPORTS = ALLOWED_TRANSPORTS
 SIP_TTS_ENGINES = ALLOWED_TTS_ENGINES
+TELEGRAM_TTS_ENGINES = ALLOWED_TTS_ENGINES
 #: Every settings key the SIP tab owns, mirrored into the env file on save.
 SIP_FIELDS = frozenset(SIP_ENV_KEYS)
+#: Every settings key the Telegram tab owns. The bot token is deliberately not
+#: here and never touches the env file: it is stored only through
+#: ``/api/telegram/token``, lives only in the settings DB, and is revoked by a
+#: hard clear that also kills the env fallback.
+TELEGRAM_FIELDS = frozenset(TELEGRAM_SETTING_KEYS)
 #: The free-text ones. A 200-character cap matches the VISIO fields; the
 #: password is included because a real account password longer than that is a
 #: paste accident, and it must never reach a baresip command line unvalidated.
@@ -193,12 +206,14 @@ SIP_TEXT_FIELDS = (
     "sip_tts_engine", "sip_tts_voice",
 )
 SIP_FIELD_MAX = 200
+#: Telegram text settings. The bot token is not here: it is stored through its
+#: own validated endpoint (/api/telegram/token), never through a settings POST.
+TELEGRAM_FIELD_MAX = 200
+TELEGRAM_TEXT_FIELDS = ("telegram_tts_voice",)
 
 #: Settings keys that hold a secret. They are stripped from every HTTP response
-#: by ``public_settings`` and replaced with a ``<key>_set`` boolean. SIP is the
-#: only one today; the list exists so the next credential does not have to
-#: rediscover this.
-SECRET_SETTING_KEYS = ("sip_password",)
+#: by ``public_settings`` and replaced with a ``<key>_set`` boolean.
+SECRET_SETTING_KEYS = ("sip_password", "telegram_bot_token")
 
 
 def _mirror_sip_to_env(config):
@@ -210,6 +225,22 @@ def _mirror_sip_to_env(config):
     ok, err = mirror_sip_to_env(config)
     if not ok:
         current_app.logger.warning("Could not mirror SIP settings to the env file: %s", err)
+
+
+def telegram_config_summary(config, rt):
+    """The Telegram fields /api/config hands to the settings panel.
+
+    ``telegram_bot_token_set`` is a flag, never the secret.
+    """
+    cfg = telegram_settings(config, rt)
+    return {
+        "telegram_enabled": cfg["telegram_enabled"],
+        "telegram_bot_token_set": bool(cfg["telegram_bot_token"]),
+        "telegram_paired": bool(telegram_paired_link(rt)),
+        "telegram_voice_replies": cfg["telegram_voice_replies"],
+        "telegram_tts_engine": cfg["telegram_tts_engine"],
+        "telegram_tts_voice": cfg["telegram_tts_voice"],
+    }
 
 
 def sip_config_summary(config, rt):
@@ -516,6 +547,7 @@ def create_app() -> Flask:
     from tools.notepad import register_notepad_routes
     from tools.tasks import register_task_routes
     from tools.sip import register_sip_routes
+    from tools.telegram import register_telegram_routes
 
     register_file_routes(app, require_user, config)
     register_editor_routes(app, require_user, config)
@@ -532,6 +564,7 @@ def create_app() -> Flask:
     register_filebrowser_routes(app, require_user, config)
     register_notepad_routes(app, require_user, config)
     register_sip_routes(app, require_user, config)
+    register_telegram_routes(app, require_user, config)
     # Registers the Tasks tab's REST surface and starts the runner thread that
     # fires due tasks. A no-op when TASKS_ENABLED is false.
     register_task_routes(app, require_user, config)
@@ -719,6 +752,10 @@ def create_app() -> Flask:
             if secret in rt:
                 rt[f"{secret}_set"] = bool(rt.get(secret))
                 del rt[secret]
+        # Bot-managed rows (paired chat id, …): the pairing flow owns them, so
+        # the browser must not be able to round-trip them through a settings save.
+        for managed in TELEGRAM_MANAGED_KEYS:
+            rt.pop(managed, None)
         return rt
 
     # ---- auth: session --------------------------------------------------------
@@ -1060,6 +1097,7 @@ def create_app() -> Flask:
                 "models": model_list(),
                 **visio_settings(config, rt),
                 **sip_config_summary(config, rt),
+                **telegram_config_summary(config, rt),
                 "think_hard_model": str(rt.get("think_hard_model") or config.THINK_HARD_MODEL or "").strip(),
                 "think_hard_model_enabled": _rt_bool(rt.get("think_hard_model_enabled")) if "think_hard_model_enabled" in rt else config.THINK_HARD_MODEL_ENABLED,
                 "memory_enabled": bool(mem),
@@ -1160,6 +1198,8 @@ def create_app() -> Flask:
             "sip_enabled", "sip_server", "sip_user", "sip_password", "sip_transport",
             "sip_port", "sip_display_name", "sip_domain", "sip_outbound_proxy",
             "sip_notify_to", "sip_tts_engine", "sip_tts_voice",
+            "telegram_enabled", "telegram_voice_replies",
+            "telegram_tts_engine", "telegram_tts_voice",
             "voice_interrupt_enabled", "voice_interrupt_sensitivity",
         }
         if "visio_provider" in data and data["visio_provider"] not in ("openai", "ollama"):
@@ -1197,6 +1237,13 @@ def create_app() -> Flask:
         # the password is a separate explicit action.
         if "sip_password" in data and not str(data["sip_password"] or "").strip():
             data.pop("sip_password")
+        for key in TELEGRAM_TEXT_FIELDS:
+            if key in data and (not isinstance(data[key], str) or len(data[key]) > TELEGRAM_FIELD_MAX):
+                return jsonify({"error": f"Invalid {key}"}), 400
+        if "telegram_enabled" in data and not isinstance(data["telegram_enabled"], (bool, int, str)):
+            return jsonify({"error": "Invalid telegram_enabled"}), 400
+        if "telegram_tts_engine" in data and str(data["telegram_tts_engine"]).lower() not in TELEGRAM_TTS_ENGINES:
+            return jsonify({"error": f"Telegram TTS engine must be one of {', '.join(TELEGRAM_TTS_ENGINES)}"}), 400
         sip_patch = {k for k in data if k in SIP_FIELDS}
         for key, value in data.items():
             if key not in allowed:
@@ -1229,6 +1276,15 @@ def create_app() -> Flask:
                 elif key == "sip_transport":
                     value = str(value).strip().lower()
                 elif key == "sip_tts_engine":
+                    value = str(value).strip().lower()
+                else:
+                    value = str(value or "").strip()
+            if key in TELEGRAM_FIELDS:
+                if key == "telegram_enabled":
+                    value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+                elif key == "telegram_voice_replies":
+                    value = str(value).strip().lower() in {"1", "true", "yes", "on"}
+                elif key == "telegram_tts_engine":
                     value = str(value).strip().lower()
                 else:
                     value = str(value or "").strip()
@@ -1681,6 +1737,7 @@ def create_app() -> Flask:
             voice_mode=voice_mode,
             user_name=session.get("name") or user.get("name") or "",
             response_language=rt.get("response_language") or config.RESPONSE_LANGUAGE,
+            telegram_enabled=telegram_enabled(rt),
             # Operator persona from the settings tab. Last so it stays the most
             # recent instruction; empty by default and never persisted to history.
             extra=soul_prompt_block(rt.get("soul")),

@@ -822,3 +822,46 @@ accounts cannot save into the service account's home. Saved photos are retained
 until you delete them; existing files are never overwritten. Saving requires
 VISIO enabled but does not require a vision model or upload frames. Responses
 include the exact saved paths and count, including any partial success.
+
+## Telegram channel
+
+Enable **Telegram** in Settings and enter your bot token from `@BotFather`
+(exactly `###...:AA...`). APEX verifies it with the Telegram `getMe` API before
+storing it. Entering the same token in Settings does **not** change it once
+stored.
+
+Then open **Pair** — the dialog shows a short, single-use code. Message that
+code as a `/start` message to the bot from your personal Telegram account. The
+first chat to redeem a valid code becomes the paired chat; later valid codes
+are simply ignored. Only a **private** chat can pair, and only the paired chat
+can talk to APEX. Groups, other accounts, and any unpaired non-`/start`
+message get no answer. Unpairing revokes the code and forgets the chat.
+
+You then chat with APEX from Telegram by text or voice note. Text messages are
+answered **fast with plain text** — the full answer, tools included — and never
+slowed down (or cut short) by synthesis. Only voice notes are read back and
+answered with a spoken ogg/opus voice note in the configured response language
+(toggle **Reply to voice notes** to make even those come back as text).
+Transcription needs the same Whisper installation as SIP (see `SIP_WHISPER_*`
+below); playback needs `ffmpeg` and `edge-tts` or `espeak`.
+
+Security model: the bot token is stored only in the settings database (never
+mirrored to `backend/.env`), the file permissions on the database are forced to
+`0600`, pairing redemption is rate-limited, bot API secrets never reach the
+browser, and clearing the token also clears pairing, pairing codes and the
+process environment. The bot speaks only on behalf of the signed-in operator's
+APEX account — a Telegram message is a second input surface for that same
+session, not a separate account system.
+
+After enabling, restart the backend unless it did so automatically; the
+poller needs a live app instance. Requires `requests`, `ffmpeg`, and
+`edge-tts` (or `espeak`) as noted above; see `backend/.env.example` for the
+full `TELEGRAM_*` setting list. Disabling Telegram stops polling and turns the
+`telegram_send` tools off until re-enabled. From a chat of your own you can also
+have APEX send you files and images: when it produces or finds a file on disk
+during a turn, it attaches it to the chat as a picture or document (buttons or
+commands are not required — just ask, e.g. "email me that report as a
+document" or "send me a screenshot", though email needs the email skill
+configured; the file-send capability works on any file you could open). Only
+files under the service account's home, the APEX data directory or `/tmp` can
+be sent — credentials, settings databases and system paths are always refused.

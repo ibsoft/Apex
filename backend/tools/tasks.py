@@ -29,6 +29,7 @@ import traceback
 from flask import jsonify, request
 
 from tools.cron import CronError, Schedule, describe_schedule, next_run, parse_schedule
+from tools.telegram_tools import enabled
 
 MAX_OUTPUT_CHARS = 6000
 MAX_LIST = 100
@@ -402,6 +403,7 @@ def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
         user_name=user_row.get("name") or "",
         response_language=runtime.get("response_language") or getattr(config, "RESPONSE_LANGUAGE", "en"),
         extra="",
+        telegram_enabled=enabled(runtime),
     )
     system_prompt = system_prompt.rstrip() + (
         "\n\nYou are running unattended on a timer. There is no operator watching and "
@@ -421,6 +423,11 @@ def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
         for message in db.list_messages(conv["id"])[-window:]
         if message["role"] in ("user", "assistant") and message.get("content")
     ]
+
+    db.add_message(conv["id"], "user", prompt, {"task_id": row["id"], "autonomous": True})
+    # The engine consumes ctx.history verbatim: this run's prompt must be its
+    # last entry, or the model answers to the previous run instead of this one.
+    history.append({"role": "user", "content": prompt})
 
     ctx = AgentContext(
         user_id=uid,
@@ -478,6 +485,11 @@ def _collect_stream(engine, timeout: int) -> tuple[str, str]:
     if worker.is_alive():
         return "", f"the task did not finish within {timeout}s"
     return "".join(parts).strip(), (failure[0] if failure else "")
+
+
+# Public alias: the Telegram bot runs the same turn/collect machinery but on a
+# chat instead of a schedule.
+collect_stream = _collect_stream
 
 
 # ---- routes ------------------------------------------------------------

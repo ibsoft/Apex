@@ -430,6 +430,41 @@ class Config:
     # python-dotenv already loads for this module.
     SIP_ENV_FILE = os.getenv("SIP_ENV_FILE", str(BASE_DIR / ".env"))
 
+    # --- Telegram bot (chat by text or voice, with voice replies) -----------
+    # Off by default: it long-polls api.telegram.org and runs an agent turn per
+    # accepted message, so it must be turned on deliberately in the settings
+    # tab. The bot only answers chat ids it has been paired with through a
+    # pairing code (see tools/telegram_tools.py).
+    #
+    # TELEGRAM_BOT_TOKEN can also be set here as the *env default*. The tab
+    # stores its real token in the settings DB (never written back to this
+    # file), and "forget the bot" clears both the stored row and this fallback,
+    # so a pasted token can never come back after it was revoked.
+    TELEGRAM_ENABLED = _bool("TELEGRAM_ENABLED", False)
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    # How long a generated pairing code stays valid once it is shown. Short on
+    # purpose: whoever can send the code to the bot becomes the paired operator.
+    TELEGRAM_PAIRING_TTL_SECONDS = _int("TELEGRAM_PAIRING_TTL_SECONDS", 600)
+    # A single getUpdates long-poll stays open this many seconds.
+    TELEGRAM_POLL_TIMEOUT_SECONDS = _int("TELEGRAM_POLL_TIMEOUT_SECONDS", 25)
+    # Whether a reply to a *voice-note* message also comes back as a spoken
+    # voice note (ogg/opus) with the text caption under it. Text messages are
+    # always answered with plain text - fast, and never cut short by synthesis.
+    # Off makes even voice notes get a text-only reply.
+    TELEGRAM_VOICE_REPLIES = _bool("TELEGRAM_VOICE_REPLIES", True)
+    # The reply voice engine. edge needs internet but speaks Greek well; espeak
+    # is local and robotic. The reply language follows the setting
+    # ``response_language`` (el -> el-GR-AthinaNeural / espeak -v el).
+    TELEGRAM_TTS_ENGINE = os.getenv("TELEGRAM_TTS_ENGINE", "edge").strip().lower()
+    TELEGRAM_TTS_VOICE = os.getenv("TELEGRAM_TTS_VOICE", "").strip()
+    # Incoming voice notes are transcribed by the same faster-whisper virtualenv
+    # the SIP account uses; override only to point at a different interpreter.
+    TELEGRAM_WHISPER_PYTHON = os.getenv(
+        "TELEGRAM_WHISPER_PYTHON",
+        os.getenv("SIP_WHISPER_PYTHON", str(Path(BASE_DIR).parent / ".venv" / "sip-whisper" / "bin" / "python")),
+    ).strip()
+    TELEGRAM_WHISPER_MODEL = os.getenv("TELEGRAM_WHISPER_MODEL", "").strip()
+
     # --- On-screen shell output ---------------------------------------------
     # run_shell on_screen=true writes the captured output here for viewing and
     # download in a desktop window; files are cleaned up after this many seconds.

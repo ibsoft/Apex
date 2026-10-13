@@ -727,6 +727,8 @@ def create_skill_pack(
             encoding="utf-8")
         (pack_dir / "requirements.txt").write_text("", encoding="utf-8")
         created += [str(pack_dir / "README.md"), str(pack_dir / "requirements.txt")]
+        from tools.envfile import write_env_example
+        created.append(str(write_env_example(pack_dir / ".env")))
         if with_tests:
             tests_dir = pack_dir / "tests"
             tests_dir.mkdir(exist_ok=True)

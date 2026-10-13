@@ -264,6 +264,9 @@ class ScaffoldTests(Base):
         self.assertTrue(first["ok"], first)
         self.assertTrue((out / "made-here.md").exists())
         self.assertTrue((out / "made-here" / "tests").is_dir())
+        self.assertIn("created", first)
+        self.assertTrue((out / "made-here" / ".env-example").exists(),
+                        "every pack ships a key-only .env-example")
         second = tooling.create_skill_pack("made-here", "Again.", out_dir=out)
         self.assertFalse(second["ok"])
         self.assertIn("already exists", second["error"])

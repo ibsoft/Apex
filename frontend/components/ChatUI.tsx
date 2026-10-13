@@ -22,6 +22,7 @@ import AppsPanel from "./AppsPanel";
 import TasksPanel from "./TasksPanel";
 import VisioSettings from "./VisioSettings";
 import SipSettings from "./SipSettings";
+import TelegramSettings from "./TelegramSettings";
 import SettingsCard from "./SettingsCard";
 
 const C = {
@@ -1392,6 +1393,7 @@ export default function ChatUI() {
                 </SettingsCard>
                 <VisioSettings />
                 <SipSettings />
+                <TelegramSettings />
                 <SettingsCard title="Voice & language">
                   <Row label="Wake word">
                     <input style={inputBase} value={wake} onChange={(e) => void a.updateSettings({ wake_word: e.target.value })} />

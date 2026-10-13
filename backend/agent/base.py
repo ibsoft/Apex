@@ -35,6 +35,16 @@ ALWAYS_ON_TOOLS = frozenset({
     "task_index",
 })
 
+#: Telegram tools are force-included only while the bot is enabled: unlike the
+#: always-on floor above, they are a capability a deployment can be *drifting*
+#: past (a token not yet stored, a chat not yet paired). Leaving them inert
+#: would make the model promise messages that can never be sent.
+TELEGRAM_TOOLS = frozenset({"telegram_send", "telegram_status", "telegram_send_file"})
+
+
+def _runtime_truthy(value) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
 
 @dataclass
 class AgentContext:
@@ -87,6 +97,8 @@ class AgentContext:
                 return [t for t in pool if t.name not in banned]
             return pool
         names = set(self.skill_tools) | ALWAYS_ON_TOOLS
+        if _runtime_truthy(self.runtime.get("telegram_enabled")):
+            names |= TELEGRAM_TOOLS
         return [
             t for t in self.tools.active()
             if t.name in names and t.name not in banned

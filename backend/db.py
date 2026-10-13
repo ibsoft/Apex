@@ -27,6 +27,21 @@ class Database:
         conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        # The settings table holds secrets (SIP password, Telegram bot token),
+        # and sqlite creates the file world-readable under a normal umask, so a
+        # bot token in the settings row would be readable by every local user.
+        # Enforced on every open, not just at creation - a chmod elsewhere has
+        # no reason to exist, and idempotent chmod is cheap.
+        try:
+            import os
+
+            os.chmod(self.path, 0o600)
+            for side in ("-wal", "-shm"):
+                path = f"{self.path}{side}"
+                if os.path.exists(path):
+                    os.chmod(path, 0o600)
+        except OSError:
+            pass
         return conn
 
     def _init_schema(self):
