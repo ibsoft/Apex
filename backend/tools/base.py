@@ -98,7 +98,30 @@ class ToolRegistry:
             return f"tool error: unknown tool `{name}`"
         if not tool.enabled:
             return f"tool error: `{name}` is disabled"
-        return tool.call(args, ctx)
+        import time
+
+        started = time.perf_counter()
+        # `str(args)` is what the model actually sent, including the command a
+        # `terminal_command` call will run - the analyzer scans this. The writer
+        # redacts secrets before it is stored.
+        result = tool.call(args, ctx)
+        try:
+            from observability import record
+
+            record(
+                "info",
+                "tool",
+                "tool_call",
+                tool=name,
+                user_id=ctx.user_id,
+                conversation_id=ctx.conversation_id,
+                args=args,
+                result=result,
+                duration_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
+        except Exception:
+            pass
+        return result
 
 
 def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
@@ -158,5 +181,11 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     # Empty when TASKS_ENABLED is false, which is also what removes the task
     # tools from AgentContext.ACTIVE_TOOLS for that deployment.
     for tool in build_task_tools(config):
+        registry.register(tool)
+    # Audit-log tools (log_query / security_audit). Empty when the feature is
+    # off, so a deployment without it does not advertise them.
+    from tools.observability_tools import build_observability_tools
+
+    for tool in build_observability_tools(config):
         registry.register(tool)
     return registry

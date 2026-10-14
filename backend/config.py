@@ -570,6 +570,38 @@ class Config:
     # packages.microsoft.com (useful air-gapped / to freeze a version).
     INTEGRATIONS_ODBC_DEB_URL = os.getenv("INTEGRATIONS_ODBC_DEB_URL", "")
 
+    # ---- Observability / audit log ------------------------------------------
+    # A JSONL audit log of every request/response, error, debug record, chat,
+    # tool call and skill selection, plus a suspicious-activity analyzer the
+    # agent can run (security_audit / log_query). Files rotate by size and every
+    # value is redacted before it is written. Disable to turn the whole feature
+    # (hooks, tools, routes, scanner) off.
+    OBSERVABILITY_ENABLED = _bool("OBSERVABILITY_ENABLED", True)
+    # Where apex.jsonl and its rotated generations live. Under DATA_DIR so the
+    # existing backend/data/ gitignore already covers it.
+    OBSERVABILITY_LOG_DIR = Path(os.getenv("OBSERVABILITY_LOG_DIR", str(DATA_DIR / "logs")))
+    # Rotate the active file once it would cross this size (bytes); keep this
+    # many rotated generations besides the active one. Rotated files are
+    # gzip-compressed (apex.jsonl.1.gz ...); set OBSERVABILITY_COMPRESS=false to
+    # keep them as plain apex.jsonl.1 ... instead.
+    OBSERVABILITY_MAX_BYTES = _int("OBSERVABILITY_MAX_BYTES", 10 * 1024 * 1024)
+    OBSERVABILITY_BACKUP_COUNT = _int("OBSERVABILITY_BACKUP_COUNT", 5)
+    OBSERVABILITY_COMPRESS = _bool("OBSERVABILITY_COMPRESS", True)
+    # Record debug-level events (tool args, request bodies) and let the logging
+    # bridge forward DEBUG records. Off by default: it is the verbose tier.
+    OBSERVABILITY_DEBUG = _bool("OBSERVABILITY_DEBUG", False)
+    # Truncate every logged string to this many characters (secrets are masked
+    # separately by key name, this only bounds size).
+    OBSERVABILITY_BODY_MAX_CHARS = _int("OBSERVABILITY_BODY_MAX_CHARS", 2000)
+    # Ceiling on records returned by one /api/logs query.
+    OBSERVABILITY_MAX_QUERY = _int("OBSERVABILITY_MAX_QUERY", 500)
+    # Autonomous scanner: how often it runs, how far back it looks, and how long
+    # a finding is suppressed before it is raised again.
+    OBSERVABILITY_AUTO_SCAN = _bool("OBSERVABILITY_AUTO_SCAN", True)
+    OBSERVABILITY_SCAN_INTERVAL = _int("OBSERVABILITY_SCAN_INTERVAL", 300)
+    OBSERVABILITY_SCAN_WINDOW = _int("OBSERVABILITY_SCAN_WINDOW", 3600)
+    OBSERVABILITY_ALERT_COOLDOWN = _int("OBSERVABILITY_ALERT_COOLDOWN", 1800)
+
     @property
     def dev_auto_login(self) -> bool:
         wants = bool(self.DEV_AUTO_LOGIN) or (

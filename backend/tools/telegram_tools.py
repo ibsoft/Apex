@@ -34,6 +34,20 @@ import requests
 
 from tools.base import Tool
 
+
+def _audit(level: str, category: str, event: str, **fields) -> None:
+    """Append one audit-log event; a Telegram turn is a chat turn too.
+
+    Never raises: observability is best-effort and must not break the poller.
+    """
+    try:
+        from observability import record
+
+        record(level, category, event, **fields)
+    except Exception:
+        pass
+
+
 #: Settings keys the Telegram tab in the browser may write through the ordinary
 #: settings POST. Every one is a non-secret flag or voice preference. The bot
 #: token is deliberately not here: it is written only through its own validated
@@ -768,7 +782,7 @@ def _message_media(msg: dict) -> dict:
     return {}
 
 
-def run_message_turn(config, user_id: str, chat_id: str, text: str, username: str = "", spoken_reply: bool = False) -> tuple[str, str]:
+def run_message_turn(config, user_id: str, chat_id: str, text: str, username: str = "", spoken_reply: bool = False, voice: bool = False) -> tuple[str, str]:
     """One agent turn for a Telegram message. Returns ``(report, error)``.
 
     Mirrors ``tasks.run_task_turn``: same provider selection, memory, skills and
@@ -779,6 +793,8 @@ def run_message_turn(config, user_id: str, chat_id: str, text: str, username: st
     ``spoken_reply`` tells the model the answer will be read aloud as a voice
     note (the operator sent voice); it then keeps the reply to a few spoken
     sentences. Text turns get no such limit: the full answer, tools and all.
+    ``voice`` records whether the incoming message was a voice note, for the
+    audit log.
     """
     from auth import bearer_for_api, is_subscription_access
     from agent.base import AgentContext
@@ -887,6 +903,18 @@ def run_message_turn(config, user_id: str, chat_id: str, text: str, username: st
     # "re-runs the last command") instead of to what was just said.
     history.append({"role": "user", "content": message_text})
 
+    # Audit log: a Telegram turn is a chat turn like any other, so it lands in
+    # the same events the web path writes (source="telegram" tells them apart).
+    _audit(
+        "info", "chat", "chat_message",
+        role="user", source="telegram", user_id=uid, conversation_id=conv["id"],
+        skill=skill_name, voice=voice, chat_id=chat_id, username=username, text=message_text,
+    )
+    _audit(
+        "info", "skill", "skill_selected",
+        user_id=uid, conversation_id=conv["id"], skill=skill_name, source="telegram",
+    )
+
     ctx = AgentContext(
         user_id=uid,
         conversation_id=conv["id"],
@@ -920,9 +948,24 @@ def run_message_turn(config, user_id: str, chat_id: str, text: str, username: st
         conv["id"], "assistant", report or "", {"telegram": True, "chat_id": chat_id, **({"error": error} if error else {})},
     )
     if error:
+        _audit(
+            "error", "error", "chat_error",
+            user_id=uid, conversation_id=conv["id"], skill=skill_name, source="telegram",
+            chat_id=chat_id, message=str(error),
+        )
+        _audit(
+            "info", "chat", "chat_reply",
+            role="assistant", source="telegram", user_id=uid, conversation_id=conv["id"],
+            skill=skill_name, error=True, chat_id=chat_id, text=report or "",
+        )
         return "", error
     if not report.strip():
         return "", "the model returned nothing"
+    _audit(
+        "info", "chat", "chat_reply",
+        role="assistant", source="telegram", user_id=uid, conversation_id=conv["id"],
+        skill=skill_name, error=False, chat_id=chat_id, text=report,
+    )
     return report, ""
 
 
@@ -986,13 +1029,26 @@ def _handle_message(config, cfg: dict, msg: dict) -> None:
                                         "Send the pairing code shown there to continue.")
             return
         if not _redeem_permitted(chat_id):
+            # A rate-limited chat keeps guessing; record it, because a burst of
+            # pairing failures is exactly the brute-force signal the analyzer
+            # watches for (event "auth_failed").
+            _audit(
+                "warning", "auth", "auth_failed",
+                source="telegram", chat_id=chat_id, username=username,
+                reason="pairing attempts rate-limited",
+            )
             return
         if redeem_pairing_code(text, chat_id, username) is not None:
             _REDEEM_ATTEMPTS.pop(chat_id, None)
+            _audit("info", "auth", "telegram_paired", source="telegram", chat_id=chat_id, username=username)
             send_message(token, chat_id, "Paired. You can now talk to APEX here - "
                                         "text or voice notes, you will get the answer back.")
             return
         _note_redeem_failure(chat_id)
+        _audit(
+            "warning", "auth", "auth_failed",
+            source="telegram", chat_id=chat_id, username=username, reason="bad pairing code",
+        )
         return
 
     if chat_id != link["chat_id"]:
@@ -1023,6 +1079,7 @@ def _handle_message(config, cfg: dict, msg: dict) -> None:
     report, error = run_message_turn(
         config, link["user_id"], chat_id, text, username,
         spoken_reply=bool(was_voice and cfg.get("telegram_voice_replies")),
+        voice=was_voice,
     )
     if error:
         send_message(token, chat_id, f"I ran into a problem: {error[:800]}")

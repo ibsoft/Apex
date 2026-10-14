@@ -583,6 +583,15 @@ def create_app() -> Flask:
         register_integration_routes(app, require_user, config, integr_manage)
         integr_manage.start_monitor()
 
+    # --- Audit log / observability ------------------------------------------
+    # Request/response/error hooks + the logging bridge, the read-only REST
+    # surface, and the autonomous security scanner. Registered after the routes
+    # so its after_request hook (which reads the final response) runs first.
+    if getattr(config, "OBSERVABILITY_ENABLED", True):
+        from observability import init_app as init_observability
+
+        init_observability(app, require_user, config)
+
     def runtime(dotted: bool = False):
         """Effective runtime settings: DB overrides merged over env defaults."""
         return get_db().all_settings()
@@ -1620,6 +1629,20 @@ def create_app() -> Flask:
         if store_messages:
             db.add_message(conv["id"], "user", user_text, {"voice": voice_mode})
 
+        # Audit log: the operator's message and the skill the turn runs under.
+        # `record` is a no-op when OBSERVABILITY_ENABLED is false.
+        from observability import record
+
+        record(
+            "info", "chat", "chat_message",
+            role="user", user_id=uid, conversation_id=conv["id"],
+            skill=skill_name, voice=voice_mode, text=user_text,
+        )
+        record(
+            "info", "skill", "skill_selected",
+            user_id=uid, conversation_id=conv["id"], skill=skill_name,
+        )
+
         bearer = bearer_for_api(uid)
         mem = memory_or_none()
         provider_mgr = ProviderManager(
@@ -1919,6 +1942,12 @@ def create_app() -> Flask:
                                            ev.get("content", ""), {"steer": True})
                     elif ev["type"] == "error":
                         error_seen = True
+                        record(
+                            "error", "error", "chat_error",
+                            user_id=uid, conversation_id=conv["id"],
+                            skill=skill_name,
+                            message=str(ev.get("message") or ev.get("content") or "engine error"),
+                        )
                     elif ev["type"] == "done":
                         usage = ev.get("usage") or {}
                     yield event_ss(ev)
@@ -1929,6 +1958,13 @@ def create_app() -> Flask:
                     pass
 
             assistant_text = "".join(assistant_parts).strip()
+            record(
+                "info", "chat", "chat_reply",
+                role="assistant", user_id=uid, conversation_id=conv["id"],
+                skill=skill_name, error=error_seen,
+                tools=[t.get("name") for t in tool_events],
+                usage=usage, text=assistant_text,
+            )
             if store_messages:
                 if assistant_text or tool_events:
                     db.add_message(

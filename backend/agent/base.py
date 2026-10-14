@@ -51,6 +51,11 @@ INTEGRATION_TOOLS = frozenset({
     "integration_status",
 })
 
+#: Audit-log tools are force-included for every skill while the feature is on,
+#: so "was that suspicious?" or "what happened?" works without the operator
+#: picking a skill first. Registration itself is gated by OBSERVABILITY_ENABLED.
+OBSERVABILITY_TOOLS = frozenset({"log_query", "security_audit"})
+
 
 def _runtime_truthy(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes", "on"}
@@ -106,7 +111,7 @@ class AgentContext:
             if banned:
                 return [t for t in pool if t.name not in banned]
             return pool
-        names = set(self.skill_tools) | ALWAYS_ON_TOOLS | INTEGRATION_TOOLS
+        names = set(self.skill_tools) | ALWAYS_ON_TOOLS | INTEGRATION_TOOLS | OBSERVABILITY_TOOLS
         if _runtime_truthy(self.runtime.get("telegram_enabled")):
             names |= TELEGRAM_TOOLS
         return [

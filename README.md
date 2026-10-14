@@ -34,6 +34,7 @@ backend/    Flask API — OAuth, agents, tools, skills, ChromaDB memory
   - [Document upload](#document-upload)
 - [Web search, images and news](#web-search-images-and-news)
 - [Universal integrations (MCP / SQL / REST / GraphQL)](#universal-integrations-mcp--sql--rest--graphql)
+- [Audit log and security scanning](#audit-log-and-security-scanning)
 - [Obsidian vault integration](#obsidian-vault-integration)
 - [Local models](#local-models)
   - [Ollama](#ollama)
@@ -68,6 +69,11 @@ backend/    Flask API — OAuth, agents, tools, skills, ChromaDB memory
   table allow/deny lists, row caps and timeouts; credentials are encrypted at
   rest and never returned to the browser. See
   [Universal integrations](#universal-integrations-mcp--sql--rest--graphql).
+- **Audit log & security scanning** — a JSONL event log of every request,
+  response, error, tool call and chat, with secret redaction and rotation, plus
+  agent tools (`log_query` / `security_audit`) and an autonomous scanner that
+  flags reverse shells, credential access, exfiltration and brute-force
+  patterns. See [Audit log and security scanning](#audit-log-and-security-scanning).
 - **Memory** — ChromaDB vector store per user with automatic embedding fallback:
   OpenAI → Ollama → torch → local `hash-384` (works with zero keys). Upload
   documents from the UI to make them searchable.
@@ -600,6 +606,41 @@ in the tab. Set `INTEGRATIONS_ENABLED=false` to turn the whole feature off (no
 routes, no tools, no health monitor). See `backend/.env.example` for the
 `INTEGRATIONS_*` settings.
 
+## Audit log and security scanning
+
+APEX keeps its own JSONL audit log so it can answer "what happened?" and "was
+that malicious?" about everything it did — on request or on its own.
+
+- **What is logged.** Every HTTP request and response (method, path, status,
+  duration, user, and redacted bodies), unhandled errors with tracebacks, every
+  forwarded Python log record, every chat message and reply — including turns
+  that start **outside the browser** (Telegram chats `source=telegram`, scheduled
+  tasks `source=task`) — every tool call (including the command a
+  `terminal_command` ran), and skill selection.
+- **Secrets are redacted** by key name (`password`, `token`, `api_key`,
+  `authorization`, cookies/CSRF, …) before a line reaches disk, and every value
+  is truncated. The log lives in `OBSERVABILITY_LOG_DIR/apex.jsonl` and rotates
+  at `OBSERVABILITY_MAX_BYTES` (default 10 MB) to gzip-compressed `.1.gz`..`.N.gz`
+  backups (`OBSERVABILITY_COMPRESS=false` keeps them plain).
+- **Ask APEX directly.** The `log_query` and `security_audit` tools are
+  available in every skill: "check the logs for anything suspicious", "what did
+  the last terminal command do", "show me the errors from the last hour".
+- **Autonomous mode.** A background scanner (`OBSERVABILITY_AUTO_SCAN`, default
+  on) runs the analyzer over the recent window and records a `security_alert`
+  for anything it finds, at most once per cooldown. Rules cover reverse shells,
+  `curl | bash`, credential access, privilege escalation, destructive and
+  exfiltration commands, crypto miners, anti-forensics, and bursts of failed
+  logins / CSRF rejections / 5xx. Reconnaissance tools are ignored when they come
+  from the VAPT skill (which runs them by design) but caught through
+  `terminal_command`.
+- **Read-only REST**: `GET /api/logs`, `/api/logs/stats`, `/api/logs/alerts`
+  and `/api/logs/audit`. `scope=self` (the default for the tools) shows your own
+  activity plus system/security events; `scope=all` shows every operator's — the
+  audit log is machine-level, consistent with `terminal_command`.
+- Set `OBSERVABILITY_ENABLED=false` to turn the whole feature off (no hooks,
+  tools, routes or scanner). See `backend/.env.example` for the
+  `OBSERVABILITY_*` settings.
+
 ## Obsidian vault integration
 
 A dedicated **Obsidian** agent node and skill give the assistant full read/write
@@ -669,6 +710,12 @@ Chat & memory
 Obsidian
   /api/obsidian/file      GET — serve a vault attachment (path query param)
 
+Audit log
+  /api/logs               GET — query events (level/category/event/tool/text/since/scope)
+  /api/logs/stats         GET — log health (files, counts by level/category)
+  /api/logs/alerts        GET — persisted security findings
+  /api/logs/audit         GET — run the analyzer over a window
+
 Health
   /api/health
 ```
@@ -694,6 +741,13 @@ backend/
   skills/
     manager.py         skill discovery and prompt construction
     definitions/*.md   built-in skills (general, code, research, obsidian, …)
+  observability/
+    store.py           JSONL event log with rotation + redaction
+    analyzer.py        suspicious/malicious rule engine
+    middleware.py      Flask request/error hooks + logging bridge
+    tools.py           log_query / security_audit agent tools
+    scanner.py         autonomous background scanner
+    routes.py          GET /api/logs* (read-only)
 
 frontend/
   lib/api.ts           typed API client + SSE parser

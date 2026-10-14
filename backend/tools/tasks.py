@@ -342,6 +342,16 @@ def _log(message: str) -> None:
     print(f"[tasks] {message}", flush=True)
 
 
+def _audit(level: str, category: str, event: str, **fields) -> None:
+    """Append one audit-log event for an autonomous run. Never raises."""
+    try:
+        from observability import record
+
+        record(level, category, event, **fields)
+    except Exception:
+        pass
+
+
 def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
     """Run one agent turn for a task. Returns ``(report, error)``.
 
@@ -429,6 +439,18 @@ def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
     # last entry, or the model answers to the previous run instead of this one.
     history.append({"role": "user", "content": prompt})
 
+    # Audit log: an autonomous run is a chat turn with no browser; recording it
+    # is what makes "what did the agent do on its own?" answerable later.
+    _audit(
+        "info", "chat", "chat_message",
+        role="user", source="task", user_id=uid, conversation_id=conv["id"],
+        skill=skill_name, task_id=row["id"], text=prompt,
+    )
+    _audit(
+        "info", "skill", "skill_selected",
+        user_id=uid, conversation_id=conv["id"], skill=skill_name, source="task",
+    )
+
     ctx = AgentContext(
         user_id=uid,
         conversation_id=conv["id"],
@@ -456,9 +478,24 @@ def run_task_turn(row: dict, timeout: int = 600) -> tuple[str, str]:
         {"task_id": row["id"], "autonomous": True, **({"error": error} if error else {})},
     )
     if error:
+        _audit(
+            "error", "error", "chat_error",
+            user_id=uid, conversation_id=conv["id"], skill=skill_name, source="task",
+            task_id=row["id"], message=str(error),
+        )
+        _audit(
+            "info", "chat", "chat_reply",
+            role="assistant", source="task", user_id=uid, conversation_id=conv["id"],
+            skill=skill_name, error=True, task_id=row["id"], text=report or "",
+        )
         return "", error
     if not report.strip():
         return "", "the model returned nothing"
+    _audit(
+        "info", "chat", "chat_reply",
+        role="assistant", source="task", user_id=uid, conversation_id=conv["id"],
+        skill=skill_name, error=False, task_id=row["id"], text=report,
+    )
     return report, ""
 
 
