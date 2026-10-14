@@ -1027,6 +1027,101 @@ returns only `credentials_set`, the *names* of the secrets it holds.
   stream shape; `DepsTests` covers auto-provisioning without the network),
   `frontend/tests/panel-commands.test.cjs` (the tab phrases).
 
+## Audit log and suspicious-activity detection (`observability/`)
+
+`backend/observability/` is a JSONL audit log with rotation, a rule-based
+analyzer, agent tools, read-only REST and an autonomous scanner. The point is
+that APEX can answer "what happened?" and "was that malicious?" about its own
+skills, tools and chats - on request or by itself. Everything is gated by
+`OBSERVABILITY_ENABLED` (default on) and `OBSERVABILITY_*` in `config.py`.
+
+One writer, one lock, one file: `observability/store.py::EventLog` appends one
+JSON object per line to `OBSERVABILITY_LOG_DIR/apex.jsonl` and rotates at
+`OBSERVABILITY_MAX_BYTES` (default 10 MB) to `.1.gz`..`.N.gz` — the active file
+stays plain text (cheap appends, tailable) and every rotated generation is
+gzip-compressed (`OBSERVABILITY_COMPRESS=false` keeps them plain). `read()`,
+`iter_all()` and `stats()` decompress transparently, and `_gzip_to` removes the
+active file only after a successful compression, so a rotation that fails never
+loses a record. `get_log()` is the process singleton. **`append` redacts
+before it writes** (`observability/events.py::redact` masks sensitive *keys* and
+truncates long strings), so a caller cannot leak a secret by forgetting - but
+redaction is by key name, so a password typed verbatim into a chat message is
+still stored. That is the trade the feature makes: it is an audit log.
+
+Four choke points feed it, chosen because each is the only path to its
+category:
+
+- **HTTP**: `observability/middleware.py::install` registers a `before_request`
+  (start time, and the request body only when `OBSERVABILITY_DEBUG`) and an
+  `after_request` (method, path, status, duration, user, redacted
+  request/response bodies). It uses Flask's `got_request_exception` **signal**,
+  not `@app.errorhandler(Exception)`: a registered handler would intercept the
+  exception before Flask's testing/debug propagation and silently change error
+  semantics. The signal fires in both paths. `got_request_exception` is also why
+  no route 500 is unlogged.
+  The hook **skips its own noise**: `_SKIP_PREFIXES = ("/api/logs",)` (the UI
+  polls the log API) and `_SKIP_SUFFIXES = ("/drain",)` — the terminal drain is
+  a 160ms non-consuming byte-cursor poll (the same path `frontend/lib/pwa.ts`
+  refuses to cache), and logging it would churn the rotation and bury real
+  security events. The `terminal_command` tool call that produced the output is
+  still recorded at the tool choke point, so no forensic signal is lost. A
+  streamed/SSE body is never read (`_body` returns `None` for
+  `is_streamed`/`direct_passthrough`), so a chat turn stream is not buffered.
+- **Python logging**: a root `logging.Handler` forwards records, so every
+  existing `app.logger.exception(...)` / `logger.warning(...)` lands in the same
+  stream. One handler is reused and re-pointed at the current log so a test that
+  swaps the singleton does not double-write. The `werkzeug` logger is quieted -
+  the request hook already covers access logging.
+- **Tools**: `tools/base.py::ToolRegistry.invoke` logs `args` and `result` after
+  every call. This is the single point through which every engine (responses /
+  agents_sdk / langgraph) runs a tool, so `terminal_command`'s command string -
+  the thing the analyzer scans - is always recorded.
+- **Chat / skill / agent**: `app.py`'s `/api/chat` records the user message,
+  skill selection, engine error events and the assistant reply. The full reply
+  text is stored (truncated), which is what makes "what did the agent do" and
+  chat-content forensics possible.
+- **Telegram and tasks are chat turns too, and they do not go through
+  `/api/chat`.** A fix at the route cannot see them, so both write the same
+  `chat_message` / `skill_selected` / `chat_reply` events themselves through a
+  local `_audit` helper: `tools/telegram_tools.py::run_message_turn`
+  (`source="telegram"`, plus `chat_id`/`username`) and
+  `tools/tasks.py::run_task_turn` (`source="task"`, plus `task_id`). A Telegram
+  pairing attempt that fails is logged as `event="auth_failed"`
+  (`category="auth"`), so the brute-force rule counts a burst of bad pairing
+  codes the same way it counts failed logins. **When adding a new way an agent
+  turn can start, it needs its own write** - the request hook only sees browser
+  traffic and the tool hook only sees tool calls, never the message or reply.
+
+`observability/analyzer.py::analyze` runs signature rules (reverse shell,
+`curl | bash`, credential access, privilege escalation, destructive commands,
+exfiltration endpoints, crypto miners, firewall/anti-forensics) and behavioural
+rules (an auth-failure / CSRF / 5xx burst). Two traps are already handled: it
+matches a **flattened** payload (`_event_text` puts each string leaf on its own
+line), because matching `json.dumps(args)` puts a quote before the command and
+breaks a `(?:^|\s)`-anchored rule - the same "prefix matcher" class of bug the
+command router documents; and the recon rule **ignores `vapt_*` tools**, because
+VAPT runs nmap by design while the identical command through `terminal_command`
+is exactly what must be caught.
+
+- Agent tools live in `observability/tools.py` (`log_query` / `security_audit`),
+  built through `tools/observability_tools.py` and force-included for every
+  skill via `agent/base.py::OBSERVABILITY_TOOLS`, the same as `terminal_command`:
+  the operator should not have to pick a skill to ask what happened.
+- `observability/scanner.py` starts one daemon thread per process
+  (`start_scanner` is guarded; `reset_scanner` is the test seam), scans the
+  recent window and writes a persistent `security_alert` event per finding,
+  re-raising at most once per `OBSERVABILITY_ALERT_COOLDOWN` so a sustained
+  condition does not bury the log. That is "autonomous mode".
+- `observability/routes.py` adds `GET /api/logs`, `/api/logs/stats`,
+  `/api/logs/alerts` and `/api/logs/audit`, all `require_user`. They are
+  read-only and default to `scope=all` (the audit log is machine-level, and any
+  authenticated operator already has full machine control via
+  `terminal_command`); `scope=self` filters to the caller's events, and an event
+  with no owner (system/security) is visible in both scopes.
+- Tests: `backend/tests/test_observability.py` (store + rotation + redaction,
+  analyzer rules and their false-positive guards, middleware via a minimal app,
+  routes, tools, scanner). Nothing there needs the DB or the live backend.
+
 ## Common extension points
 
 - New search source: add a tool in `core_tools.py` (or a new module) and expose

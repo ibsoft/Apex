@@ -424,6 +424,77 @@ class TelegramTurnTests(TelegramTestCase):
         self.assertEqual(ctx.skill_name, "general")
 
 
+class TelegramAuditTests(TelegramTestCase):
+    """Telegram is a chat channel: its turns must land in the audit log too."""
+
+    def _run_turn(self, text, reply, voice=False):
+        class _FakeProvider:
+            pass
+
+        def fake_build(name, ctx):
+            return name
+
+        with patch("models.providers.ProviderManager") as pm, \
+             patch("agent.factory.build_engine", side_effect=fake_build), \
+             patch("tools.tasks.collect_stream", return_value=(reply, "")), \
+             patch("skills.manager.route_skill", return_value="general"):
+            pm.return_value.build.return_value = _FakeProvider()
+            from tools.telegram_tools import run_message_turn
+
+            return run_message_turn(config, "alice", "audit-chat-1", text, "aliceu", voice=voice)
+
+    def test_turn_is_logged_as_chat_message_and_reply(self):
+        from observability.store import get_log
+
+        report, err = self._run_turn("marker-inbound-xyz", "marker-reply-xyz")
+        self.assertEqual((report, err), ("marker-reply-xyz", ""))
+        log = get_log()
+        msgs = log.read(event="chat_message", source="telegram", text="marker-inbound-xyz")
+        self.assertTrue(msgs)
+        self.assertEqual(msgs[0]["role"], "user")
+        self.assertEqual(msgs[0]["chat_id"], "audit-chat-1")
+        self.assertEqual(msgs[0]["skill"], "general")
+        replies = log.read(event="chat_reply", source="telegram", text="marker-reply-xyz")
+        self.assertTrue(replies)
+        self.assertEqual(replies[0]["role"], "assistant")
+        self.assertEqual(replies[0]["conversation_id"], msgs[0]["conversation_id"])
+        self.assertTrue(log.read(event="skill_selected", source="telegram", text="general"))
+
+    def test_voice_flag_recorded(self):
+        from observability.store import get_log
+
+        self._run_turn("marker-voice-inbound", "marker-voice-reply", voice=True)
+        rec = get_log().read(event="chat_message", source="telegram", text="marker-voice-inbound")[0]
+        self.assertTrue(rec["voice"])
+
+    def test_bad_pairing_code_is_logged_as_auth_failure(self):
+        from observability.store import get_log
+
+        cfg = self.cfg(telegram_bot_token=GOOD_TOKENS[0])
+        msg = {"chat": {"id": 424242, "type": "private"},
+               "from": {"username": "intruder"}, "text": "WRONG1"}
+        with patch("tools.telegram_tools.send_message"):
+            from tools.telegram_tools import _handle_message
+
+            _handle_message(config, cfg, msg)
+        recs = get_log().read(event="auth_failed", text="intruder")
+        self.assertTrue(recs)
+        self.assertEqual(recs[0]["source"], "telegram")
+
+    def test_successful_pairing_is_logged(self):
+        from observability.store import get_log
+
+        cfg = self.cfg(telegram_bot_token=GOOD_TOKENS[0])
+        msg = {"chat": {"id": 424243, "type": "private"},
+               "from": {"username": "friend"}, "text": "GOOD12"}
+        with patch("tools.telegram_tools.send_message"), \
+             patch("tools.telegram_tools.redeem_pairing_code", return_value="alice"):
+            from tools.telegram_tools import _handle_message
+
+            _handle_message(config, cfg, msg)
+        self.assertTrue(get_log().read(event="telegram_paired", text="friend"))
+
+
 class TelegramRouteTests(TelegramTestCase):
     def client(self):
         client = self._app().test_client()
