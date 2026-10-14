@@ -21,7 +21,7 @@
    signed-out session, a crash in the panel) the caller gets a truthful message
    instead of hanging.
  */
-export type PanelTabName = "chat" | "history" | "settings" | "memory" | "apps" | "tasks";
+export type PanelTabName = "chat" | "history" | "settings" | "memory" | "apps" | "tasks" | "mcp";
 
 /** Every name the panel actually renders, for validating a `?panel=` deep link
  *  (see the manifest shortcut in public/manifest.webmanifest). A hand-kept copy
@@ -34,6 +34,7 @@ export const PANEL_TAB_NAMES: readonly PanelTabName[] = [
   "memory",
   "apps",
   "tasks",
+  "mcp",
 ];
 
 export type PanelCommand = {

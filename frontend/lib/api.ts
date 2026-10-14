@@ -368,6 +368,73 @@ export type AuthStatus = {
 export type LoginResult = { ok: boolean; user: User; csrf_token: string };
 export type LoginError = { error: string; retry_after?: number };
 
+/* ---------- integrations (MCP tab) ---------- */
+export type IntegrationKind = {
+  kind: string;
+  group: "mcp" | "sql" | "http";
+  secrets: string[];
+  transports?: string[];
+};
+
+export type IntegrationHealth = {
+  last_status: string | null;
+  last_error: string | null;
+  last_latency_ms: number | null;
+  last_checked_at: number | null;
+};
+
+export type IntegrationConnection = {
+  id: string;
+  kind: string;
+  name: string;
+  description: string;
+  config: Record<string, any>;
+  system_prompt: string;
+  enabled: boolean;
+  readonly: boolean;
+  allowed_tables: string[];
+  denied_tables: string[];
+  allowed_operations: string[];
+  max_rows: number;
+  timeout_seconds: number;
+  skills: string[];
+  credentials_set: string[];
+  health?: IntegrationHealth;
+  last_status?: string | null;
+  last_error?: string | null;
+  last_checked_at?: number | null;
+};
+
+export type IntegrationDraft = {
+  kind: string;
+  name: string;
+  description?: string;
+  config?: Record<string, any>;
+  credentials?: Record<string, string>;
+  credentials_clear?: string[];
+  system_prompt?: string;
+  enabled?: boolean;
+  readonly?: boolean;
+  allowed_tables?: string[];
+  denied_tables?: string[];
+  allowed_operations?: string[];
+  max_rows?: number;
+  timeout_seconds?: number;
+  skills?: string[];
+};
+
+export type IntegrationAuditEntry = {
+  id: number;
+  ts: number;
+  connection_id: string;
+  kind: string;
+  detail: string;
+  rows: number;
+  duration_ms: number | null;
+  ok: number;
+  error: string;
+};
+
 /* The token is cached by the module, so a page that never calls status()
    (impossible in practice, but cheap to be safe about) still fails closed
    rather than sending a request with no protection and no explanation. */
@@ -635,6 +702,50 @@ export const api = {
       }
       return resp.json() as Promise<{ ok: boolean; token: string; name: string; mime: string }>;
     },
+  },
+
+  /** Universal integrations (MCP tab). Owner-scoped; secrets are masked on the
+   * server (`credentials_set` is a list of names, never values). */
+  integrations: {
+    kinds: () =>
+      json<{ kinds: IntegrationKind[]; enabled: boolean }>("/api/integrations/kinds"),
+    list: () =>
+      json<{ connections: IntegrationConnection[] }>("/api/integrations"),
+    get: (id: string) =>
+      json<{ connection: IntegrationConnection }>(`/api/integrations/${id}`),
+    create: (draft: IntegrationDraft) =>
+      json<{ connection: IntegrationConnection }>("/api/integrations", {
+        method: "POST",
+        body: JSON.stringify(draft),
+      }),
+    update: (id: string, patch: Partial<IntegrationDraft>) =>
+      json<{ connection: IntegrationConnection }>(`/api/integrations/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    remove: (id: string) =>
+      json<{ deleted: string }>(`/api/integrations/${id}`, { method: "DELETE" }),
+    test: (id: string) =>
+      json<{ health: IntegrationHealth }>(`/api/integrations/${id}/test`, { method: "POST" }),
+    discover: (id: string, force = true) =>
+      json<{ discovery: any }>(`/api/integrations/${id}/discover`, {
+        method: "POST",
+        body: JSON.stringify({ force }),
+      }),
+    query: (id: string, payload: Record<string, any>) =>
+      json<{ result: any }>(`/api/integrations/${id}/query`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }).then((r) => r.result),
+    ask: (id: string, request: string, execute = true) =>
+      json<{ result: any }>(`/api/integrations/${id}/ask`, {
+        method: "POST",
+        body: JSON.stringify({ request, execute }),
+      }).then((r) => r.result),
+    audit: (id?: string, limit = 50) =>
+      json<{ audit: IntegrationAuditEntry[] }>(
+        id ? `/api/integrations/${id}/audit?limit=${limit}` : `/api/integrations/audit?limit=${limit}`,
+      ),
   },
 
   /** Stream a chat turn over SSE. onEvent receives parsed events. Returns the meta/conversation info. */

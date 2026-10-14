@@ -536,6 +536,40 @@ class Config:
     DEV_AUTO_LOGIN = os.getenv("DEV_AUTO_LOGIN", "").strip()
     DEV_AUTO_LOGIN_WITH_SYSTEM_LOGIN = _bool("DEV_AUTO_LOGIN_WITH_SYSTEM_LOGIN", False)
 
+    # --- Universal integrations (MCP / SQL / REST / GraphQL) ----------------
+    # The MCP tab in the UI manages connections to MCP servers, SQL databases,
+    # REST/GraphQL APIs and remote services. When enabled, the integration tools
+    # (integration_query / integration_discover / integration_status) are offered
+    # to every skill and the health monitor thread is started. The per-connection
+    # credentials are encrypted with a key derived from SECRET_KEY and stored in
+    # DATA_DIR/integrations.db (chmod 0600, gitignored).
+    INTEGRATIONS_ENABLED = _bool("INTEGRATIONS_ENABLED", True)
+    # Where connection rows + the audit log live. Keep it under DATA_DIR so the
+    # existing backend/data/ gitignore covers it.
+    INTEGRATIONS_DB = Path(os.getenv("INTEGRATIONS_DB", str(DATA_DIR / "integrations.db")))
+    # Default per-connection limits (seconds, rows) and health polling interval.
+    INTEGRATIONS_QUERY_TIMEOUT = _int("INTEGRATIONS_QUERY_TIMEOUT", 10)
+    INTEGRATIONS_DEFAULT_MAX_ROWS = _int("INTEGRATIONS_DEFAULT_MAX_ROWS", 500)
+    INTEGRATIONS_MAX_RESULT_CHARS = _int("INTEGRATIONS_MAX_RESULT_CHARS", 12000)
+    INTEGRATIONS_HEALTH_INTERVAL = _int("INTEGRATIONS_HEALTH_INTERVAL", 300)
+    # Ceiling on how much per-connection prompt is appended to a chat turn.
+    INTEGRATIONS_PROMPT_MAX_CHARS = _int("INTEGRATIONS_PROMPT_MAX_CHARS", 8000)
+    # MCP client process spawn + connection budget, in seconds.
+    INTEGRATIONS_MCP_TIMEOUT = _int("INTEGRATIONS_MCP_TIMEOUT", 15)
+    # When a SQL driver (Python package or the SQL Server ODBC library) is
+    # missing, install it automatically instead of asking the operator to. The
+    # SQL Server ODBC library is fetched from Microsoft's own .deb and unpacked
+    # into DATA_DIR/odbc (no root needed); the Python drivers come from pip.
+    # Set false to disable all network installs and get the plain
+    # "driver not installed" reason.
+    INTEGRATIONS_AUTO_INSTALL = _bool("INTEGRATIONS_AUTO_INSTALL", True)
+    # Where an auto-provisioned SQL Server ODBC driver is unpacked. Defaults to
+    # DATA_DIR/odbc (gitignored with the rest of DATA_DIR).
+    INTEGRATIONS_ODBC_DIR = Path(os.getenv("INTEGRATIONS_ODBC_DIR", str(DATA_DIR / "odbc")))
+    # Pin the SQL Server ODBC .deb URL instead of resolving the newest one from
+    # packages.microsoft.com (useful air-gapped / to freeze a version).
+    INTEGRATIONS_ODBC_DEB_URL = os.getenv("INTEGRATIONS_ODBC_DEB_URL", "")
+
     @property
     def dev_auto_login(self) -> bool:
         wants = bool(self.DEV_AUTO_LOGIN) or (

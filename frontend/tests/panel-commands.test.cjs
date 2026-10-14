@@ -78,9 +78,16 @@ test('go to each tab by name', () => {
     ['Go to settings', 'settings'],
     ['Go to memory', 'memory'],
     ['Go to apps', 'apps'],
+    ['Go to mcp', 'mcp'],
   ]) {
     assert.deepEqual(parse(phrase, 'en'), { type: 'panel', action: 'open', tab }, phrase);
   }
+});
+
+test('go to the integrations tab accepts the everyday synonyms', () => {
+  assert.deepEqual(parse('open mcp', 'en'), { type: 'panel', action: 'open', tab: 'mcp' });
+  assert.deepEqual(parse('go to integrations', 'en'), { type: 'panel', action: 'open', tab: 'mcp' });
+  assert.deepEqual(parse('show me connections', 'en'), { type: 'panel', action: 'open', tab: 'mcp' });
 });
 
 test('go to a tab accepts the everyday synonyms', () => {
@@ -98,6 +105,8 @@ test('go to a tab in Greek', () => {
   assert.deepEqual(parse('πήγαινε στις ρυθμίσεις', 'el'), { type: 'panel', action: 'open', tab: 'settings' });
   assert.deepEqual(parse('πήγαινε στη μνήμη', 'el'), { type: 'panel', action: 'open', tab: 'memory' });
   assert.deepEqual(parse('πήγαινε στις εφαρμογές', 'el'), { type: 'panel', action: 'open', tab: 'apps' });
+  assert.deepEqual(parse('πήγαινε στις συνδέσεις', 'el'), { type: 'panel', action: 'open', tab: 'mcp' });
+  assert.deepEqual(parse('πήγαινε στις ολοκληρώσεις', 'el'), { type: 'panel', action: 'open', tab: 'mcp' });
 });
 
 test('"go to" something that is not a tab never opens a panel', () => {
