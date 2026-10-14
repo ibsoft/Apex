@@ -473,6 +473,15 @@ update_apex() {
       && ok "backend dependencies up to date" \
       || warn "pip install failed — check the backend service"
   fi
+  # The SQL Server ODBC library is a system package pip cannot install. Provision
+  # it into the user-owned INTEGRATIONS_ODBC_DIR (no root) so the MCP tab's SQL
+  # Server kind works without asking the operator to run apt.
+  if [[ -x "$ROOT/.venv/bin/python" && -f "$ROOT/scripts/install_sql_drivers.py" ]]; then
+    spinner "provisioning the SQL Server ODBC driver" \
+      "$ROOT/.venv/bin/python" "$ROOT/scripts/install_sql_drivers.py" \
+      && ok "SQL Server ODBC driver ready" \
+      || warn "SQL Server ODBC driver not provisioned (MCP servers still work)"
+  fi
   if [[ -d "$ROOT/frontend/node_modules" ]]; then
     spinner "installing frontend deps (npm)" npm --prefix "$ROOT/frontend" install --silent \
       && ok "frontend dependencies up to date" \

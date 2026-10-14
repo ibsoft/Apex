@@ -33,6 +33,7 @@ backend/    Flask API — OAuth, agents, tools, skills, ChromaDB memory
   - [Vector store](#vector-store)
   - [Document upload](#document-upload)
 - [Web search, images and news](#web-search-images-and-news)
+- [Universal integrations (MCP / SQL / REST / GraphQL)](#universal-integrations-mcp--sql--rest--graphql)
 - [Obsidian vault integration](#obsidian-vault-integration)
 - [Local models](#local-models)
   - [Ollama](#ollama)
@@ -61,6 +62,12 @@ backend/    Flask API — OAuth, agents, tools, skills, ChromaDB memory
 - **Tools** — web search, web image search, web news search, web fetch, weather,
   calculator, current time, sandboxed `run_python` (opt-in), a full Obsidian
   vault toolset, and memory `remember` / `recall` / `forget`.
+- **Universal integrations (MCP tab)** — connect APEX to MCP servers, SQL
+  databases (PostgreSQL, MySQL, SQL Server, SQLite, Oracle), REST APIs and
+  GraphQL endpoints. Connections are read-only by default with per-connection
+  table allow/deny lists, row caps and timeouts; credentials are encrypted at
+  rest and never returned to the browser. See
+  [Universal integrations](#universal-integrations-mcp--sql--rest--graphql).
 - **Memory** — ChromaDB vector store per user with automatic embedding fallback:
   OpenAI → Ollama → torch → local `hash-384` (works with zero keys). Upload
   documents from the UI to make them searchable.
@@ -552,6 +559,46 @@ The assistant searches the public web through DuckDuckGo (`ddgs`):
 The model is instructed to respect requested counts (e.g. "one image"), add
 `site:` filters when a source is named (e.g. "from LinkedIn"), and only return
 results whose title/source matches the subject.
+
+## Universal integrations (MCP / SQL / REST / GraphQL)
+
+The **MCP** tab manages connections to the outside world. One panel covers:
+
+- **MCP servers** over stdio (a local command), http or sse.
+- **SQL databases** — PostgreSQL, MySQL, SQL Server, SQLite and Oracle.
+- **REST APIs** discovered from an OpenAPI document.
+- **GraphQL endpoints.**
+
+Add a connection, then use **Test**, **Discover** (list tables, MCP tools,
+REST operations or GraphQL fields) and the query console; the agent also gets
+`integration_status` / `integration_query` / `integration_discover` tools and a
+per-connection context block so it can act on the connection directly.
+
+Safety is enforced on the server, not in the UI:
+
+- **Read-only by default.** A connection is `readonly` with
+  `allowed_operations=["select"]` until you change it. `DROP` / `ALTER` /
+  `TRUNCATE` and other DDL are always refused, and a read query is kept to a
+  single statement.
+- **Table allow / deny lists** restrict which tables can be touched, and a
+  **row cap** plus a **timeout** bound every query.
+- **Credentials are encrypted at rest** (Fernet, key derived from `SECRET_KEY`)
+  and are never returned to the browser — the API reports only the *names* of
+  the secrets it holds. Remote MCP auth uses the `bearer_token` / `api_key`
+  secret fields; a stdio server's non-secret env vars ride in its config.
+- **Failures are normal messages, and missing pieces install themselves.** The
+  SQL drivers are listed in `backend/requirements.txt` (SQLite needs none); a
+  missing one is installed automatically — Python drivers via pip, and for SQL
+  Server Microsoft's ODBC Driver 18 is unpacked from Microsoft's `.deb` into
+  `DATA_DIR/odbc` with no root needed. Disable with
+  `INTEGRATIONS_AUTO_INSTALL=false`. If a driver still cannot be provided it is
+  reported as "driver not installed". Another user's connection answers `404`,
+  never `403`.
+
+Every connection read and write is recorded in a per-connection audit log shown
+in the tab. Set `INTEGRATIONS_ENABLED=false` to turn the whole feature off (no
+routes, no tools, no health monitor). See `backend/.env.example` for the
+`INTEGRATIONS_*` settings.
 
 ## Obsidian vault integration
 

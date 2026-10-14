@@ -21,6 +21,7 @@ class ToolContext:
     emit: Optional[Callable[[dict], None]] = None  # push agent events mid-tool
     model: str = ""
     session: Any = None
+    provider: Any = None          # ModelProvider, for generation inside a tool
     output_destination: str = ""  # Explicit browser output app, e.g. notepad.
     focused_terminal: str = ""    # session id of the browser-focused terminal window
     terminal_map: tuple = ()      # session ids in the operator's on-screen order;
@@ -128,6 +129,13 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     # started by register_telegram_routes, not by tool registration.
     for tool in build_telegram_tools(config):
         registry.register(tool)
+    # Integration tools: only when the feature is on, so a deployment that turns
+    # it off does not advertise tools that would always answer "not configured".
+    if getattr(config, "INTEGRATIONS_ENABLED", False):
+        from integrations.tools import build_integration_tools
+
+        for tool in build_integration_tools():
+            registry.register(tool)
     for tool in build_core_tools(registry, config):
         registry.register(tool)
     if memory is not None:

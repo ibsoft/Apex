@@ -20,6 +20,7 @@ import { type ChatAttachment, attachmentsFromUpload, buildDocumentContext } from
 import FileDownloads, { backendFileHref } from "./FileDownloads";
 import AppsPanel from "./AppsPanel";
 import TasksPanel from "./TasksPanel";
+import McpPanel from "./McpPanel";
 import VisioSettings from "./VisioSettings";
 import SipSettings from "./SipSettings";
 import TelegramSettings from "./TelegramSettings";
@@ -715,7 +716,7 @@ function ProfileMenu({
   );
 }
 
-type Tab = "chat" | "hist" | "settings" | "memory" | "apps" | "tasks";
+type Tab = "chat" | "hist" | "settings" | "memory" | "apps" | "tasks" | "mcp";
 
 const TAB_FROM_COMMAND: Record<PanelTabName, Tab> = {
   chat: "chat",
@@ -724,6 +725,7 @@ const TAB_FROM_COMMAND: Record<PanelTabName, Tab> = {
   memory: "memory",
   apps: "apps",
   tasks: "tasks",
+  mcp: "mcp",
 };
 
 export default function ChatUI() {
@@ -1106,7 +1108,7 @@ export default function ChatUI() {
 
           {/* tabs */}
           <nav style={{ display: "flex", borderBottom: `1px solid ${C.line}` }}>
-            {(["chat", "hist", "tasks", "settings", "memory", "apps"] as const).map((t) => (
+            {(["chat", "hist", "tasks", "settings", "memory", "apps", "mcp"] as const).map((t) => (
               <button key={t} onClick={() => setTab(t)}
                 style={{
                   flex: 1, padding: "9px 4px", fontSize: 9.5, letterSpacing: "0.14em", cursor: "pointer",
@@ -1538,6 +1540,8 @@ export default function ChatUI() {
             {tab === "apps" && <AppsPanel />}
 
             {tab === "tasks" && <TasksPanel />}
+
+            {tab === "mcp" && <McpPanel />}
           </div>
         </aside>
       )}

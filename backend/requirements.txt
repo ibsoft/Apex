@@ -15,3 +15,36 @@ openpyxl>=3.1
 python-pptx>=1.0.2
 matplotlib>=3.9
 edge-tts>=7.0,<8
+mcp>=2.0
+
+# SQL drivers for the MCP tab's database kinds. Every connector imports its
+# driver lazily, so a missing one is reported in the tab as "driver not
+# installed" rather than breaking the backend at startup - but they are listed
+# here so one `pip install -r requirements.txt` covers every kind. SQLite uses
+# the Python stdlib and needs nothing.
+psycopg2-binary>=2.9     # PostgreSQL
+pymysql>=1.1             # MySQL / MariaDB
+pyodbc>=5.1              # SQL Server - ALSO needs an ODBC driver in the OS (below)
+oracledb>=2.4            # Oracle (thin mode; no Oracle client libraries required)
+#
+# SQL Server additionally needs Microsoft's "ODBC Driver 18 for SQL Server".
+# It is a system package, not a pip one, so it cannot live in this file. On
+# Ubuntu 24.04 (noble), as root:
+#
+#   curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+#     | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+#   curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/prod.list \
+#     | sudo tee /etc/apt/sources.list.d/mssql-release.list
+#   sudo apt-get update
+#   sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+#   # only needed if pip finds no prebuilt pyodbc wheel for your Python:
+#   sudo apt-get install -y unixodbc-dev
+#
+# Then confirm pyodbc can see it, and use the reported name as the connection's
+# "driver" field:
+#
+#   odbcinst -q -d
+#   python -c "import pyodbc; print(pyodbc.drivers())"
+#
+# (Other Ubuntu releases: swap 24.04 in the prod.list URL for your version.)
+

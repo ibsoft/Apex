@@ -931,6 +931,102 @@ returns `None` when no email skill is loaded, and `_CODEISH_RE` still wins so
 `test_skill_routing.py` (`ForceEmailSkillTests`, the route-bypass case) and
 `test_skills.py` (`VoicePromptTests`, `SecretPromptTests`).
 
+## Universal integrations (MCP / SQL / REST / GraphQL)
+
+`backend/integrations/` is the whole feature; `frontend/components/McpPanel.tsx`
+is the MCP tab. One panel manages connections to MCP servers (stdio/http/sse),
+SQL databases (PostgreSQL, MySQL, SQL Server, SQLite, Oracle), REST APIs
+(discovered from an OpenAPI document) and GraphQL endpoints. Connections are
+owner-scoped rows in `DATA_DIR/integrations.db` (chmod 0600); credentials are
+Fernet-encrypted with a key derived from `SECRET_KEY` (PBKDF2,
+`b"apex-integrations-v1"`) and are **never** returned to the browser — the API
+returns only `credentials_set`, the *names* of the secrets it holds.
+
+- **Read-only is the default and a server-side control.** `readonly=true` and
+  `allowed_operations=["select"]` unless the operator changes them; the panel
+  cannot be trusted to enforce it. Writers must also be enabled explicitly.
+- **Per-connection policy lives in the record, not the config dict.**
+  `readonly`, `allowed_operations`, `allowed_tables`, `denied_tables`,
+  `max_rows`, `timeout_seconds` are stored as top-level columns. The connectors
+  read them from the *config* dict they are handed, so
+  `IntegrationManager._effective_config(record)` merges the record-level policy
+  into that dict and is used by `_connector`, `_query_rest` and `_query_graphql`.
+  Skipping the merge silently drops the operator's policy — the connection runs
+  with library defaults instead. When a new connector appears, its manager entry
+  point must go through `_effective_config` too.
+- **Query validation is dialect-aware** (`dialects.py`): `validate` blocks
+  `DROP`/`ALTER`/`TRUNCATE` and other DDL, applies the table allow/deny lists,
+  enforces single-statement reads when `readonly`, and `apply_limit` injects the
+  correct row cap per engine (`has_limit` — SQLite/PostgreSQL/MySQL use `LIMIT`,
+  SQL Server uses `TOP`, Oracle uses `LIMIT`/`FETCH`/`ROWNUM`). Getting a key
+  wrong there meant a write was classified as a read, or the cap was never
+  applied.
+- **MCP is a real subprocess, not a stub.** `mcp_client.py` speaks the official
+  `mcp` SDK lazily (the import lives inside the methods, so the backend runs
+  without the package). `McpConnector` adapts an MCP server to the connector
+  protocol (`test/discover/call_tool/read_resource/get_prompt/describe/close`)
+  so `manager._connector` and `_query_mcp` treat it like any other kind.
+  - **SDK attribute names are snake_case**: the call result exposes
+    `structured_content` (not `structuredContent`) and `is_error` (not
+    `isError`). `_attr()` reads either spelling so an SDK rename cannot silently
+    turn a structured result into an empty one.
+  - Transports are stdio (default), http and sse; the kinds catalogue reports
+    `mcp: ["mcp"]` with a separate `transports` list, and the form offers only
+    the transports the SDK build supports.
+  - **Remote MCP auth is an encrypted secret, not plaintext config.** The
+    `mcp` kind's secret fields are `bearer_token` and `api_key`;
+    `build_mcp_client` merges credentials into the config dict (setdefault) and
+    `HttpMcpClient._headers` turns either into `Authorization: Bearer …`
+    (falling back to `config["headers"]`). A stdio server's non-secret env vars
+    ride in `config["env"]` (the form has a KEY=value box; it is labelled as
+    plaintext, so tokens belong in the secret fields).
+- **The model's provider stream is a generator of typed dicts.**
+  `provider.chat_stream(messages, tools=None)` is iterated directly;
+  `{"type":"text","content":...}` carries output and `{"type":"error"}` aborts.
+  `nl_query._collect` matches that shape (and tolerates a callable/delta shape);
+  a stub that feeds a different shape would pass while the real provider fails.
+- **The per-connection prompt is appended to the turn, filtered by skill.**
+  `IntegrationManager.blocks_for_skills` returns the block only for connections
+  whose `skills` list is empty (all skills) or names the active skill; `chat()`
+  appends it as build-time, non-persisted context, capped at
+  `INTEGRATIONS_PROMPT_MAX_CHARS`.
+- Tools (`integration_status`/`integration_query`/`integration_discover`) are
+  force-included for every skill when `INTEGRATIONS_ENABLED`, the same way
+  `terminal_command` is, and the handler re-reads the store each turn.
+- The health monitor is a daemon thread started in `register_integration_routes`
+  (not a route); `INTEGRATIONS_ENABLED=false` registers neither routes nor
+  tools.
+- **`routes.py` never raises a driver error as a 500**: an absent SQL driver is
+  a normal "driver not installed" message, and another owner's connection
+  answers 404, never 403 (the same object-access rule as the rest of the API).
+- **Missing dependencies install themselves (`integrations/deps.py`).** The
+  operator is never asked to run apt/pip. `load_driver_module` pip-installs a
+  Python driver (psycopg2-binary / pymysql / pyodbc / oracledb) on the first
+  ImportError; for SQL Server, `resolve_sqlserver_driver` first uses the named
+  or registered ODBC driver, then an already-unpacked library, and otherwise
+  downloads Microsoft's `msodbcsql18` **.deb** and unpacks it into
+  `INTEGRATIONS_ODBC_DIR` (default `DATA_DIR/odbc`, no root) - pyodbc is handed
+  the absolute `.so` path (`DRIVER={/abs/path/libmsodbcsql-18.x.so}`), which
+  unixODBC loads directly, no `odbcinst.ini` needed. `_precheck` calls this
+  before the driver's own opaque error; the result (including failure) is cached
+  per process so a dead network is not retried per request. `INTEGRATIONS_AUTO_INSTALL`
+  (default on) is the off switch; `INTEGRATIONS_ODBC_DEB_URL` pins a version.
+  `_version_key` picks the newest package from the repo index exactly as the
+  cron note warns numbers must be compared, not strings (`18.7 > 18.6`, but
+  `"18.10" < "18.7"` as text). Setup pre-warms it via
+  `scripts/install_sql_drivers.py` (also `python -m integrations.deps`), which
+  `apex update` runs after the pip step. `DriverConnectorTests` disables
+  auto-install in `setUp` so the suite never touches the network.
+- **The command reasoning layer knows the tab.** `"mcp"` is in
+  `PANEL_TAB_NAMES`; the local parser maps mcp / integration / connection (and
+  Greek συνδεσ / ολοκληρωσ) to the tab, and the router catalogue renders the
+  list from `PANEL_TAB_NAMES`, so a new tab name only has to be added once.
+- Tests: `backend/tests/test_integrations.py` (real stdio MCP subprocess via
+  `tests/support/mcp_demo_server.py`, real loopback HTTP for REST/GraphQL, real
+  SQLite for SQL; the model provider is the only stub and it is fed the real
+  stream shape; `DepsTests` covers auto-provisioning without the network),
+  `frontend/tests/panel-commands.test.cjs` (the tab phrases).
+
 ## Common extension points
 
 - New search source: add a tool in `core_tools.py` (or a new module) and expose

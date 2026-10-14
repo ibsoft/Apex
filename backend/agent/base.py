@@ -41,6 +41,16 @@ ALWAYS_ON_TOOLS = frozenset({
 #: would make the model promise messages that can never be sent.
 TELEGRAM_TOOLS = frozenset({"telegram_send", "telegram_status", "telegram_send_file"})
 
+#: Integration tools are force-included for every skill while the feature is on,
+#: the same reasoning as terminal_command: the operator should not have to pick a
+#: skill before the agent can look something up in a connected database or MCP
+#: server. Registration itself is gated by INTEGRATIONS_ENABLED.
+INTEGRATION_TOOLS = frozenset({
+    "integration_query",
+    "integration_discover",
+    "integration_status",
+})
+
 
 def _runtime_truthy(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes", "on"}
@@ -96,7 +106,7 @@ class AgentContext:
             if banned:
                 return [t for t in pool if t.name not in banned]
             return pool
-        names = set(self.skill_tools) | ALWAYS_ON_TOOLS
+        names = set(self.skill_tools) | ALWAYS_ON_TOOLS | INTEGRATION_TOOLS
         if _runtime_truthy(self.runtime.get("telegram_enabled")):
             names |= TELEGRAM_TOOLS
         return [
@@ -113,6 +123,7 @@ class AgentContext:
             conversation_id=self.conversation_id,
             memory=self.memory,
             model=self.provider_kind,
+            provider=self.provider,
             focused_terminal=self.focused_terminal,
             terminal_map=self.terminal_map,
             output_destination=self.output_destination,

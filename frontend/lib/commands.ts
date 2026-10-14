@@ -813,6 +813,7 @@ const PANEL_TAB_PATTERNS: Array<[PanelTabName, RegExp]> = [
   // phrase - see tabFromWords.
   ["tasks", /task|job|schedul|εργασι|εργασιων/],
   ["apps", /app|application|tool|widget|εφαρμογ|εργαλει/],
+  ["mcp", /mcp|integration|connection|συνδεσ|ολοκληρωσ/],
   ["chat", /chat|conversation|message|συνομιλ|μηνυμ|συνομιλι/],
 ];
 

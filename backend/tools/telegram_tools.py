@@ -493,8 +493,9 @@ def _send_path_allowed(path: Path, config) -> str:
         return "path does not exist"
     if not resolved.is_file() or not os.access(resolved, os.R_OK):
         return "not a readable file"
-    if resolved.stat().st_size > _SEND_MAX_BYTES:
-        return f"file is larger than the {_SEND_MAX_BYTES // (1024 * 1024)} MB send cap"
+    # The pure security checks come before the size cap: a system path or a
+    # credential file is never sendable whatever its size, and reporting the
+    # size of a file that would be refused anyway is a misleading reason.
     low = resolved.as_posix().lower()
     if low.startswith("/etc/") or low.startswith("/var/") or any(
         component.name in ("etc", "var") for component in resolved.parents
@@ -503,6 +504,8 @@ def _send_path_allowed(path: Path, config) -> str:
     parts = {p.lower() for p in resolved.parts}
     if any(any(den in part for den in denied_components) for part in parts):
         return "credential or settings files may not be sent"
+    if resolved.stat().st_size > _SEND_MAX_BYTES:
+        return f"file is larger than the {_SEND_MAX_BYTES // (1024 * 1024)} MB send cap"
     allowed = {
         Path(config.DATA_DIR).resolve(),
         Path(config.DB_PATH).resolve().parent,
