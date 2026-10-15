@@ -185,6 +185,8 @@ Commands:
   stop                          Stop backend and frontend
   restart [--no-https]          Restart services and HTTPS frontend on port 3001
   status                        Show backend and frontend status
+  doctor [fix] [--whisper]      Health check the environment and repo; 'fix' installs
+                                what is missing (--whisper adds the speech venv)
   update [ref]                  Copy local DBs, override with git (default origin/main), restore, rebuild, restart
                                e.g. ./apex update origin/v_2.0.27   (or set APEX_UPDATE_REF)
 EOF
@@ -520,6 +522,243 @@ update_apex() {
   ok "your databases are intact (git shows backend/data as modified — that is expected)"
 }
 
+# ─────────────────────────────── doctor ───────────────────────────────────
+# `./apex doctor`     — one-shot health check of the environment and this repo.
+# `./apex doctor fix` — check, then install/provision whatever is missing.
+# `./apex doctor fix --whisper` — also build the optional speech-recognition venv.
+#
+# The check is deliberately split in two: a small "core" set whose absence stops
+# APEX from running (and drives the exit code), and a "feature" set whose absence
+# only disables a capability (ffmpeg → camera, baresip → phone calls, …). A
+# health check that failed on a missing nmap would be useless.
+DOCTOR_FIX=0
+DOCTOR_WHISPER=0
+DOCTOR_CORE_FAIL=0
+DOCTOR_OPT_WARN=0
+DOCTOR_APT=()
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+doc_core() {  # <label> <okflag 0=ok> [hint]
+  local label="$1" okflag="$2" hint="${3:-}"
+  if [[ "$okflag" -eq 0 ]]; then
+    ok "$label"
+  else
+    printf '%s\n' "${C_RED}  ✗${C_RESET} $label"
+    [[ -n "$hint" ]] && printf '%s\n' "${C_DIM}      $hint${C_RESET}"
+    DOCTOR_CORE_FAIL=1
+  fi
+}
+
+doc_opt() {  # <label> <okflag 0=ok> [apt_pkg] [hint]
+  local label="$1" okflag="$2" pkg="${3:-}" hint="${4:-}"
+  if [[ "$okflag" -eq 0 ]]; then
+    ok "$label"
+  else
+    printf '%s\n' "${C_YELLOW}  ⚠${C_RESET} $label"
+    [[ -n "$hint" ]] && printf '%s\n' "${C_DIM}      $hint${C_RESET}"
+    DOCTOR_OPT_WARN=1
+    [[ -n "$pkg" ]] && DOCTOR_APT+=("$pkg")
+  fi
+}
+
+# The checks, separated from the driver so `doctor fix` can re-run them cleanly.
+doctor_checks() {
+  local pyver py_major py_minor node_major missing_mods mkcert_caroot exploitdb_dir
+  DOCTOR_CORE_FAIL=0
+  DOCTOR_OPT_WARN=0
+  DOCTOR_APT=()
+
+  say "${C_BOLD}Core${C_RESET}"
+  if have git; then
+    doc_core "git" 0
+  else
+    doc_core "git" 1 "sudo apt-get install -y git"
+  fi
+
+  if have python3; then
+    pyver="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo 0.0)"
+    py_major="${pyver%%.*}"
+    py_minor="${pyver#*.}"
+    if [[ "${py_major:-0}" -gt 3 || ( "${py_major:-0}" -eq 3 && "${py_minor:-0}" -ge 10 ) ]]; then
+      doc_core "python3 (${pyver})" 0
+    else
+      doc_core "python3 >= 3.10 (found ${pyver})" 1 "install Python 3.10+ and recreate .venv"
+    fi
+  else
+    doc_core "python3" 1 "sudo apt-get install -y python3 python3-venv"
+  fi
+
+  if [[ -x "$ROOT/.venv/bin/python" ]]; then
+    doc_core "Python virtualenv (.venv)" 0
+    missing_mods="$("$ROOT/.venv/bin/python" - <<'PY' 2>/dev/null || echo __ERR__
+import importlib.util as u
+mods = ["flask","openai","chromadb","gunicorn","docx","openpyxl","pptx",
+        "matplotlib","edge_tts","mcp","jwt","dotenv","PyPDF2","ddgs",
+        "agents","langgraph","langchain_openai","psycopg2","pymysql",
+        "pyodbc","oracledb"]
+print(" ".join(m for m in mods if u.find_spec(m) is None))
+PY
+)"
+    if [[ "$missing_mods" == "__ERR__" ]]; then
+      doc_core "backend Python packages" 1 "run: .venv/bin/pip install -r backend/requirements.txt"
+    elif [[ -z "$missing_mods" ]]; then
+      doc_core "backend Python packages" 0
+    else
+      doc_core "backend Python packages (missing: ${missing_mods})" 1 "run: .venv/bin/pip install -r backend/requirements.txt"
+    fi
+  else
+    doc_core "Python virtualenv (.venv)" 1 "create: python3 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt"
+  fi
+
+  if have node; then
+    node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+    if [[ "${node_major:-0}" -ge 18 ]]; then
+      doc_core "node (v${node_major})" 0
+    else
+      doc_core "node >= 18 (found v${node_major})" 1 "install Node 18.18+ (nvm, or NodeSource)"
+    fi
+  else
+    doc_core "node" 1 "install Node 18.18+ (nvm, or NodeSource)"
+  fi
+  if have npm; then doc_core "npm" 0; else doc_core "npm" 1 "npm ships with Node"; fi
+
+  if [[ -d "$ROOT/frontend/node_modules" ]]; then
+    doc_core "frontend node_modules" 0
+  else
+    doc_core "frontend node_modules" 1 "run: npm --prefix frontend install"
+  fi
+
+  if [[ -f "$ROOT/backend/.env" ]]; then
+    doc_core "backend/.env" 0
+  else
+    doc_core "backend/.env (provider keys)" 1 "cp backend/.env.example backend/.env (or ./apex install-service)"
+  fi
+
+  say "${C_BOLD}Feature dependencies${C_RESET}"
+  if have ffmpeg; then doc_opt "ffmpeg — camera (VISIO) + voice notes" 0; else doc_opt "ffmpeg — camera (VISIO) + voice notes" 1 ffmpeg "sudo apt-get install -y ffmpeg"; fi
+  if have espeak-ng || have espeak; then doc_opt "espeak — SIP text-to-speech fallback" 0; else doc_opt "espeak — SIP text-to-speech fallback" 1 espeak-ng "sudo apt-get install -y espeak-ng"; fi
+  if have pactl && have paplay && have parec; then doc_opt "PulseAudio tools — SIP call audio" 0; else doc_opt "PulseAudio tools — SIP call audio (pactl/paplay/parec)" 1 pulseaudio-utils "sudo apt-get install -y pulseaudio-utils"; fi
+  if have baresip; then doc_opt "baresip — phone calls" 0; else doc_opt "baresip — phone calls" 1 baresip "sudo apt-get install -y baresip"; fi
+  mkcert_caroot="${MKCERT_CAROOT:-$HOME/.local/share/mkcert}"
+  if have openssl && [[ -f "$mkcert_caroot/rootCA.pem" ]]; then
+    doc_opt "HTTPS certs — openssl + mkcert CA (PWA install on LAN)" 0
+  else
+    doc_opt "HTTPS certs — openssl + mkcert CA (PWA install on LAN)" 1 openssl "install mkcert then: mkcert -install  (or set MKCERT_CAROOT)"
+  fi
+  # `ldconfig -p | grep -q` is a trap under `set -o pipefail`: grep closes the
+  # pipe on the first match, ldconfig dies of SIGPIPE (141), and the pipeline
+  # reports failure even though the library was found. Capture, then match.
+  local ld_cache
+  ld_cache="$(ldconfig -p 2>/dev/null || true)"
+  if [[ "$ld_cache" == *"libpam.so"* ]]; then
+    doc_opt "PAM — machine sign-in" 0
+  else
+    doc_opt "PAM — machine sign-in (libpam)" 1 libpam0g "sudo apt-get install -y libpam0g"
+  fi
+  if have rsync; then doc_opt "rsync — faster ./apex update" 0; else doc_opt "rsync — faster ./apex update (falls back to cp)" 1 rsync; fi
+  if have nmap; then doc_opt "nmap — VAPT scanning" 0; else doc_opt "nmap — VAPT scanning" 1 nmap; fi
+
+  exploitdb_dir="${EXPLOITDB_DIR:-$ROOT/backend/data/exploitdb}"
+  if [[ -f "$exploitdb_dir/searchsploit" && -f "$exploitdb_dir/files_exploits.csv" ]]; then
+    doc_opt "Exploit-DB mirror — VAPT exploit intelligence" 0
+  else
+    doc_opt "Exploit-DB mirror — VAPT exploit intelligence" 1 "" "clones automatically on first use, or: ./apex doctor fix"
+  fi
+  if [[ -x "$ROOT/.venv/sip-whisper/bin/python" ]]; then
+    doc_opt "speech-recognition venv — voice transcription" 0
+  else
+    doc_opt "speech-recognition venv — voice transcription (optional)" 1 "" "provision with: ./apex doctor fix --whisper"
+  fi
+
+  printf '\n'
+  if [[ "$DOCTOR_CORE_FAIL" -eq 0 ]]; then
+    ok "${C_BOLD}Core is healthy.${C_RESET}"
+  else
+    printf '%s\n' "${C_RED}  ✗${C_RESET} ${C_BOLD}Core problems found.${C_RESET} Run: ./apex doctor fix"
+  fi
+  [[ "$DOCTOR_OPT_WARN" -ne 0 ]] && warn "Some optional features are unavailable (marked ⚠ above)."
+  return "$DOCTOR_CORE_FAIL"
+}
+
+doctor() {
+  local fix="$DOCTOR_FIX" exploitdb_dir exploitdb_url
+  say "${C_BOLD}APEX health check${C_RESET}  ${C_DIM}$ROOT${C_RESET}"
+  doctor_checks || true
+
+  if [[ "$fix" -eq 1 ]]; then
+    printf '\n'
+    say "${C_BOLD}Repairing${C_RESET}"
+
+    if [[ ! -x "$ROOT/.venv/bin/python" ]] && have python3; then
+      spinner "creating the Python virtualenv" python3 -m venv "$ROOT/.venv" \
+        && ok "created .venv" || warn "could not create .venv"
+    fi
+    if [[ -x "$ROOT/.venv/bin/python" ]]; then
+      spinner "installing backend Python packages" \
+        "$ROOT/.venv/bin/pip" install -q -r "$ROOT/backend/requirements.txt" \
+        && ok "backend Python packages ready" || warn "pip install failed — check the output above"
+      if [[ -f "$ROOT/scripts/install_sql_drivers.py" ]]; then
+        spinner "provisioning the SQL Server ODBC driver" \
+          "$ROOT/.venv/bin/python" "$ROOT/scripts/install_sql_drivers.py" \
+          && ok "SQL Server ODBC driver ready" \
+          || warn "SQL Server ODBC driver not provisioned (MCP servers still work)"
+      fi
+    fi
+
+    if have npm && [[ ! -d "$ROOT/frontend/node_modules" ]]; then
+      spinner "installing frontend packages (npm)" npm --prefix "$ROOT/frontend" install --silent \
+        && ok "frontend packages ready" || warn "npm install failed"
+    fi
+
+    if [[ ! -f "$ROOT/backend/.env" && -f "$ROOT/backend/.env.example" ]]; then
+      cp "$ROOT/backend/.env.example" "$ROOT/backend/.env" \
+        && ok "created backend/.env from example — edit your provider keys"
+    fi
+
+    exploitdb_dir="${EXPLOITDB_DIR:-$ROOT/backend/data/exploitdb}"
+    if [[ ! -f "$exploitdb_dir/searchsploit" ]]; then
+      exploitdb_url="${EXPLOITDB_REPO_URL:-https://gitlab.com/exploit-database/exploitdb.git}"
+      if have git; then
+        mkdir -p "$(dirname "$exploitdb_dir")"
+        spinner "cloning the Exploit-DB mirror" git clone --depth 1 "$exploitdb_url" "$exploitdb_dir" \
+          && ok "Exploit-DB mirror ready" || warn "could not clone the Exploit-DB mirror"
+      else
+        warn "git is required to clone the Exploit-DB mirror"
+      fi
+    fi
+
+    if [[ "$DOCTOR_WHISPER" -eq 1 && ! -x "$ROOT/.venv/sip-whisper/bin/python" ]]; then
+      if have python3; then
+        spinner "creating the speech-recognition venv" python3 -m venv "$ROOT/.venv/sip-whisper" \
+          && spinner "installing faster-whisper" \
+               "$ROOT/.venv/sip-whisper/bin/pip" install -q -r "$ROOT/backend/tools/sip-whisper-requirements.txt" \
+          && ok "speech-recognition venv ready" \
+          || warn "speech recognition not provisioned (SIP/Telegram voice transcription stays off)"
+      fi
+    fi
+
+    if [[ "${#DOCTOR_APT[@]}" -gt 0 ]]; then
+      local pkg
+      mapfile -t DOCTOR_APT < <(printf '%s\n' "${DOCTOR_APT[@]}" | sort -u)
+      if have apt-get; then
+        spinner "installing system packages (${DOCTOR_APT[*]})" \
+          sudo apt-get install -y "${DOCTOR_APT[@]}" \
+          && ok "system packages installed" \
+          || warn "apt-get install failed — install manually: ${DOCTOR_APT[*]}"
+      else
+        warn "no apt-get on this system — install manually: ${DOCTOR_APT[*]}"
+      fi
+    fi
+
+    printf '\n'
+    say "${C_BOLD}Re-checking${C_RESET}"
+    doctor_checks || true
+  fi
+
+  return "$DOCTOR_CORE_FAIL"
+}
+
 command="${1:-}"
 shift || true
 
@@ -563,6 +802,16 @@ case "$command" in
     ;;
   update)
     update_apex
+    ;;
+  doctor)
+    for arg in "$@"; do
+      case "$arg" in
+        fix) DOCTOR_FIX=1 ;;
+        --whisper) DOCTOR_WHISPER=1 ;;
+        *) usage >&2; exit 2 ;;
+      esac
+    done
+    doctor
     ;;
   -h|--help|help)
     usage

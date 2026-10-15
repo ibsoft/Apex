@@ -175,6 +175,13 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
         registry.register(tool)
     for tool in build_vapt_tools(config):
         registry.register(tool)
+    # Local Exploit-DB mirror search/fetch for the VAPT skill. Registered
+    # unconditionally like VISIO/SIP; the handler re-reads EXPLOITDB_ENABLED so
+    # the off-switch takes effect without a restart. Empty when disabled.
+    from tools.exploitdb_tools import build_exploitdb_tools
+
+    for tool in build_exploitdb_tools(config):
+        registry.register(tool)
     for tool in build_code_tools(config):
         registry.register(tool)
     for tool in build_terminal_tools(config):

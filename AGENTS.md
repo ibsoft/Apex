@@ -266,6 +266,51 @@ cd frontend && npm run build
 A green backend test run, a green `node --test frontend/tests` run and a
 successful `npm run build` are required before finishing any feature.
 
+## The `apex` admin script (`./apex`)
+
+The single operator entry point. It runs on the machine, so it is the one place
+that touches systemd, `sudo`, apt, and the network — and the only place a new
+dependency should be added.
+
+- `./apex doctor [fix] [--whisper]` checks the environment and this repo and
+  (with `fix`) installs what is missing. The check has **two tiers**: a "core"
+  set whose absence stops APEX from running and drives the exit code (`git`,
+  Python 3.10+ and the `.venv` with `backend/requirements.txt` installed, Node
+  18+ and `frontend/node_modules`, `backend/.env`), and a "feature" set whose
+  absence only disables a capability (`ffmpeg` → camera/voice notes, `baresip`
+  + PulseAudio + `espeak` → phone calls, `openssl` + the mkcert CA → LAN PWA
+  install, PAM → machine sign-in, `rsync`, `nmap` → VAPT, the Exploit-DB mirror,
+  the speech-recognition venv). A missing optional tool is a warning and never
+  fails the run — a health check that failed on a missing `nmap` would be
+  useless. It exits non-zero only when core is unhealthy, and `doctor fix`
+  re-runs the check after repairing.
+- The checks are split into `doctor_checks` (prints + sets the flags) and
+  `doctor` (driver, optional repair, re-check), so `fix` can re-run the same
+  checks rather than duplicating them. **The function must `return
+  "$DOCTOR_CORE_FAIL"`**: `doctor_checks || true` is there to survive
+  `set -e`, but it swallows the status, so a driver that does not return
+  explicitly always looks healthy to the shell.
+- **`ldconfig -p | grep -q` is a trap under `set -o pipefail`**: `grep -q`
+  closes the pipe on the first match, `ldconfig` dies of SIGPIPE (141), and the
+  *pipeline* reports failure even though the library was found. The PAM check
+  captures `ldconfig -p` into a variable and string-matches instead; the Python
+  version check compares numerically rather than `… | sort -V | head -1`, which
+  has the same SIGPIPE shape. Any new probe that pipes into a reader which
+  exits early must capture first.
+- `doctor fix` only installs what it can do safely and idempotently: create
+  `.venv` + pip install, `npm install`, copy `backend/.env` from the example,
+  clone the Exploit-DB mirror, run `scripts/install_sql_drivers.py`, and
+  `apt-get install -y` the collected packages (deduped) via `sudo`. The
+  speech-recognition venv is heavy, so it is opt-in behind `--whisper`. Node is
+  *not* apt-installed (the distro package can be too old for Next 15) — a
+  missing Node is reported with nvm/NodeSource guidance.
+- `./apex update [ref]` snapshots the live SQLite DBs through SQLite's backup
+  API, overrides the checkout with git, restores the DBs and `backend/.env`,
+  then reinstalls deps, rebuilds the frontend and restarts. `./apex start`,
+  `stop`, `restart` and `status` drive the systemd units and the port-3001 HTTPS
+  dev frontend. Adding a command means: a `case` branch, a `usage()` line, and
+  a README entry.
+
 ## Sign-in, lock screen and the session (security-critical)
 
 APEX authenticates against the machine's own accounts. `backend/system_auth.py`
@@ -1193,6 +1238,48 @@ is exactly what must be caught.
 - Tests: `backend/tests/test_observability.py` (store + rotation + redaction,
   analyzer rules and their false-positive guards, middleware via a minimal app,
   routes, tools, scanner). Nothing there needs the DB or the live backend.
+
+## Local Exploit-DB (`tools/exploitdb_tools.py`)
+
+The VAPT skill's exploit intelligence: a local clone of the exploit-database
+mirror (`searchsploit`, `files_exploits.csv`, `files_shellcodes.csv`, `exploits/`,
+`shellcodes/`) that it searches for the product/version it fingerprinted. The
+model-facing tools are `exploitdb_search` / `exploitdb_show` / `exploitdb_update`
+/ `exploitdb_status`, registered in `load_default_tools` (empty when
+`EXPLOITDB_ENABLED` is false); `VAPT.md` has `tools: ALL`, so it gets them, and a
+"Fingerprint → exploit intelligence → targeted validation" section teaches the
+workflow (e.g. detect WordPress → search `wordpress <version>` → `exploitdb_show`
+→ run it with `vapt_run`).
+
+- **Nothing here executes an exploit.** Search and fetch are read-only. The only
+  side effects are the one-time `git clone`, the periodic `git pull`, and copying
+  an exploit/shellcode file into a project's `artifacts/exploitdb/` as evidence.
+- **Search is searchsploit itself**, not a CSV re-implementation:
+  `search_exploits` runs `bash <mirror>/searchsploit --json <term>` and parses
+  `RESULTS_EXPLOIT` + `RESULTS_SHELLCODE`, normalizing each entry to
+  `{id, kind, title, date, platform, type, cves, verified, path}`. `kind` is
+  `exploits` / `shellcodes` / `both`. A non-JSON or empty result is reported, not
+  raised.
+- **Lookup reads the CSVs directly** (`csv.DictReader`, exact `id` match across
+  both files) so `exploitdb_show` does not depend on the search script; the file
+  is read through `read_entry`, which resolves it inside the mirror root and
+  refuses an escape. `copy_into_project` writes `EDB-<id>_<name>` under the
+  target's `artifacts/exploitdb/` via `vapt_tools._ensure_project`.
+- **First run initializes the repo.** `ensure_repo` clones `EXPLOITDB_REPO_URL`
+  (`--depth 1`) into `EXPLOITDB_DIR` when `searchsploit`/CSVs are missing; a
+  non-empty-but-incomplete directory is reported, never clobbered.
+- **Updates are periodic and pull-only.** `start_updater` (called from `app.py`
+  next to `register_vapt_routes`, guarded by `EXPLOITDB_ENABLED` +
+  `EXPLOITDB_AUTO_UPDATE`) is a singleton daemon thread that settles ~2 min, then
+  pulls when `EXPLOITDB_UPDATE_INTERVAL_HOURS` has elapsed. `update_repo` does
+  `git pull --ff-only` and, if upstream history was rewritten, re-syncs with
+  `fetch --depth 1` + `reset --hard FETCH_HEAD` (the mirror is disposable). A
+  `.apex_last_update` marker in `EXPLOITDB_DIR` records the last success.
+- The tools never raise: a git failure, a missing git binary, a dead network and
+  an incomplete checkout all return a plain string for the model to report.
+- Tests: `backend/tests/test_exploitdb_tools.py` (a throwaway mirror with a stub
+  `searchsploit` printing canned JSON — search/kind/limit, lookup, read
+  containment, copy-into-project, the four tools and the updater flags).
 
 ## Common extension points
 

@@ -96,7 +96,27 @@ the project command:
 ./apex stop
 ./apex restart
 ./apex status
+./apex doctor
 ```
+
+`./apex doctor` is a one-shot health check of the environment and this
+repository: it verifies the core runtime (`git`, Python 3.10+ and the `.venv`
+with its packages, Node 18+ and `node_modules`, `backend/.env`) and reports which
+optional feature dependencies are present (`ffmpeg`, `baresip`, PulseAudio,
+`openssl` + the mkcert CA, PAM, `rsync`, `nmap`, the Exploit-DB mirror, the
+speech-recognition venv). It exits non-zero if a core piece is missing.
+
+```bash
+./apex doctor           # check only; prints what is missing
+./apex doctor fix       # check, then install/provision whatever is missing
+./apex doctor fix --whisper   # also build the optional speech-recognition venv
+```
+
+`doctor fix` installs the missing pieces it safely can: creates `.venv` and
+`pip install`s the backend requirements, runs `npm install` for the frontend,
+copies `backend/.env` from the example, clones the Exploit-DB mirror, provisions
+the SQL Server ODBC driver, and `apt-get install`s any missing system packages
+(asking for `sudo` once). It then re-checks and reports the final state.
 
 `start` and `restart` also launch the HTTPS development frontend on port
 `3001`, for remote microphone testing. Use `--no-https` when it is not needed:

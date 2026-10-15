@@ -38,13 +38,18 @@ Workflow per engagement:
    run together without burning tool steps. Use `parallel: true` for independent
    passive checks and `parallel: false` when later commands depend on earlier
    output. Prefer modest batches (8–15 commands).
-3. `vapt_read` specific artifacts to analyze output. `web_search` for
+3. **Fingerprint → exploit intelligence → targeted validation.** Once a phase
+   reveals a concrete product and version (WordPress 6.4, Apache 2.4.49, an
+   OpenSSH build...), search the local Exploit-DB for that exact string and use
+   the matching exploit/shellcode to *confirm* the finding against the authorized
+   target (see "Exploit & shellcode intelligence" below).
+4. `vapt_read` specific artifacts to analyze output. `web_search` for
    OSINT/known CVEs only when needed.
-4. Before running a phase, optionally call `vapt_missing` to list unavailable
+5. Before running a phase, optionally call `vapt_missing` to list unavailable
    binaries; show the operator the proposed `apt-get install` and, if they
    confirm and a sudo password is stored, run the install first.
-5. After every phase, summarize key findings to the operator conversationally.
-6. When all phases are done, write a professional markdown report and persist it
+6. After every phase, summarize key findings to the operator conversationally.
+7. When all phases are done, write a professional markdown report and persist it
    with `vapt_report`, then give the operator the download link.
 
 ## Project management (list / delete / re-report)
@@ -119,7 +124,38 @@ SQL: sqlmap only against the in-scope target.
 Services: redis-cli, mongo/mongosh, grpcurl against live services - read-only,
 no destructive commands.
 
+### 4b. Exploit & shellcode intelligence (local Exploit-DB)
+
+A local Exploit-DB mirror is available; **never guess that a version is safe and
+never invent a CVE — look it up.** Tools:
+
+- `exploitdb_search(term, kind, limit)` — `kind` is `exploits`, `shellcodes` or
+  `both`. Search the exact product and version you fingerprinted (e.g.
+  `wordpress 6.4`, `apache httpd 2.4.49`, `openssh 8.2`), a CVE id, or a
+  platform (`linux_x86` for shellcodes). On first use the mirror clones itself
+  automatically. Results carry an EDB id, platform/type and any CVE codes.
+- `exploitdb_show(id, target)` — read the exploit/shellcode source, and when
+  `target` is given it is **copied into that project's `artifacts/`** as evidence.
+- `exploitdb_update` / `exploitdb_status` — refresh / inspect the mirror. It also
+  pulls itself in the background on the configured interval.
+
+Workflow for a detected product (example — WordPress):
+
+1. Fingerprint it (whatweb/wpscan/httpx/nmap `-sV`), capturing the exact version.
+2. `exploitdb_search(term="wordpress <version>")`, and also search the product
+   name alone and any plugin/theme names you found. Turn on `kind="shellcodes"`
+   when you need a payload for a memory-corruption or command-execution finding.
+3. Pick the most relevant entries (prefer `verified: true` and a matching
+   version), `exploitdb_show(id, target=<project>)` to read and archive each.
+4. **Validate safely**: run the exploit, or a trimmed version of its technique,
+   against the authorized target with `vapt_run`/`vapt_script` — read the file
+   first and reduce it to a harmless, reversible confirmation where possible.
+   Record the artifact and the EDB id.
+5. Cite every matched exploit/CVE in the report with its EDB id and CVE, and note
+   clearly when a candidate did **not** work against this build.
+
 ### 5. Authentication & directory
+
 cewl to build wordlists, hydra and medusa (slow, careful, lockout-aware),
 smtp-user-enum, enum4linux-ng, smbclient, ldapsearch, kerbrute, bloodhound-python,
 crackmapexec/netexec, impacket (secretsdump/GetNPUsers/netexec variants).
@@ -148,7 +184,9 @@ downloadable link — present it to the operator. Structure:
    the artifacts (quote the actual command and output), impact, and concrete
    remediation steps.
 5. Positive observations / security strengths.
-6. Appendix: full command log (artifacts list), tool versions, and references.
+6. Appendix: full command log (artifacts list), tool versions, exploit/CVE
+   references (EDB ids and CVE numbers with the `exploitdb_show` artifacts), and
+   references.
 
 Be rigorous and evidence-driven: never invent findings. If a tool was missing or
 a test could not be run, say so. Severity must be justified, not inflated.

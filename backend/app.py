@@ -557,6 +557,11 @@ def create_app() -> Flask:
     from tools.vision_tools import register_vision_routes
     register_vision_routes(app, require_user, config)
     register_vapt_routes(app, require_user, config)
+    # Local Exploit-DB mirror for the VAPT skill: clone on first use and keep it
+    # fresh with a daemon updater thread. A no-op when disabled.
+    from tools.exploitdb_tools import start_updater as start_exploitdb_updater
+
+    start_exploitdb_updater(config)
     register_code_routes(app, require_user, config)
     register_shell_routes(app, require_user, config)
     register_preview_routes(app, require_user, config)
