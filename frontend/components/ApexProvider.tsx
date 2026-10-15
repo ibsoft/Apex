@@ -42,6 +42,7 @@ import type { NotepadCommand } from "../lib/notepad";
 import { sendChatInputCommand, sendPanelCommand, PANEL_TAB_NAMES } from "../lib/panelBridge";
 import {
   formatDuration,
+  isAlarmStopPhrase,
   parseLocalCommand,
   parseSteerCommand,
   parseTerminalTarget,
@@ -49,6 +50,7 @@ import {
   type LocalCommand,
   type PanelTabName,
 } from "../lib/commands";
+import { FANCY_ALARM_NOTES, alarmLoopSeconds } from "../lib/alarm";
 import {
   buildUiState,
   renderActionCatalogue,
@@ -127,6 +129,9 @@ type QueuedItem = QueuedMessage & {
 
 export type TimerItem = { id: string; name: string; fireAt: number };
 export type ReminderItem = { id: string; name: string; fireAt: number };
+/* A fired reminder that is still ringing. Unlike a timer it does not clear
+   itself: it stays until the operator stops it or closes the banner. */
+export type AlarmItem = { id: string; name: string };
 
 type ApexContextType = {
   loading: boolean;
@@ -167,6 +172,9 @@ type ApexContextType = {
   chatCollapsed: boolean;
   timers: TimerItem[];
   reminders: ReminderItem[];
+  /* Fired reminders currently ringing; `stopAlarm` with no id clears them all. */
+  alarms: AlarmItem[];
+  stopAlarm: (id?: string) => void;
   /* Scheduled tasks. The provider owns the list, the poll and the completion
      notice; the panel is a view over them plus the manual editor. */
   tasks: Task[];
@@ -317,6 +325,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const [timers, setTimers] = useState<TimerItem[]>([]);
   const [reminders, setReminders] = useState<ReminderItem[]>([]);
+  /* Fired reminders, ringing until stopped. Kept apart from `reminders` so a
+     ringing alarm survives the reminder being cleared from the schedule and so
+     the UI can show it until it is explicitly dismissed. */
+  const [alarms, setAlarms] = useState<AlarmItem[]>([]);
   /* Scheduled tasks. `tasksRef` is the mirror the local command handler reads:
      executeLocalCommand is called from the voice path and a ref read there must
      not be a stale closure over a list the last render had. */
@@ -369,6 +381,11 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   timersRef.current = timers;
   const remindersRef = useRef(reminders);
   remindersRef.current = reminders;
+  const alarmsRef = useRef(alarms);
+  alarmsRef.current = alarms;
+  /* The single looping Web Audio graph behind every ringing alarm; null when
+     silent. Holding it here means one alarm stops only when the last is gone. */
+  const alarmAudioRef = useRef<{ ctx: AudioContext; gain: GainNode; timer: number } | null>(null);
 
   const commandLanguage = () => settingsRef.current.response_language ?? cfgRef.current?.response_language ?? "en";
   const localize = (english: string, greek: string) => /^el(?:-|$)/i.test(commandLanguage()) ? greek : english;
@@ -727,6 +744,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setWindows([]);
     setTimers([]);
     setReminders([]);
+    setAlarms([]);
     setSkill("general");
     setRoutedSkill(null);
     if (voiceRef.current) voiceRef.current.cancelSpeech();
@@ -1114,6 +1132,80 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setReminders((prev) => prev.filter((r) => r.id !== id));
   }, []);
 
+  /* The ringing alarm: a repeating bell/marimba cycle built once and left
+     running. `playNotification` is a single sweep for a timer; a reminder must
+     keep sounding until told to stop, so it needs its own loop. */
+  const stopAlarmSound = useCallback(() => {
+    const audio = alarmAudioRef.current;
+    if (!audio) return;
+    alarmAudioRef.current = null;
+    try { window.clearInterval(audio.timer); } catch {}
+    // Fade out rather than cut, so a stop does not click.
+    try {
+      const now = audio.ctx.currentTime;
+      audio.gain.gain.cancelScheduledValues(now);
+      audio.gain.gain.setValueAtTime(Math.max(audio.gain.gain.value, 0.0001), now);
+      audio.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);
+    } catch {}
+    const ctx = audio.ctx;
+    setTimeout(() => { try { ctx.close().catch(() => {}); } catch {} }, 350);
+  }, []);
+
+  const startAlarmSound = useCallback(() => {
+    if (alarmAudioRef.current) return;
+    try {
+      const AC = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!AC) return;
+      const ctx: AudioContext = new AC();
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(1, ctx.currentTime);
+      master.connect(ctx.destination);
+      const playCycle = () => {
+        const t0 = ctx.currentTime + 0.05;
+        for (const note of FANCY_ALARM_NOTES) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = note.type;
+          osc.frequency.setValueAtTime(note.freq, t0 + note.at);
+          gain.gain.setValueAtTime(0.0001, t0 + note.at);
+          gain.gain.exponentialRampToValueAtTime(note.gain, t0 + note.at + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, t0 + note.at + note.dur);
+          osc.connect(gain).connect(master);
+          osc.start(t0 + note.at);
+          osc.stop(t0 + note.at + note.dur + 0.05);
+        }
+      };
+      playCycle();
+      const timer = window.setInterval(playCycle, Math.round(alarmLoopSeconds() * 1000));
+      alarmAudioRef.current = { ctx, gain: master, timer };
+    } catch {
+      // ignore audio errors - the visual banner is still shown
+    }
+  }, []);
+
+  const startAlarm = useCallback((name: string) => {
+    const id = `al_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    setAlarms((prev) => [...prev, { id, name }]);
+    startAlarmSound();
+    speakRef.current(localize(`Reminder: ${name}`, `Υπενθύμιση: ${name}`));
+  }, [startAlarmSound]);
+
+  const stopAlarm = useCallback((id?: string) => {
+    const remaining = id ? alarmsRef.current.filter((a) => a.id !== id) : [];
+    setAlarms(remaining);
+    if (!remaining.length) {
+      stopAlarmSound();
+      voiceRef.current?.cancelSpeech();
+    }
+  }, [stopAlarmSound]);
+
+  // Safety net: whenever the last alarm leaves the list (stopped, cleared by
+  // logout, or replaced) make sure no oscillator graph is left running.
+  useEffect(() => {
+    if (!alarms.length) stopAlarmSound();
+  }, [alarms.length, stopAlarmSound]);
+
   // Fire timers/reminders every second.
   useEffect(() => {
     const id = setInterval(() => {
@@ -1125,16 +1217,18 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         fired.forEach((t) => speakRef.current(localize(`Timer ${t.name} is done`, `Το χρονόμετρο ${t.name} ολοκληρώθηκε`)));
         return prev.filter((t) => t.fireAt > now);
       });
-      setReminders((prev) => {
-        const fired = prev.filter((r) => r.fireAt <= now);
-        if (!fired.length) return prev;
-        playNotification();
-        fired.forEach((r) => speakRef.current(localize(`Reminder: ${r.name}`, `Υπενθύμιση: ${r.name}`)));
-        return prev.filter((r) => r.fireAt > now);
-      });
+      /* Reminders ring until stopped, so the fired ones move out of the schedule
+         (they are no longer pending) and into the ringing list. Read the live
+         ref and set state outside the updater: `startAlarm` is a side effect
+         and React may invoke an updater more than once. */
+      const due = remindersRef.current.filter((r) => r.fireAt <= now);
+      if (due.length) {
+        setReminders((prev) => prev.filter((r) => r.fireAt > now));
+        due.forEach((r) => startAlarm(r.name));
+      }
     }, 1000);
     return () => clearInterval(id);
-  }, [playNotification]);
+  }, [playNotification, startAlarm]);
 
   // Auto-open desktop windows for file/image links in assistant replies — for
   // both voice and typed turns. Only reacts to brand-new messages so opening
@@ -1700,6 +1794,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         return localize("All timers cancelled.", "Ακυρώθηκαν όλα τα χρονόμετρα.");
       case "cancelReminders":
         setReminders([]);
+        stopAlarm();
         return localize("All reminders cancelled.", "Ακυρώθηκαν όλες οι υπενθυμίσεις.");
       case "timer":
         setTimer(command.name, command.seconds);
@@ -1860,6 +1955,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   async function handleVoiceCommand(text: string) {
     try {
+      // A ringing alarm answers to a stop phrase before any parser runs.
+      if (alarmsRef.current.length && isAlarmStopPhrase(text)) {
+        stopAlarm();
+        speakRef.current(localize("Alarm stopped.", "Η υπενθύμιση σταμάτησε."));
+        return;
+      }
       const command = parseLocalCommand(text, commandLanguage(), skillsRef.current);
       if (command?.type === "skill" && command.rest) {
         setSkill(command.skill);
@@ -1940,6 +2041,35 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         clean = instruction;
+      }
+
+      /* A ringing reminder alarm answers to an explicit stop phrase before
+         anything else - including while a reply is streaming, which is why this
+         sits above the busy queue rather than inside the local-command branch.
+         With nothing ringing the phrase is not consumed, so a plain "stop" is
+         still an ordinary request for the agent. */
+      if (alarmsRef.current.length && isAlarmStopPhrase(clean)) {
+        stopAlarm();
+        const ack = localize("Alarm stopped.", "Η υπενθύμιση σταμάτησε.");
+        let convId = activeIdRef.current;
+        if (!convId) {
+          try {
+            const conv = await api.conversations.create({ skill: skillRef.current });
+            setConversations((l) => [conv, ...l]);
+            setActiveId(conv.id);
+            setByConv((m) => ({ ...m, [conv.id]: [] }));
+            convId = conv.id;
+          } catch {}
+        }
+        if (convId) {
+          setByConv((m) => ({
+            ...m,
+            [convId as string]: [...(m[convId as string] ?? []), mkMsg("assistant", ack, { meta: { voice: !!opts.voice } })],
+          }));
+        }
+        setOrb("idle");
+        if (opts.voice) speakRef.current(ack);
+        return;
       }
 
       // The composer stays live during a reply, so a message typed then must
@@ -2439,6 +2569,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       chatCollapsed,
       timers,
       reminders,
+      alarms,
+      stopAlarm,
       tasks,
       tasksError,
       tasksLoading,
@@ -2514,7 +2646,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       closeGithubPrompt,
     }),
     [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, queued, cancelQueued, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
-     windows, focusedWindowId, activeDesktop, desktopSet, desktopNext, desktopPrev, windowMoveToDesktop, chatCollapsed, timers, reminders, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
+     windows, focusedWindowId, activeDesktop, desktopSet, desktopNext, desktopPrev, windowMoveToDesktop, chatCollapsed, timers, reminders, alarms, stopAlarm, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, windowOpen, windowClose, windowCloseAll, windowFocus, windowToggleMaximize, windowToggleMinimize, windowArrange, windowNext, windowPrevious,
      windowSetNote, windowToggleNotes, windowUpdate, setChatCollapsed,
      setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous, setSudoPassword, closeSudoPrompt, setGithubToken, closeGithubPrompt],

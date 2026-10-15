@@ -204,6 +204,34 @@ function parseReminder(text: string, greek: boolean, now: number): LocalCommand 
   return null;
 }
 
+/* Whether an utterance is a command to silence a *ringing* reminder alarm.
+ *
+ * Anchored to the whole sentence on purpose: "stop" and "stop the alarm" end
+ * it, but "stop the download" or "stop the timer" carry an object and must keep
+ * flowing to the agent. The UI only ever asks this while an alarm is actually
+ * ringing, so a bare "stop" with nothing ringing is still an ordinary request —
+ * this function is never the thing that decides to intercept, the caller is. */
+const ALARM_STOP_PHRASES = new Set([
+  "stop", "stop it", "stop that", "stop this", "stop the alarm", "stop alarm",
+  "stop the reminder", "stop the reminders", "stop the sound", "stop the noise",
+  "stop ringing", "silence", "silence the alarm", "quiet", "be quiet",
+  "shut up", "enough", "dismiss", "dismiss the alarm", "cancel the alarm",
+  "ok stop", "okay stop", "alright stop",
+  "σταματα", "σταματησε", "σταματα το", "σταματησε το", "σταματα την υπενθυμιση",
+  "σταματησε την υπενθυμιση", "σταματα το ξυπνητηρι", "σταματησε το ξυπνητηρι",
+  "σκασε", "ησυχια", "αρκετα", "τερμα", "παψε", "κλειστο",
+  "ακυρωσε το ξυπνητηρι", "κλεισε το ξυπνητηρι", "κλεισε την υπενθυμιση",
+]);
+
+export function isAlarmStopPhrase(text: string): boolean {
+  const strip = (s: string) => s.replace(/[.!;,]+$/g, "").replace(/\s+/g, " ").trim();
+  const t = strip(normalize(text));
+  if (!t) return false;
+  if (ALARM_STOP_PHRASES.has(t)) return true;
+  // Tolerate a trailing "please" / "now" ("stop the alarm please").
+  return ALARM_STOP_PHRASES.has(strip(t.replace(/\s+(?:please|now|σε παρακαλω|παρακαλω)$/g, "")));
+}
+
 const SKILL_ALIASES: Record<string, string[]> = {
   general: ["γενικα", "γενικη", "γενική βοήθεια", "βοήθεια", "γενικός βοηθός"],
   code: ["κωδικασ", "κωδικα", "προγραμματισμοσ", "προγραμματισμο", "προγραμματιστής"],

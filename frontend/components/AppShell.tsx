@@ -9,6 +9,7 @@ import ApexWorld from "./ApexWorld";
 import ChatUI from "./ChatUI";
 import SudoPromptModal from "./SudoPromptModal";
 import GithubTokenModal from "./GithubTokenModal";
+import AlarmOverlay from "./AlarmOverlay";
 import WindowManager from "./WindowManager";
 import { useApex } from "./ApexProvider";
 import { LoginScreen, LockScreen } from "./LoginScreen";
@@ -145,6 +146,7 @@ export default function AppShell() {
       <WindowManager />
       <SudoPromptModal />
       <GithubTokenModal />
+      <AlarmOverlay />
 
       <ErrorToast />
     </div>
