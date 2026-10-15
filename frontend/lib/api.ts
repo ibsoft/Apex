@@ -324,6 +324,14 @@ export type ChatEvent =
      disk. The browser opens it in a window and the assistant describes it. */
   | { type: "visio_frame"; url: string; title: string; camera: string }
   | { type: "skills_changed" }
+  /* A sub-agent tool created, edited or deleted an agent. Like task_changed the
+     event carries no row: the client re-reads the list. */
+  | { type: "subagents_changed"; action?: string; agent_id?: string; name?: string }
+  /* A run began or finished. `subagent_report` carries the result text so a
+     listener *could* show it, but APEX relays the report itself on the next
+     turn, so the tab only refreshes. */
+  | { type: "subagent_started"; agent?: string; agent_id?: string; run_id?: string }
+  | { type: "subagent_report"; agent?: string; agent_id?: string; run_id?: string; ok?: boolean; text?: string; error?: string }
   /* A task tool changed the schedule: created, edited or deleted one. The event
      carries no row on purpose - the client re-reads the list, so a partial
      payload can never render a task that does not exist. */
@@ -535,7 +543,7 @@ export const api = {
     create: (data?: { title?: string; skill?: string }) =>
       json<Conversation>("/api/conversations", { method: "POST", body: JSON.stringify(data ?? {}) }),
     messages: (id: string) =>
-      json<{ conversation: Conversation; messages: { role: string; content: string; meta: any }[] }>(
+      json<{ conversation: Conversation; messages: { role: string; content: string; meta: any; created_at?: number }[] }>(
         `/api/conversations/${id}/messages`,
       ),
     remove: (id: string) => json(`/api/conversations/${id}`, { method: "DELETE" }),
@@ -746,6 +754,42 @@ export const api = {
       json<{ audit: IntegrationAuditEntry[] }>(
         id ? `/api/integrations/${id}/audit?limit=${limit}` : `/api/integrations/audit?limit=${limit}`,
       ),
+  },
+
+  /** Sub-agents (AGENTS tab). Owner-scoped; the engine that runs a delegated
+   *  task and the list shown here are the same records. */
+  subagents: {
+    list: () =>
+      json<{ agents: import("./subagents").SubAgent[]; enabled: boolean }>("/api/subagents"),
+    tools: () => json<{ tools: string[] }>("/api/subagents/tools"),
+    get: (id: string) =>
+      json<{ agent: import("./subagents").SubAgent }>(`/api/subagents/${id}`),
+    create: (draft: import("./subagents").SubAgentDraft) =>
+      json<{ agent: import("./subagents").SubAgent }>("/api/subagents", {
+        method: "POST",
+        body: JSON.stringify(draft),
+      }).then((r) => r.agent),
+    update: (id: string, patch: Partial<import("./subagents").SubAgentDraft>) =>
+      json<{ agent: import("./subagents").SubAgent }>(`/api/subagents/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }).then((r) => r.agent),
+    remove: (id: string) =>
+      json<{ ok: boolean }>(`/api/subagents/${id}`, { method: "DELETE" }),
+    run: (id: string, prompt: string) =>
+      json<{ run: import("./subagents").SubAgentRun }>(`/api/subagents/${id}/run`, {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+      }),
+    runs: (id: string) =>
+      json<{ runs: import("./subagents").SubAgentRun[] }>(`/api/subagents/${id}/runs`),
+    /** Called once the operator has seen a finished run, so it is not re-surfaced
+     *  in the model's context block on every later turn. */
+    ack: (ids: string[]) =>
+      json<{ ok: boolean; cleared: number }>("/api/subagents/ack", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
   },
 
   /** Stream a chat turn over SSE. onEvent receives parsed events. Returns the meta/conversation info. */

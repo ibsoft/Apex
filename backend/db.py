@@ -109,6 +109,42 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id);
                 CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(enabled, next_run);
+
+                CREATE TABLE IF NOT EXISTS subagents (
+                    id          TEXT PRIMARY KEY,
+                    user_id     TEXT NOT NULL,
+                    name        TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    role        TEXT DEFAULT '',   -- system prompt / instructions
+                    provider    TEXT DEFAULT '',   -- optional provider override
+                    model       TEXT DEFAULT '',   -- optional model override
+                    tools       TEXT DEFAULT '',   -- JSON tool-name list; empty = all
+                    workspace   TEXT DEFAULT '',   -- absolute dir; created on save
+                    enabled     INTEGER DEFAULT 1,
+                    conversation_id TEXT DEFAULT '', -- the agent's own thread
+                    created_at  REAL,
+                    updated_at  REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_subagents_user ON subagents(user_id);
+
+                CREATE TABLE IF NOT EXISTS subagent_runs (
+                    id              TEXT PRIMARY KEY,
+                    agent_id        TEXT NOT NULL,
+                    user_id         TEXT NOT NULL,
+                    prompt          TEXT NOT NULL,
+                    status          TEXT,          -- running | ok | error
+                    output          TEXT DEFAULT '',
+                    error           TEXT DEFAULT '',
+                    conversation_id TEXT DEFAULT '',
+                    started_at      REAL,
+                    finished_at     REAL,
+                    unread          INTEGER DEFAULT 0,
+                    created_at      REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_subagent_runs_agent
+                    ON subagent_runs(agent_id, started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_subagent_runs_user
+                    ON subagent_runs(user_id, unread);
                 """
             )
 
@@ -359,6 +395,164 @@ class Database:
         with self._lock, self._connect() as conn:
             cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return bool(cur.rowcount)
+
+    # ---- sub-agents --------------------------------------------------------
+    # Named workers with their own model/workspace/tools (see subagents/). Runs
+    # are a separate table so an agent's history survives edits, and `unread`
+    # lets the tab be told about a finished background run exactly once.
+    SUBAGENT_COLUMNS = (
+        "name", "description", "role", "provider", "model", "tools",
+        "workspace", "enabled", "conversation_id",
+    )
+    SUBAGENT_RUN_COLUMNS = (
+        "status", "output", "error", "conversation_id", "started_at",
+        "finished_at", "unread",
+    )
+
+    def create_subagent(self, user_id: str, **fields) -> dict:
+        agent_id = uuid.uuid4().hex
+        now = time.time()
+        row = {
+            "id": agent_id,
+            "user_id": user_id,
+            "name": (fields.get("name") or "Agent").strip() or "Agent",
+            "description": fields.get("description") or "",
+            "role": fields.get("role") or "",
+            "provider": (fields.get("provider") or "").strip(),
+            "model": (fields.get("model") or "").strip(),
+            "tools": fields.get("tools") or "",
+            "workspace": fields.get("workspace") or "",
+            "enabled": 1 if fields.get("enabled", True) else 0,
+            "created_at": now,
+            "updated_at": now,
+        }
+        cols = ", ".join(row)
+        marks = ", ".join("?" for _ in row)
+        with self._lock, self._connect() as conn:
+            conn.execute(f"INSERT INTO subagents ({cols}) VALUES ({marks})", tuple(row.values()))
+        return self.get_subagent(agent_id)
+
+    def get_subagent(self, agent_id: str, user_id: str | None = None) -> dict | None:
+        with self._lock, self._connect() as conn:
+            if user_id is None:
+                row = conn.execute(
+                    "SELECT * FROM subagents WHERE id = ?", (agent_id,)
+                ).fetchone()
+            else:
+                # Ownership is a filter, not a check afterwards: another user's
+                # agent must be indistinguishable from an id that does not exist.
+                row = conn.execute(
+                    "SELECT * FROM subagents WHERE id = ? AND user_id = ?",
+                    (agent_id, user_id),
+                ).fetchone()
+        return dict(row) if row else None
+
+    def list_subagents(self, user_id: str) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM subagents WHERE user_id = ? ORDER BY created_at ASC",
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_subagent(self, agent_id: str, **fields) -> dict | None:
+        if not fields:
+            return self.get_subagent(agent_id)
+        cols, vals = [], []
+        for key in self.SUBAGENT_COLUMNS:
+            if key in fields:
+                value = fields[key]
+                if key == "enabled":
+                    value = 1 if value else 0
+                cols.append(f"{key} = ?")
+                vals.append(value)
+        if not cols:
+            return self.get_subagent(agent_id)
+        cols.append("updated_at = ?")
+        vals.append(time.time())
+        vals.append(agent_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(f"UPDATE subagents SET {', '.join(cols)} WHERE id = ?", vals)
+        return self.get_subagent(agent_id)
+
+    def delete_subagent(self, agent_id: str) -> bool:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM subagent_runs WHERE agent_id = ?", (agent_id,))
+            cur = conn.execute("DELETE FROM subagents WHERE id = ?", (agent_id,))
+        return bool(cur.rowcount)
+
+    def create_subagent_run(self, agent_id: str, user_id: str, prompt: str,
+                            conversation_id: str = "") -> dict:
+        run_id = uuid.uuid4().hex
+        now = time.time()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO subagent_runs (id, agent_id, user_id, prompt, status, "
+                "output, error, conversation_id, started_at, finished_at, unread, created_at) "
+                "VALUES (?, ?, ?, ?, 'running', '', '', ?, ?, NULL, 0, ?)",
+                (run_id, agent_id, user_id, prompt, conversation_id, now, now),
+            )
+        return self.get_subagent_run(run_id)
+
+    def get_subagent_run(self, run_id: str) -> dict | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM subagent_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_subagent_run(self, run_id: str, **fields) -> dict | None:
+        if not fields:
+            return self.get_subagent_run(run_id)
+        cols, vals = [], []
+        for key in self.SUBAGENT_RUN_COLUMNS:
+            if key in fields:
+                value = fields[key]
+                if key == "unread":
+                    value = 1 if value else 0
+                cols.append(f"{key} = ?")
+                vals.append(value)
+        if not cols:
+            return self.get_subagent_run(run_id)
+        vals.append(run_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(f"UPDATE subagent_runs SET {', '.join(cols)} WHERE id = ?", vals)
+        return self.get_subagent_run(run_id)
+
+    def list_subagent_runs(self, agent_id: str, limit: int = 20) -> list[dict]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM subagent_runs WHERE agent_id = ? "
+                "ORDER BY started_at DESC LIMIT ?",
+                (agent_id, min(int(limit or 20), 200)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_unread_runs(self, user_id: str, limit: int = 10) -> list[dict]:
+        """Finished runs the operator has not seen yet (for the chat context
+        block and the tab's unread badge)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM subagent_runs WHERE user_id = ? AND unread = 1 "
+                "ORDER BY finished_at DESC LIMIT ?",
+                (user_id, min(int(limit or 10), 100)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_subagent_runs_read(self, user_id: str, run_ids: list[str] | None = None) -> int:
+        with self._lock, self._connect() as conn:
+            if run_ids:
+                marks = ", ".join("?" for _ in run_ids)
+                cur = conn.execute(
+                    f"UPDATE subagent_runs SET unread = 0 WHERE user_id = ? AND id IN ({marks})",
+                    (user_id, *run_ids),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE subagent_runs SET unread = 0 WHERE user_id = ? AND unread = 1",
+                    (user_id,),
+                )
+        return cur.rowcount
 
 
 # ---- settings --------------------------------------------------------

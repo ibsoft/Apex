@@ -67,6 +67,11 @@ import {
   type TaskPatch,
 } from "../lib/tasks";
 import {
+  type SubAgent,
+  type SubAgentDraft,
+  type SubAgentRun,
+} from "../lib/subagents";
+import {
   AppWindow,
   MAX_WINDOWS,
   WindowArrangement,
@@ -94,6 +99,9 @@ export type Message = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  /** When the message was created, epoch milliseconds. Set for local turns and
+   *  taken from the stored `created_at` when a conversation is loaded. */
+  at?: number;
   meta?: {
     tools?: { name: string; args?: any; output?: string; running?: boolean }[];
     voice?: boolean;
@@ -170,6 +178,18 @@ type ApexContextType = {
   deleteTask: (id: number) => Promise<void>;
   runTaskNow: (id: number) => Promise<void>;
   clearTaskNotice: (id: number) => void;
+  /* Sub-agents (AGENTS tab). Same shape as tasks: the provider owns the list and
+     the refresh, the panel is a view over it plus the editor. */
+  subagents: SubAgent[];
+  subagentsError: string | null;
+  subagentsLoading: boolean;
+  loadSubagents: (opts?: { quiet?: boolean }) => Promise<void>;
+  createSubAgent: (draft: SubAgentDraft) => Promise<SubAgent>;
+  updateSubAgent: (id: string, patch: SubAgentDraft) => Promise<SubAgent>;
+  deleteSubAgent: (id: string) => Promise<void>;
+  runSubAgent: (id: string, prompt: string) => Promise<void>;
+  loadSubAgentRuns: (id: string) => Promise<SubAgentRun[]>;
+  subagentToolNames: () => Promise<string[]>;
   operator: { name?: string; declaredAt: number } | null;
   silencedUntil: number;
   sudoPrompt: { reason?: string } | null;
@@ -240,6 +260,7 @@ const mkMsg = (role: Message["role"], content: string, extra: Partial<Message> =
   id: `m${Date.now().toString(36)}_${msgSeq++}`,
   role,
   content,
+  at: Date.now(),
   ...extra,
 });
 
@@ -304,6 +325,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   tasksRef.current = tasks;
   const [tasksError, setTasksError] = useState<string | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
+  /* Sub-agents (AGENTS tab). The provider owns the list so the tab and any
+     later voice/panel command read the same records the model is shown. */
+  const [subagents, setSubagents] = useState<SubAgent[]>([]);
+  const subagentsRef = useRef<SubAgent[]>([]);
+  subagentsRef.current = subagents;
+  const [subagentsError, setSubagentsError] = useState<string | null>(null);
+  const [subagentsLoading, setSubagentsLoading] = useState(false);
   const [operator, setOperator] = useState<{ name?: string; declaredAt: number } | null>(null);
   const [silencedUntil, setSilencedUntil] = useState<number>(0);
   const silencedUntilRef = useRef(silencedUntil);
@@ -479,6 +507,52 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, unread: false } : t)));
     void api.tasks.ack([id]).catch(() => {});
   }, []);
+
+  /* ---------- sub-agents (AGENTS tab) ----------
+   *
+   * The list is the same records the model is shown, so the panel and the
+   * context block never disagree about which agents exist. A background run's
+   * report is relayed by APEX on the next turn (server-side), so this side only
+   * owns the list, the CRUD and Run Now. */
+  const loadSubagents = useCallback(async (opts?: { quiet?: boolean }) => {
+    if (!opts?.quiet) setSubagentsLoading(true);
+    try {
+      const data = await api.subagents.list();
+      setSubagentsError(null);
+      setSubagents(data.agents ?? []);
+    } catch (err) {
+      setSubagentsError(err instanceof Error ? err.message : "Could not load sub-agents.");
+    } finally {
+      if (!opts?.quiet) setSubagentsLoading(false);
+    }
+  }, []);
+
+  const createSubAgent = useCallback(async (draft: SubAgentDraft) => {
+    const agent = await api.subagents.create(draft);
+    setSubagents((prev) => [...prev, agent]);
+    return agent;
+  }, []);
+
+  const updateSubAgent = useCallback(async (id: string, patch: SubAgentDraft) => {
+    const agent = await api.subagents.update(id, patch);
+    setSubagents((prev) => prev.map((x) => (x.id === id ? agent : x)));
+    return agent;
+  }, []);
+
+  const deleteSubAgent = useCallback(async (id: string) => {
+    await api.subagents.remove(id);
+    setSubagents((prev) => prev.filter((x) => x.id !== id));
+  }, []);
+
+  const runSubAgent = useCallback(async (id: string, prompt: string) => {
+    await api.subagents.run(id, prompt);
+    // The report arrives on the next list refresh / next turn, not in this
+    // response: the run is a whole agent turn that has only just been claimed.
+    return loadSubagents();
+  }, [loadSubagents]);
+
+  const loadSubAgentRuns = useCallback((id: string) => api.subagents.runs(id).then((r) => r.runs), []);
+  const subagentToolNames = useCallback(() => api.subagents.tools().then((r) => r.tools), []);
 
   /* The poll. Only while signed in, and it pauses while the tab is hidden: a
      backgrounded tab is not a place to spend a request every 20 seconds, and
@@ -727,7 +801,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         setByConv((m) => ({
           ...m,
           [id]: msgs.map((msg: any) =>
-            mkMsg(msg.role === "user" ? "user" : "assistant", msg.content || "", { meta: msg.meta ?? {} }),
+            mkMsg(msg.role === "user" ? "user" : "assistant", msg.content || "", {
+              meta: msg.meta ?? {},
+              at: typeof msg.created_at === "number" ? msg.created_at * 1000 : Date.now(),
+            }),
           ),
         }));
       }
@@ -2120,6 +2197,15 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
             void refreshTasks();
           } else if (ev.type === "memory") {
             void refreshMemory();
+          } else if (ev.type === "subagents_changed") {
+            // The model created, edited or deleted a sub-agent this turn. Re-read
+            // rather than patch: the event says *that* it changed, not the row.
+            void loadSubagents();
+          } else if (ev.type === "subagent_started" || ev.type === "subagent_report") {
+            // A run just began or finished; the tab shows the live status and the
+            // finished report, so it re-reads. Not an assistant message: APEX
+            // relays the report itself on the next turn.
+            void loadSubagents();
           } else if (ev.type === "skills_changed") {
             void api.skills.list().then((list) => {
               if (list.length) {
@@ -2362,6 +2448,16 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       deleteTask,
       runTaskNow,
       clearTaskNotice,
+      subagents,
+      subagentsError,
+      subagentsLoading,
+      loadSubagents,
+      createSubAgent,
+      updateSubAgent,
+      deleteSubAgent,
+      runSubAgent,
+      loadSubAgentRuns,
+      subagentToolNames,
       operator,
       silencedUntil,
       sudoPrompt,

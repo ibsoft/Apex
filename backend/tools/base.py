@@ -28,6 +28,9 @@ class ToolContext:
                                   # terminal_command resolves `terminal=N` against
                                   # this so the number painted in the title bar is
                                   # the number the model types
+    workspace: str = ""           # working directory for shell/terminal work. Set
+                                  # for sub-agent turns so their commands run in the
+                                  # agent's own workspace instead of the repo.
     autonomous_call_authorized: bool = False  # Explicit scheduled call request; no chat confirmation needed.
 
 
@@ -181,6 +184,12 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     # Empty when TASKS_ENABLED is false, which is also what removes the task
     # tools from AgentContext.ACTIVE_TOOLS for that deployment.
     for tool in build_task_tools(config):
+        registry.register(tool)
+    # Sub-agent tools. Empty when SUBAGENTS_ENABLED is false, the same off-switch
+    # contract as the task tools.
+    from tools.subagent_tools import build_subagent_tools
+
+    for tool in build_subagent_tools(config):
         registry.register(tool)
     # Audit-log tools (log_query / security_audit). Empty when the feature is
     # off, so a deployment without it does not advertise them.

@@ -246,6 +246,34 @@ class Config:
     # down, instead of silently skipping it. Only ever once per gap.
     TASKS_CATCH_UP = _bool("TASKS_CATCH_UP", True)
 
+    # --- Sub-agents ---------------------------------------------------------
+    # Named autonomous workers the operator (or the agent itself) creates. Each
+    # one has its own model, workspace directory and tool set, and reports back
+    # through APEX. SUBAGENTS_ENABLED is the master switch: when false the tools
+    # are never registered and the /api/subagents routes answer 403.
+    SUBAGENTS_ENABLED = _bool("SUBAGENTS_ENABLED", True)
+    # Root for every agent workspace: SUBAGENTS_DIR/<user_id>/<agent_id>/ is the
+    # working directory a sub-agent's shell/terminal work is confined to.
+    SUBAGENTS_DIR = Path(os.getenv("SUBAGENTS_DIR", str(DATA_DIR / "subagents")))
+    # Hard ceiling on one sub-agent turn, so a provider that never answers cannot
+    # hold a delegation open for ever.
+    SUBAGENT_TIMEOUT_SECONDS = _int("SUBAGENT_TIMEOUT_SECONDS", 900)
+    # Simultaneous sub-agent turns process-wide. Two by default: enough that a
+    # couple of agents can make progress while APEX waits on one, few enough that
+    # a fan-out cannot spawn a stampede of full agent turns.
+    SUBAGENT_MAX_CONCURRENT = _int("SUBAGENT_MAX_CONCURRENT", 2)
+    SUBAGENT_MAX_PER_USER = _int("SUBAGENT_MAX_PER_USER", 25)
+    # Most jobs in a single subagent_fanout call. The fan-out queues jobs beyond
+    # the concurrency cap rather than failing them, but an unbounded list would
+    # let one turn create an arbitrary amount of work; this is the ceiling.
+    SUBAGENT_FANOUT_MAX = _int("SUBAGENT_FANOUT_MAX", 8)
+    # An agent unused for this many days is "stale" and subagent_cleanup may
+    # remove it. Activity is the last run's finish time (creation time for one
+    # that never ran), so a fresh idle agent is not swept on the next turn.
+    SUBAGENT_STALE_DAYS = _int("SUBAGENT_STALE_DAYS", 30)
+    # Turns of a sub-agent's own conversation replayed as context on the next run.
+    SUBAGENT_HISTORY_WINDOW = _int("SUBAGENT_HISTORY_WINDOW", 20)
+
     # --- Web search --------------------------------------------------------
     # These are configurable so the search tool does not rely on hardcoded
     # endpoints. Defaults use DuckDuckGo's HTML form endpoint.
