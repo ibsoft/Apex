@@ -525,6 +525,24 @@ class Config:
     # 0 = held until the user logs out or the server restarts (memory only).
     VAPT_SUDO_TTL_MINUTES = _int("VAPT_SUDO_TTL_MINUTES", 0)
 
+    # --- Local Exploit-DB (used by the VAPT skill) --------------------------
+    # The exploit-database mirror (searchsploit + files_exploits.csv +
+    # files_shellcodes.csv + exploits/ + shellcodes/) that the VAPT skill searches
+    # for a detected product/version. Cloned here on first use if absent.
+    EXPLOITDB_ENABLED = _bool("EXPLOITDB_ENABLED", True)
+    EXPLOITDB_DIR = Path(os.getenv("EXPLOITDB_DIR", str(DATA_DIR / "exploitdb")))
+    EXPLOITDB_REPO_URL = os.getenv(
+        "EXPLOITDB_REPO_URL", "https://gitlab.com/exploit-database/exploitdb.git"
+    )
+    # Pull the mirror in the background this often (a daemon thread does it).
+    EXPLOITDB_AUTO_UPDATE = _bool("EXPLOITDB_AUTO_UPDATE", True)
+    EXPLOITDB_UPDATE_INTERVAL_HOURS = _int("EXPLOITDB_UPDATE_INTERVAL_HOURS", 24)
+    # Timeout for a clone or pull.
+    EXPLOITDB_UPDATE_TIMEOUT = _int("EXPLOITDB_UPDATE_TIMEOUT", 600)
+    # Timeout for one searchsploit invocation and the max entries returned.
+    EXPLOITDB_SEARCH_TIMEOUT = _int("EXPLOITDB_SEARCH_TIMEOUT", 60)
+    EXPLOITDB_MAX_RESULTS = _int("EXPLOITDB_MAX_RESULTS", 50)
+
     # --- CODE skill (developer projects / git / GitHub) ---------------------
     # Root folder where each coding project lives:
     #   $CODE_PROJECTS/<project>  (a git repository)
