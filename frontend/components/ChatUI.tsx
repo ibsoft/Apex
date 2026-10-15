@@ -21,6 +21,7 @@ import FileDownloads, { backendFileHref } from "./FileDownloads";
 import AppsPanel from "./AppsPanel";
 import TasksPanel from "./TasksPanel";
 import McpPanel from "./McpPanel";
+import AgentsPanel from "./AgentsPanel";
 import VisioSettings from "./VisioSettings";
 import SipSettings from "./SipSettings";
 import TelegramSettings from "./TelegramSettings";
@@ -252,7 +253,7 @@ function CopyButton({ text }: { text: string }) {
     <button
       onClick={handleCopy}
       style={{
-        marginTop: 4,
+        marginTop: 0,
         padding: "2px 8px",
         fontSize: 10,
         fontFamily: "var(--font-mono)",
@@ -521,7 +522,26 @@ function MessageBubble({ msg }: { msg: Message }) {
       </div>
       {!isUser && <FileDownloads tools={msg.meta?.tools} />}
       <ToolChips tools={msg.meta?.tools} />
-      {msg.content && !msg.streaming && <CopyButton text={msg.content} />}
+      {msg.content && !msg.streaming && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+          <CopyButton text={msg.content} />
+          {msg.at ? (
+            <time
+              dateTime={new Date(msg.at).toISOString()}
+              title={new Date(msg.at).toLocaleString()}
+              style={{
+                fontSize: 9.5,
+                fontFamily: "var(--font-mono)",
+                letterSpacing: "0.04em",
+                color: C.dim,
+                opacity: 0.7,
+              }}
+            >
+              {new Date(msg.at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}
+            </time>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -716,7 +736,7 @@ function ProfileMenu({
   );
 }
 
-type Tab = "chat" | "hist" | "settings" | "memory" | "apps" | "tasks" | "mcp";
+type Tab = "chat" | "hist" | "settings" | "memory" | "apps" | "tasks" | "mcp" | "agents";
 
 const TAB_FROM_COMMAND: Record<PanelTabName, Tab> = {
   chat: "chat",
@@ -726,6 +746,7 @@ const TAB_FROM_COMMAND: Record<PanelTabName, Tab> = {
   apps: "apps",
   tasks: "tasks",
   mcp: "mcp",
+  agents: "agents",
 };
 
 export default function ChatUI() {
@@ -749,6 +770,7 @@ export default function ChatUI() {
   const [histOpen, toggleHist] = useState(false);
   const [memSearch, setMemSearch] = useState("");
   const unreadTasks = a.tasks.filter((t) => t.unread).length;
+  const unreadSubagents = a.subagents.reduce((n, s) => n + (s.unread || 0), 0);
   const [memNote, setMemNote] = useState("");
   const [memResults, setMemResults] = useState<null | any[]>(null);
   const [memFiles, setMemFiles] = useState<FileList | null>(null);
@@ -1108,7 +1130,7 @@ export default function ChatUI() {
 
           {/* tabs */}
           <nav style={{ display: "flex", borderBottom: `1px solid ${C.line}` }}>
-            {(["chat", "hist", "tasks", "settings", "memory", "apps", "mcp"] as const).map((t) => (
+            {(["chat", "hist", "tasks", "settings", "memory", "apps", "mcp", "agents"] as const).map((t) => (
               <button key={t} onClick={() => setTab(t)}
                 style={{
                   flex: 1, padding: "9px 4px", fontSize: 9.5, letterSpacing: "0.14em", cursor: "pointer",
@@ -1122,6 +1144,9 @@ export default function ChatUI() {
                     03:00 has to be visible before the panel is even opened. */}
                 {t === "tasks" && unreadTasks > 0 && (
                   <span style={{ marginLeft: 4, color: C.gold }}>({unreadTasks})</span>
+                )}
+                {t === "agents" && unreadSubagents > 0 && (
+                  <span style={{ marginLeft: 4, color: C.gold }}>({unreadSubagents})</span>
                 )}
               </button>
             ))}
@@ -1542,6 +1567,8 @@ export default function ChatUI() {
             {tab === "tasks" && <TasksPanel />}
 
             {tab === "mcp" && <McpPanel />}
+
+            {tab === "agents" && <AgentsPanel />}
           </div>
         </aside>
       )}

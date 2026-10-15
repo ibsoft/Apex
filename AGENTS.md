@@ -685,6 +685,78 @@ background thread whether or not anyone is looking at the page.
   "εικονική επιφάνεια εργασίας" (virtual desktop) contains the word for task.
 - Tests: `backend/tests/test_tasks.py`, `frontend/tests/tasks.test.cjs`.
 
+## Sub-agents (AGENTS tab)
+
+Named autonomous workers the operator (or APEX) defines, each with its own model,
+tool scope and workspace. `backend/subagents/` is the whole feature:
+`manager.py` (owner-scoped CRUD, workspace provisioning, run orchestration and
+the concurrency cap), `runner.py` (one run = one agent turn in its own
+conversation), `routes.py` (the `/api/subagents*` REST surface), and
+`tools/subagent_tools.py` is the model-facing `subagent_*` tools.
+`frontend/components/AgentsPanel.tsx` is the tab.
+
+- **A run is a full agent turn, so it is capped.** `SUBAGENT_MAX_CONCURRENT`
+  (default 2) is a process-wide `BoundedSemaphore`; a background run that cannot
+  take a slot finishes `error` with "too many sub-agents are running", never
+  queues. `SUBAGENT_MAX_PER_USER` (default 25) bounds creation and
+  `SUBAGENT_TIMEOUT_SECONDS` (default 900) bounds a run.
+- **A sub-agent never gets the terminal or sub-agent tools.** `_SUBAGENT_EXCLUDED`
+  in `runner.py` is applied as `exclude_tools` on its `AgentContext`; the
+  terminal opens a browser window (pointless and window-littering for an
+  unattended worker) and the management tools would let an agent recursively
+  delegate. Recursion is closed by construction, not by prompt.
+- **Its tool scope is `strict_tools`.** An empty tool list means "all tools",
+  a non-empty list is exactly those names — the strict path in
+  `AgentContext.active_tools` skips the always-on force-include (terminal,
+  notepad, tasks, sub-agent tools) that a normal turn gets, so an agent's tools
+  are what the operator picked and nothing else. `run_shell` runs in the agent's
+  workspace (`ToolContext.workspace`), so shell work is confined to a directory
+  the agent owns.
+- **Ownership is a SQL predicate**, as everywhere else: another user's agent
+  answers 404, never 403.
+- **The reporting contract is the point.** `subagent_delegate` runs one agent
+  *synchronously* and returns the report as the tool result, so APEX holds it and
+  answers the operator in the same turn (chat or spoken). `subagent_fanout` is
+  the same contract for many jobs: it takes a list of `{agent, task}`, runs them
+  in parallel (`SubAgentManager.run_many`) and returns **every** report at once,
+  so APEX composes one answer from all of them. A background run (Run Now, or an
+  agent that finished with no browser attached) has no browser to answer, so
+  `subagent_context_block(user_id, db)` appends the roster plus any unfinished
+  report to the next turn's system prompt; `chat()` in `app.py` records the
+  report ids it included and calls `db.mark_subagent_runs_read` once the turn's
+  reply is produced. Without that ack the same report would be relayed on every
+  later turn. The delegate and fan-out tools ack their own synchronous runs for
+  the same reason. All acks are best-effort (`try/except`): a failure to mark
+  seen repeats a report, never loses one.
+- **APEX delegates on its own initiative, so the block is always present.**
+  `subagent_context_block` returns its rules even with an empty roster — APEX
+  cannot decide to create an agent for a complex job if it is never told the
+  capability exists. The block tells it to *reuse first* (only `subagent_create`
+  when no existing agent fits, and silently — no permission step), to split a
+  multi-part job and run it through `subagent_fanout`, not to over-delegate a
+  small task, and to tidy the roster with `subagent_cleanup`.
+- **`run_many` queues beyond the concurrency cap, unlike `run_now`.** A single
+  background run that cannot take a slot is `error` ("too many sub-agents are
+  running"); a fan-out would silently drop jobs that way, so it runs on a
+  `ThreadPoolExecutor` bounded by `_slots` and waits, returning a result triple
+  `(job, run_or_None, error)` per job. A paused or foreign agent in the list
+  fails only its own job (`error` string), never the batch.
+- **`subagent_cleanup` deletes only honestly-stale agents.** It removes agents
+  whose most recent run (or `created_at` if never run) is older than
+  `older_than_days` (default `SUBAGENT_STALE_DAYS`, 30), owner-scoped; workspaces
+  are left on disk. `SUBAGENT_FANOUT_MAX` (default 8) caps one fan-out call.
+- `subagent_context_block` is appended to the system prompt as build-time,
+  non-persisted context (like the task and window blocks), gated on
+  `SUBAGENTS_ENABLED`.
+- Events reach the browser through `ctx.emit`: `subagents_changed` (a model tool
+  created/edited/deleted one), `subagent_started`, `subagent_progress`
+  (throttled), `subagent_tool` and `subagent_report`. The tab re-reads on them —
+  the event says *that* something changed, not the row. A fan-out's events are
+  buffered until the blocking tool returns, so `AgentsPanel` also polls
+  `loadSubagents({quiet:true})` every 5s while it is mounted, to show a run as it
+  happens rather than only when it ends.
+- Tests: `backend/tests/test_subagents.py`, `frontend/tests/subagents.test.cjs`.
+
 ## PWA / installable app
 
 APEX installs as a standalone app (own window, own icon, offline shell). The

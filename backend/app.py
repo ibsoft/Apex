@@ -569,6 +569,17 @@ def create_app() -> Flask:
     # fires due tasks. A no-op when TASKS_ENABLED is false.
     register_task_routes(app, require_user, config)
 
+    # --- Sub-agents (AGENTS tab) --------------------------------------------
+    # Owner-scoped CRUD + Run Now. The model-facing tools are registered in
+    # tools.base; both go through the same manager. Off when SUBAGENTS_ENABLED
+    # is false, which also empties the tool list.
+    if getattr(config, "SUBAGENTS_ENABLED", True):
+        from subagents.manager import get_manager as get_subagent_manager
+        from subagents.routes import register_subagent_routes
+
+        app.extensions["apex_subagents"] = get_subagent_manager(config)
+        register_subagent_routes(app, require_user, config)
+
     # --- Universal integrations (MCP tab) -----------------------------------
     # One manager per process; the tools fall back to the same store path, and
     # the monitor thread refreshes health whether or not the tab is open.
@@ -1810,6 +1821,21 @@ def create_app() -> Flask:
         if task_context:
             system_prompt = system_prompt.rstrip() + "\n\n" + task_context
 
+        # The operator's sub-agents and any run they have not seen yet. A
+        # background run finishes with no browser attached, so this block is how
+        # APEX learns the result and can relay it in chat or speech. The run ids
+        # are acknowledged after this turn produces its reply (see stream_gen):
+        # they have been shown to the model, which is instructed to relay them,
+        # so the next turn must not repeat them.
+        subagent_report_ids: list[str] = []
+        if getattr(config, "SUBAGENTS_ENABLED", True):
+            from subagents.manager import subagent_context_block
+
+            subagent_context = subagent_context_block(uid, db)
+            if subagent_context:
+                system_prompt = system_prompt.rstrip() + "\n\n" + subagent_context
+                subagent_report_ids = [r["id"] for r in db.list_unread_runs(uid, 5)]
+
         # Configured integrations (MCP / SQL / REST / GraphQL) the operator has
         # made available to this skill. The block is schema/endpoint inventory,
         # never a secret, and is build-time context only (never persisted).
@@ -1958,6 +1984,13 @@ def create_app() -> Flask:
                     pass
 
             assistant_text = "".join(assistant_parts).strip()
+            # These sub-agent reports were handed to the model this turn; it has
+            # answered (or tried to), so they must not be repeated next turn.
+            if subagent_report_ids:
+                try:
+                    db.mark_subagent_runs_read(uid, subagent_report_ids)
+                except Exception:
+                    pass
             record(
                 "info", "chat", "chat_reply",
                 role="assistant", user_id=uid, conversation_id=conv["id"],

@@ -56,6 +56,23 @@ INTEGRATION_TOOLS = frozenset({
 #: picking a skill first. Registration itself is gated by OBSERVABILITY_ENABLED.
 OBSERVABILITY_TOOLS = frozenset({"log_query", "security_audit"})
 
+#: Sub-agent tools are force-included for every skill while the feature is on:
+#: managing and delegating to sub-agents is a first-class capability, not a
+#: skill the operator must select. Registration is gated by SUBAGENTS_ENABLED.
+#: A sub-agent turn excludes these (see subagents.runner) so an agent cannot
+#: recursively delegate to yet another agent.
+SUBAGENT_TOOLS = frozenset({
+    "subagent_list",
+    "subagent_create",
+    "subagent_update",
+    "subagent_delete",
+    "subagent_status",
+    "subagent_delegate",
+    "subagent_fanout",
+    "subagent_cleanup",
+    "subagent_tools",
+})
+
 
 def _runtime_truthy(value) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes", "on"}
@@ -88,6 +105,12 @@ class AgentContext:
     require_tool: bool = False
     # Skills may veto tools entirely (see Skill.exclude_tools).
     exclude_tools: list[str] = field(default_factory=list)
+    # Sub-agent turns: `skill_tools` is the agent's exact tool list and nothing
+    # is force-included, so a read-only agent does not silently get terminal.
+    strict_tools: bool = False
+    # Working directory for shell/terminal work. Empty means "use the default
+    # (repo/home) behaviour". A sub-agent sets this to its own workspace.
+    workspace: str = ""
     # Set only for a scheduled task that explicitly asks to place a phone call.
     autonomous_call_authorized: bool = False
     # Events queued by tools through ToolContext.emit. Engines drain them right
@@ -106,12 +129,21 @@ class AgentContext:
 
     def active_tools(self) -> list[Tool]:
         banned = set(self.exclude_tools or ())
+        if self.strict_tools:
+            # A sub-agent's tool list is authoritative: exactly these, nothing
+            # force-included, so scoping an agent actually scopes it.
+            names = set(self.skill_tools or ())
+            return [
+                t for t in self.tools.active()
+                if t.name in names and t.name not in banned
+            ]
         if not self.skill_tools:
             pool = self.tools.active()
             if banned:
                 return [t for t in pool if t.name not in banned]
             return pool
-        names = set(self.skill_tools) | ALWAYS_ON_TOOLS | INTEGRATION_TOOLS | OBSERVABILITY_TOOLS
+        names = (set(self.skill_tools) | ALWAYS_ON_TOOLS | INTEGRATION_TOOLS
+                 | OBSERVABILITY_TOOLS | SUBAGENT_TOOLS)
         if _runtime_truthy(self.runtime.get("telegram_enabled")):
             names |= TELEGRAM_TOOLS
         return [
@@ -132,6 +164,7 @@ class AgentContext:
             focused_terminal=self.focused_terminal,
             terminal_map=self.terminal_map,
             output_destination=self.output_destination,
+            workspace=self.workspace,
             autonomous_call_authorized=self.autonomous_call_authorized,
             emit=self.push_event,
         )

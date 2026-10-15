@@ -249,13 +249,17 @@ def build_core_tools(registry, cfg):
                 result = out or "ok"
         else:
             try:
+                # A sub-agent turn sets ctx.workspace so its commands run in the
+                # agent's own directory; an ordinary turn leaves it empty and the
+                # backend's cwd is used as before.
+                workdir = ctx.workspace if (ctx.workspace and os.path.isdir(ctx.workspace)) else os.getcwd()
                 proc = subprocess.run(
                     command,
                     shell=True,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
-                    cwd=os.getcwd(),
+                    cwd=workdir,
                     env=os.environ,
                 )
             except subprocess.TimeoutExpired:
