@@ -20,6 +20,7 @@
 */
 
 import { useEffect, useRef, useState } from "react";
+import { isAlarmStopPhrase } from "./commands";
 import { settleVoiceCommand } from "./voiceLifecycle";
 import {
   accumulateResults,
@@ -123,14 +124,18 @@ export function useVoiceEngine(opts: {
   interruptEnabled: boolean;
   /** 1..10 slider; higher = interrupt more eagerly. */
   interruptSensitivity: number;
+  /** True while a reminder alarm is ringing. */
+  alarmActive?: boolean;
+  /** Called when a "stop" phrase is heard while `alarmActive`. */
+  onAlarmStop?: () => void;
   onPhase: (p: VoicePhase) => void;
   onWake?: () => void;
   onCommand: (text: string) => void | Promise<void>;
 }): VoiceEngine {
-  const { enabled, wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand } = opts;
+  const { enabled, wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, alarmActive, onAlarmStop, onPhase, onWake, onCommand } = opts;
 
-  const cfgRef = useRef({ wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand });
-  cfgRef.current = { wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand };
+  const cfgRef = useRef({ wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, alarmActive, onAlarmStop, onPhase, onWake, onCommand });
+  cfgRef.current = { wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, alarmActive, onAlarmStop, onPhase, onWake, onCommand };
 
   const recRef = useRef<SpeechRecognitionLike | null>(null);
   const phaseRef = useRef<VoicePhase>("standby");
@@ -678,6 +683,27 @@ export function useVoiceEngine(opts: {
     const re = wakePattern(ww, language);
     const low = text.toLowerCase();
     const phase = phaseRef.current;
+
+    /* A ringing reminder alarm answers to a stop phrase directly, with or
+       without the wake word ("Apex stop"), in any phase. It is checked before
+       the phase machine because the alarm must be stoppable at any moment and
+       because the alarm audio itself can make wake-word detection less
+       reliable. The caller only enables this while an alarm is actually
+       ringing, so a bare "stop" is otherwise an ordinary command. */
+    if (cfgRef.current.alarmActive && text) {
+      const withoutWake = sliceAfterLastWake(text, ww, language);
+      if (isAlarmStopPhrase(text) || isAlarmStopPhrase(withoutWake)) {
+        vlog("alarm stop phrase heard:", text);
+        cfgRef.current.onAlarmStop?.();
+        accRef.current = emptyResultSnapshot(lastResultLenRef.current);
+        pendingCommand.current = "";
+        if (commandTimer.current) {
+          clearTimeout(commandTimer.current);
+          commandTimer.current = null;
+        }
+        return;
+      }
+    }
 
     // barge-in: wake word cuts off speech / thinking
     if ((phase === "speaking" || phase === "thinking") && re.test(low)) {

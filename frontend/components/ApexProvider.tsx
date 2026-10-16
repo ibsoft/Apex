@@ -1223,7 +1223,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
          and React may invoke an updater more than once. */
       const due = remindersRef.current.filter((r) => r.fireAt <= now);
       if (due.length) {
-        setReminders((prev) => prev.filter((r) => r.fireAt > now));
+        // Drop them from the live ref *and* state in the same tick, so a slow
+        // render cannot let the next tick fire the same reminder again (which
+        // would start a second alarm and speak it twice).
+        const dueIds = new Set(due.map((r) => r.id));
+        remindersRef.current = remindersRef.current.filter((r) => !dueIds.has(r.id));
+        setReminders((prev) => prev.filter((r) => !dueIds.has(r.id)));
         due.forEach((r) => startAlarm(r.name));
       }
     }, 1000);
@@ -1286,6 +1291,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     responseLanguage: settings.response_language ?? cfg?.response_language ?? "en",
     interruptEnabled: settings.voice_interrupt_enabled === true,
     interruptSensitivity: Number(settings.voice_interrupt_sensitivity ?? 6),
+    alarmActive: alarms.length > 0,
+    onAlarmStop: () => stopAlarm(),
     onPhase: onVoicePhase,
     onCommand: (text: string) => {
       if (!userRef.current) return;
@@ -1807,6 +1814,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         const time = new Date(command.fireAt).toLocaleTimeString(commandLanguage(), { hour: "2-digit", minute: "2-digit" });
         return localize(`Reminder set: "${command.name}" at ${time}.`, `Ορίστηκε υπενθύμιση: «${command.name}» στις ${time}.`);
       }
+      case "language":
+        /* Persist the new reply language. The voice engine watches
+           `response_language` and re-arms itself (recognition language +
+           TTS voice) on the change, which is the "self restart". */
+        await updateSettings({ response_language: command.language });
+        return command.language === "el"
+          ? "Από εδώ και πέρα θα μιλάμε Ελληνικά."
+          : "From now on we will speak English.";
       case "operator":
         declareOperator(command.name);
         return command.name

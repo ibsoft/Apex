@@ -565,6 +565,38 @@ validates and stores them.
 - If an engine never fires boundary events, `spoken` stays 0 and the in-progress
   chunk replays in full — a small repeat, never a lost tail.
 
+### Reminder alarms (a sound that rings until stopped)
+
+`frontend/lib/alarm.ts` is the melody (`FANCY_ALARM_NOTES`, `alarmLoopSeconds`),
+`AlarmOverlay.tsx` is the banner and `ApexProvider` owns the ring. A fired
+reminder is not a timer that chimes once: it moves out of the schedule and into
+`alarms`, and a single looping Web Audio cycle plays until the operator stops it.
+
+- **The alarm is stopped by voice without a wake word.** `voice.ts` gets
+  `alarmActive` + `onAlarmStop`, and checks `isAlarmStopPhrase` at the top of
+  `onResult` in every phase. "Apex stop" is handled by slicing the wake word
+  first; a bare "stop" / "σταμάτα" is only a stop *because* `alarmActive` is
+  true, so with nothing ringing it is an ordinary command. This is why the check
+  cannot live in the pure parser — the parser has no alarm state.
+- `isAlarmStopPhrase` (in `commands.ts`) is anchored to the whole utterance, so
+  "stop the timer" / "stop the download" stay requests; only object-less stop
+  phrases and explicit alarm nouns match. Tests: `commands.test.cjs`,
+  `alarm.test.cjs`.
+- STOP and the X both clear the alarm (clicking elsewhere does not — a dismiss
+  must be deliberate); `stopAlarm(id)` keeps ringing while other alarms remain
+  and only tears the audio graph down when the last goes.
+
+### Changing the reply language by voice
+
+`parseLanguageCommand` in `commands.ts` turns "from now on we will speak Greek"
+into `{ type: "language", language }` (EN + Greek). `executeLocalCommand`
+persists `response_language`; the voice engine watches that setting and re-arms
+itself (recognition language and TTS voice) — the "self restart". It is
+deterministic, so it never spends a model turn. The matcher is anchored so a
+sentence that merely mentions a language reaches the agent, and it runs on
+`normalize()`d text: any Greek written in it must use folded forms (`μιλάς` ->
+`μιλασ`, `εξής` -> `εξησ`), or it silently never matches.
+
 ## Terminals (model-opened, never requested from the user)
 
 `backend/tools/terminal_server.py::open_session` is the single way a PTY session

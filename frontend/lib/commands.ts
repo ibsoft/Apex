@@ -27,6 +27,9 @@ export type LocalCommand =
   | { type: "cancelReminders" }
   | { type: "timer"; name: string; seconds: number }
   | { type: "reminder"; name: string; fireAt: number }
+  /* "from now on we speak Greek" - changes the assistant's reply language and
+     re-arms the voice engine (recognition lang + TTS voice) this turn. */
+  | { type: "language"; language: "en" | "el" }
   | { type: "operator"; name?: string }
   | { type: "autonomy"; enabled: boolean }
   | { type: "silence" }
@@ -213,13 +216,15 @@ function parseReminder(text: string, greek: boolean, now: number): LocalCommand 
  * this function is never the thing that decides to intercept, the caller is. */
 const ALARM_STOP_PHRASES = new Set([
   "stop", "stop it", "stop that", "stop this", "stop the alarm", "stop alarm",
-  "stop the reminder", "stop the reminders", "stop the sound", "stop the noise",
-  "stop ringing", "silence", "silence the alarm", "quiet", "be quiet",
-  "shut up", "enough", "dismiss", "dismiss the alarm", "cancel the alarm",
-  "ok stop", "okay stop", "alright stop",
+  "stop the reminder", "stop reminder", "stop the reminders", "stop reminders",
+  "stop the sound", "stop the noise", "stop ringing", "stop the ringing",
+  "silence", "silence the alarm", "quiet", "be quiet", "shut up", "enough",
+  "dismiss", "dismiss the alarm", "cancel the alarm", "turn off the alarm",
+  "turn it off", "ok stop", "okay stop", "alright stop",
   "σταματα", "σταματησε", "σταματα το", "σταματησε το", "σταματα την υπενθυμιση",
-  "σταματησε την υπενθυμιση", "σταματα το ξυπνητηρι", "σταματησε το ξυπνητηρι",
-  "σκασε", "ησυχια", "αρκετα", "τερμα", "παψε", "κλειστο",
+  "σταματησε την υπενθυμιση", "σταματα υπενθυμιση", "σταματησε υπενθυμιση",
+  "σταματα τις υπενθυμισεις", "σταματα το ξυπνητηρι", "σταματησε το ξυπνητηρι",
+  "σκασε", "ησυχια", "αρκετα", "τερμα", "παψε", "κλειστο", "κλειστα",
   "ακυρωσε το ξυπνητηρι", "κλεισε το ξυπνητηρι", "κλεισε την υπενθυμιση",
 ]);
 
@@ -230,6 +235,45 @@ export function isAlarmStopPhrase(text: string): boolean {
   if (ALARM_STOP_PHRASES.has(t)) return true;
   // Tolerate a trailing "please" / "now" ("stop the alarm please").
   return ALARM_STOP_PHRASES.has(strip(t.replace(/\s+(?:please|now|σε παρακαλω|παρακαλω)$/g, "")));
+}
+
+/* ---------- response language by voice ---------- */
+
+/* "Apex, from now on we will speak Greek." Changing the assistant's language
+ * has to be deterministic and immediate: the operator is telling it how to
+ * talk, so it must not spend a model turn on it and must take effect this turn.
+ * The matcher is anchored to the whole utterance - a sentence that merely
+ * mentions a language ("how do I say X in Greek?") must keep reaching the
+ * agent. Folding makes the Greek tokens accent- and sigma-insensitive. */
+const LANGUAGE_TOKEN = "(?:greek|english|ελληνικα|αγγλικα)";
+const LANGUAGE_COMMAND_RE = new RegExp(
+  "^(?:" +
+    [
+      `(?:from now on,? )?(?:we |let'?s |i want (?:you )?to )?(?:will |'ll |are going to )?(?:speak|talk) (?:in |to )?${LANGUAGE_TOKEN}`,
+      `(?:from now on,? )?(?:please )?(?:speak|talk|switch to|change to|use) ${LANGUAGE_TOKEN}(?: from now on)?`,
+      `(?:change|switch) (?:the )?language to ${LANGUAGE_TOKEN}`,
+      // The matcher runs on normalize()d text, so Greek words are written in
+      // their folded form: final sigma is "σ" ("μιλάς" -> "μιλασ", "εξής" ->
+      // "εξησ"). Writing the literal ς here is the trap that never matches.
+      `(?:θα |να )?(?:μιλαμε|μιλασ|μιλα|συνεχισε)(?: απο (?:δω|εδω|τωρα)(?: και (?:περα|στο εξησ))?)? (?:στα |σε |στην |στη )?${LANGUAGE_TOKEN}(?: απο (?:δω|εδω|τωρα)(?: και (?:περα|στο εξησ))?)?`,
+      `απο (?:δω|εδω|τωρα)(?: και (?:περα|στο εξησ))?,? (?:θα |να )?(?:μιλαμε|μιλασ|μιλα) (?:στα |σε |στην |στη )?${LANGUAGE_TOKEN}`,
+      `αλλαξε (?:τη |την )?γλωσσα (?:σε |στα )?${LANGUAGE_TOKEN}`,
+      `γυρισε (?:τη γλωσσα )?(?:στα |σε )?${LANGUAGE_TOKEN}`,
+      `${LANGUAGE_TOKEN} απο (?:δω|εδω|τωρα)(?: και (?:περα|στο εξης))?`,
+    ].join("|") +
+  ")$",
+);
+
+export function parseLanguageCommand(text: string): LocalCommand | null {
+  const strip = (s: string) => s.replace(/[.!;,]+$/g, "").replace(/\s+/g, " ").trim();
+  let core = strip(normalize(text));
+  if (!core) return null;
+  core = strip(core.replace(/\s+(?:please|now|σε παρακαλω|παρακαλω|ευχαριστω)$/g, ""));
+  if (!LANGUAGE_COMMAND_RE.test(core)) return null;
+  const token = core.match(/greek|english|ελληνικα|αγγλικα/)?.[0];
+  if (token === "greek" || token === "ελληνικα") return { type: "language", language: "el" };
+  if (token === "english" || token === "αγγλικα") return { type: "language", language: "en" };
+  return null;
 }
 
 const SKILL_ALIASES: Record<string, string[]> = {
@@ -1266,6 +1310,10 @@ export function parseLocalCommand(text: string, language: string, skills: Array<
   const normalized = normalize(clean);
   const notepad = parseNotepadCommand(text.trim(), greek);
   if (notepad) return notepad;
+  // "from now on we speak Greek" changes the reply language; deterministic and
+  // must not be read as a request for the agent.
+  const languageCmd = parseLanguageCommand(text);
+  if (languageCmd) return languageCmd;
   // Before the panel parser: "show tasks" must answer the question, not just
   // switch tabs (the local handler opens the tab as well), and "run task 2"
   // would otherwise be read as a request to open something called "2".
