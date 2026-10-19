@@ -182,6 +182,32 @@ for (const [action, phrases] of [
   for (const phrase of phrases) test(`window: ${phrase}`, () => assert.deepEqual(parse(phrase), { type: 'window', action }));
 }
 
+/* ---------- transport words while a player is open ---------- */
+
+test('a bare next/previous declines while a player is open, in both languages', () => {
+  const withPlayer = (text, language = 'en') =>
+    parseLocalCommand(text, language, skills, now, { mediaActive: true });
+
+  // They belong to the player: the utterance has to reach the agent, which owns
+  // the queue (and knows it from the media block in its context).
+  for (const phrase of ['next', 'forward', 'previous', 'back', 'last', 'prev', 'earlier']) {
+    assert.equal(withPlayer(phrase), null, phrase);
+  }
+  for (const phrase of ['επόμενο', 'επόμενη', 'μπροστά', 'προηγούμενο', 'προηγούμενη', 'πίσω']) {
+    assert.equal(withPlayer(phrase, 'el'), null, phrase);
+  }
+
+  // Naming the referent leaves nothing ambiguous, so it stays a window command.
+  assert.deepEqual(withPlayer('next window'), { type: 'window', action: 'next' });
+  assert.deepEqual(withPlayer('previous image'), { type: 'window', action: 'previous' });
+  assert.deepEqual(withPlayer('επόμενο παράθυρο', 'el'), { type: 'window', action: 'next' });
+  assert.deepEqual(withPlayer('προηγούμενη εικόνα', 'el'), { type: 'window', action: 'previous' });
+
+  // With no player open the bare words keep meaning the window layer.
+  assert.deepEqual(parseLocalCommand('next', 'en', skills, now), { type: 'window', action: 'next' });
+  assert.deepEqual(parseLocalCommand('πίσω', 'el', skills, now), { type: 'window', action: 'previous' });
+});
+
 test('window commands target an explicit window by number or ordinal', () => {
   assert.deepEqual(parse('close window 2', 'en'), { type: 'window', action: 'close', target: 2 });
   assert.deepEqual(parse('focus the second window', 'en'), { type: 'window', action: 'focus', target: 2 });

@@ -26,6 +26,22 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _default_ytdlp() -> str:
+    """Where the yt-dlp binary lives: the env override, else this repo's venv,
+    else "" (which means "whatever is on PATH").
+
+    The distro's yt-dlp can be years out of date, and YouTube breaks old builds
+    (resolution fails with HTTP 400 "Precondition check failed"), so the copy
+    pinned in requirements.txt and installed into .venv is preferred. `apex
+    doctor fix` provisions it, and a deployment that keeps its own up-to-date
+    binary on PATH still keeps working - the venv path is only a default."""
+    override = os.getenv("YOUTUBE_DLP", "").strip()
+    if override:
+        return override
+    venv = BASE_DIR.parent / ".venv" / "bin" / "yt-dlp"
+    return str(venv) if venv.is_file() else ""
+
+
 def _csv(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name)
     if raw is None:
@@ -420,6 +436,23 @@ class Config:
     # DATA_DIR/chat_images/<user>/ and are swept after this TTL.
     CHAT_IMAGE_TTL_SECONDS = _int("CHAT_IMAGE_TTL_SECONDS", 3600)
     CHAT_IMAGES_USER_MAX = _int("CHAT_IMAGES_USER_MAX", 20)
+
+    # --- YouTube music / video apps ------------------------------------------
+    # The backend only SEARCHES: results come from the yt-dlp binary, and the
+    # browser plays them in a YouTube iframe it owns. Nothing is downloaded and
+    # no API key is used, so the only secret-shaped knob here is the binary path.
+    YOUTUBE_ENABLED = _bool("YOUTUBE_ENABLED", True)
+    # Empty means "the venv's yt-dlp if installed, else whatever is on PATH";
+    # a full path is used as-is. See _default_ytdlp.
+    YOUTUBE_DLP = _default_ytdlp()
+    YOUTUBE_SEARCH_LIMIT = _int("YOUTUBE_SEARCH_LIMIT", 8)
+    YOUTUBE_SEARCH_TIMEOUT = _int("YOUTUBE_SEARCH_TIMEOUT", 20)
+    # The same request ("play music by X") asked twice within this window
+    # reuses the first search instead of hitting YouTube again. Bursts of
+    # searches from one connection are what get it flagged as a bot, and the
+    # flag then refuses *embedded playback* in the browser too - a failure this
+    # app cannot otherwise undo. 0 disables the cache.
+    YOUTUBE_SEARCH_CACHE_SECONDS = _int("YOUTUBE_SEARCH_CACHE_SECONDS", 300)
 
     # --- SIP skill (outbound phone calls) ------------------------------------
     # Off by default: this dials a real phone on a real account. A deployment

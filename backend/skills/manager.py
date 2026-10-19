@@ -602,6 +602,103 @@ def force_email_skill(user_text: str, skills: list[Skill]) -> str | None:
     return None
 
 
+# --- YouTube media players (music / video windows) -------------------------
+# Deterministic like VISIO and SIP, and needed for the same shape of reason:
+# a media request is an *action*, so a classifier that files "play some jazz"
+# under shell would answer from a terminal that cannot play anything. It runs
+# before the host guard for the same reason email does, so "play some music and
+# run df -h" reaches the player first rather than being swallowed by the
+# live-host patterns.
+#
+# Verb-first, never noun-first: music, video or youtube on their own are as
+# often a question *about* those things as a request to play them ("what is
+# YouTube?", "I like that song"). The one exception is a bare transport word -
+# the whole utterance is "next" or "stop", which nobody says to mean anything
+# but the player when one exists.
+#
+# Greek is matched after `_strip_accents`, which does NOT fold a final sigma,
+# so no alternative here may end in sigma: every Greek stem is written as a
+# prefix (`τραγουδ`, `σταματα`) that matches either spelling by construction.
+# A prefix also means no trailing `\b` - `μουσικ` in "μουσικη" is followed by a
+# word character, so an end boundary there would never match. The English side
+# keeps `\b` on both ends, where the words are whole.
+_MEDIA_NOUNS_EN = (
+    r"music|songs?|tracks?|albums?|playlists?|youtube|videos?|podcasts?"
+    r"|movies?|films?|radio"
+)
+_MEDIA_VERBS_EN = (
+    r"play|pause|resume|stop|skip|next|previous|prev|put\s+on|turn\s+on"
+    r"|queue|shuffle|watch|listen\s+to|change|switch"
+)
+_MEDIA_NOUNS_EL = r"μουσικ|τραγουδ|βιντεο|ταινι|ραδιοφων|podcast"
+_MEDIA_VERBS_EL = (
+    r"παιξ(?:ε|τε)|βαλ(?:ε|τε)|σταματ(?:α|ε)|στοπ|παυσ(?:ε|η)|συνεχισ(?:ε|η)"
+    r"|επομεν(?:ο|η)|προηγουμεν(?:ο|η)|κλεισ(?:ε|η)|ανοιξ(?:ε|η)|αλλαξ(?:ε|τε)"
+)
+_MEDIA_BARE = r"play|pause|resume|stop|skip|next|previous|prev|σταματα|στοπ|επομενο|προηγουμενο"
+_MEDIA_RE = re.compile(
+    # An imperative that only a player answers: "play some jazz", "watch that
+    # live set", "can you play jazz". The negative lookahead keeps the games
+    # ("play chess", "play a game of poker") and phrasings that are not
+    # playback ("watch out") with whoever had them: it allows up to two words
+    # before the excluded noun, which is what "play a game" needed - a
+    # lookahead that only inspected the next word passed "a" and matched. The
+    # modal opener is the shape a voice request really has; without it "could
+    # you play some music" never matched.
+    r"^(?:please\s+|just\s+)?(?:(?:can|could|would|will)\s+(?:you|i)\s+)?(?:please\s+)?"
+    r"(?:play|put\s+on|watch|listen\s+to|queue|shuffle)\s+"
+    r"(?!(?:\w+\s+){0,2}(?:games?|chess|poker|sports?|ball|out|carefully)\b)"
+    # The whole utterance is one transport word: bare "next"/"stop" while a
+    # player may be running. Anchored, so "next steps" is not a player command.
+    rf"|^(?:{_MEDIA_BARE})\s*[.!?]?$"
+    # A transport verb near a media noun, either word order: "stop the music",
+    # "the music please stop", "σταματα τη μουσικη".
+    rf"|\b(?:{_MEDIA_VERBS_EN})\b[^\n.?!]{{0,40}}\b(?:{_MEDIA_NOUNS_EN})\b"
+    rf"|\b(?:{_MEDIA_NOUNS_EN})\b[^\n.?!]{{0,40}}\b(?:{_MEDIA_VERBS_EN})\b"
+    rf"|\b(?:{_MEDIA_VERBS_EL})[^\n.?!]{{0,40}}?(?:{_MEDIA_NOUNS_EL})"
+    rf"|\b(?:{_MEDIA_NOUNS_EL})[^\n.?!]{{0,40}}?(?:{_MEDIA_VERBS_EL})"
+    # A capability question in the shape an operator really asks it: "what can
+    # you play for me next?" contains no media noun anywhere, so the anchored
+    # imperative and the verb-noun pairs are both blind to it. Greek asks the
+    # same question with τι ... (μπορεισ να) παιξ.
+    r"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:play|put\s+on|watch|listen\s+to)\b"
+    r"|\bτι\b[^\n.?!;]{0,30}?(?:μπορει[σς]\s+)?(?:να\s+)?(?:παιξ|βαλ)",
+    re.IGNORECASE,
+)
+
+#: A request to be reminded, scheduled or timed is somebody else's job even
+#: when it mentions playback ("remind me to watch the video later"). The
+#: deterministic reminder parser usually eats that first, but the guard costs
+#: one search and removes the case where it does not.
+_MEDIA_DELAY_RE = re.compile(
+    r"\b(?:remind|reminder|schedule|scheduling|timer|cron"
+    r"|θυμησ|υπενθυμισ|χρονομετρ)\b",
+    re.IGNORECASE,
+)
+
+
+def force_media_skill(user_text: str, skills: list[Skill]) -> str | None:
+    """Route a playback request to the MEDIA skill, when one is loaded.
+
+    The media tool itself is always-on (see ``agent.base.ALWAYS_ON_TOOLS``),
+    so this is about the *prompt*, not the capability: the MEDIA skill is what
+    knows the players exist, that live state arrives in ``media_context``, and
+    that a link pasted into a reply is not playback. A box without the skill
+    routes as before and the tool still answers.
+    """
+    if not any(s.name == "MEDIA" for s in skills):
+        return None
+    text = user_text or ""
+    if not text.strip() or _CODEISH_RE.search(text):
+        return None
+    flat = _strip_accents(text)
+    if _MEDIA_DELAY_RE.search(flat):
+        return None
+    if _MEDIA_RE.search(flat):
+        return "MEDIA"
+    return None
+
+
 def route_skill(
     user_text: str,
     skills: list[Skill],
@@ -629,10 +726,13 @@ def route_skill(
     # Deterministic first: live-host questions always go to the skill that
     # actually runs commands, no matter what the classifier decides (or caches).
     # Email runs ahead of the host guard so a "run <cmd> and email me" request
-    # reaches the skill that can actually send, not the terminal-only shell.
+    # reaches the skill that can actually send, not the terminal-only shell;
+    # media sits in the same place for the same reason - a player request is an
+    # action, and the shell skill cannot play anything.
     forced = (force_visio_skill(user_text, skills)
               or force_sip_skill(user_text, skills)
               or force_email_skill(user_text, skills)
+              or force_media_skill(user_text, skills)
               or force_host_skill(user_text, skills))
     if forced:
         return forced
@@ -668,6 +768,8 @@ def route_skill(
         "files, reply 'EDITOR'.\n"
         "- If the request is to place a phone call, telephone or ring someone, "
         "reply 'SIP'.\n"
+        "- If the request is to play, pause, resume or control YouTube music, "
+        "songs, videos, films, or the window they are shown in, reply 'MEDIA'.\n"
         # Memory is not a specialist skill, so it has no name to route to and
         # falls through to the fallback. Without this the classifier reads
         # "remember this my phone number is 6977456030" as a request about a

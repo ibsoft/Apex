@@ -386,7 +386,7 @@ function arrangementFromWord(word: string | undefined, greek: boolean): WindowAr
   return "cascade";
 }
 
-function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
+function parseWindowCommand(text: string, greek: boolean, mediaActive = false): LocalCommand | null {
   const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
   if (!clean) return null;
   const normalized = normalize(clean);
@@ -434,13 +434,26 @@ function parseWindowCommand(text: string, greek: boolean): LocalCommand | null {
       || (greek && /^(?:λιστε|δειξε|μετρησε|απαριθμησε)\s+(?:τα\s+|τισ\s+)?(?:ανοιχτα\s+)?παραθυρα$/.test(normalized)))
     return { type: "window", action: "list" };
 
-  // next / previous window (or image/photo, kept for parity with the old preview)
-  if (/^(?:next|forward)(?:\s+(?:window|image|photo|picture|one|page))?$/.test(normalized)
-      || (greek && /^(?:επομενο|επομενη|μπροστα)(?:\s+(?:παραθυρο|εικονα|φωτογραφια|σελιδα|εγγραφο))?$/.test(normalized)))
-    return { type: "window", action: "next" };
-  if (/^(?:previous|back|last|prev|earlier)(?:\s+(?:window|image|photo|picture|one|page))?$/.test(normalized)
-      || (greek && /^(?:προηγουμενο|προηγουμενη|πισω)(?:\s+(?:παραθυρο|εικονα|φωτογραφια|σελιδα|εγγραφο))?$/.test(normalized)))
-    return { type: "window", action: "previous" };
+  // next / previous window (or image/photo, kept for parity with the old preview).
+  //
+  // While a media player is open a *bare* "next"/"previous" is a track skip and
+  // belongs to the agent, not this parser: the reference declines on purpose so
+  // the utterance reaches `media_player` (the command router is stopped from
+  // stealing it too, by the matching rule in commandSpec). The forms that name
+  // what they want - "next window", "επόμενο παράθυρο" - still match, because
+  // there is nothing ambiguous left for the player to claim.
+  {
+    const nextEn = normalized.match(/^(?:next|forward)(?:\s+(window|image|photo|picture|one|page))?$/);
+    if (nextEn && !(mediaActive && !nextEn[1])) return { type: "window", action: "next" };
+    const prevEn = normalized.match(/^(?:previous|back|last|prev|earlier)(?:\s+(window|image|photo|picture|one|page))?$/);
+    if (prevEn && !(mediaActive && !prevEn[1])) return { type: "window", action: "previous" };
+    if (greek) {
+      const nextEl = normalized.match(/^(?:επομενο|επομενη|μπροστα)(?:\s+(παραθυρο|εικονα|φωτογραφια|σελιδα|εγγραφο))?$/);
+      if (nextEl && !(mediaActive && !nextEl[1])) return { type: "window", action: "next" };
+      const prevEl = normalized.match(/^(?:προηγουμενο|προηγουμενη|πισω)(?:\s+(παραθυρο|εικονα|φωτογραφια|σελιδα|εγγραφο))?$/);
+      if (prevEl && !(mediaActive && !prevEl[1])) return { type: "window", action: "previous" };
+    }
+  }
 
   // targeted actions: close / focus / maximize / minimize / restore
   const referent = greek
@@ -1303,11 +1316,32 @@ export function parseTaskCommand(text: string, greek: boolean): LocalCommand | n
     })();
 }
 
-export function parseLocalCommand(text: string, language: string, skills: Array<{ name: string }>, now = Date.now()): LocalCommand | null {
+/** Options that change how an utterance is routed, never what it means.
+ *
+ *  `mediaActive` is true while a music/video player window is open: a bare
+ *  "next", "previous" or "back" then means *track* skip, so the window parser
+ *  declines it and the utterance reaches `media_player` instead. */
+export type ParseOptions = { mediaActive?: boolean };
+
+/** The transport words with nothing else in the utterance, already `normalize()`d
+ *  (lower-cased, accents stripped, final sigma folded). They are listed once
+ *  here because, while a player is open, the *whole* dispatcher is skipped for
+ *  them - see the guard at the top of {@link parseLocalCommand}. */
+const BARE_TRANSPORT =
+  /^(?:next|forward|previous|prev|back|last|earlier|επομενο|επομενη|μπροστα|προηγουμενο|προηγουμενη|πισω)$/;
+
+export function parseLocalCommand(text: string, language: string, skills: Array<{ name: string }>, now = Date.now(), opts: ParseOptions = {}): LocalCommand | null {
   const clean = text.trim().replace(/[.!?;·;]+$/, "").trim();
   if (!clean) return null;
   const greek = isGreek(language);
   const normalized = normalize(clean);
+  // A player open claims the bare transport words outright. This sits *before*
+  // every parser, because they would each answer a different question: the task
+  // parser reads a lone "last" as the last task, the window parser as the last
+  // window. Nothing here may win - only a word that names its referent
+  // ("last task", "next window") has an unambiguous owner, and that reaches the
+  // parser for it below.
+  if (opts.mediaActive && BARE_TRANSPORT.test(normalized)) return null;
   const notepad = parseNotepadCommand(text.trim(), greek);
   if (notepad) return notepad;
   // "from now on we speak Greek" changes the reply language; deterministic and
@@ -1335,7 +1369,7 @@ export function parseLocalCommand(text: string, language: string, skills: Array<
   if (files) return files;
   const desktop = parseDesktopCommand(clean, greek);
   if (desktop) return desktop;
-  const win = parseWindowCommand(clean, greek);
+  const win = parseWindowCommand(clean, greek, !!opts.mediaActive);
   if (win) return win;
   if (/^(?:cancel|stop|clear)\s+(?:all\s+)?timers?$/.test(normalized)
       || (greek && /^(?:ακυρωσε|σταματα|σταματησε|διαγραψε|διεγραψε)\s+(?:(?:ολα\s+)?τα\s+|το\s+)?χρονομετρ(?:ο|α)$/.test(normalized))) return { type: "cancelTimers" };

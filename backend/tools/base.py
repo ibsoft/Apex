@@ -142,8 +142,14 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.visio_tools import build_visio_tools
     from tools.sip_tools import build_sip_tools
     from tools.telegram_tools import build_telegram_tools
+    from tools.youtube_tools import build_media_tools
 
     for tool in build_visio_tools(config):
+        registry.register(tool)
+    # The YouTube players: same pattern as VISIO - registered always, with the
+    # YOUTUBE_ENABLED gate inside the handler, so a settings change applies on
+    # the next turn and the tool can still *say* why nothing will play.
+    for tool in build_media_tools(config):
         registry.register(tool)
     # Registered unconditionally, like VISIO. The gate is inside the handler, so
     # turning SIP on in the settings tab takes effect on the next turn instead of

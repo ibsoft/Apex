@@ -43,6 +43,7 @@ const { parseLocalCommand } = loadTs('lib/commands.ts');
 const {
   LOCAL_ACTIONS,
   MAX_ACTION_CHAIN,
+  MEDIA_GUARDED_ACTIONS,
   buildUiState,
   renderActionCatalogue,
   renderUiState,
@@ -552,16 +553,21 @@ test('all four window-ish kinds can be minimized in one utterance', async () => 
 
 /* ---------- the two entry points agree on the order ---------- */
 
-test('both the voice and the typed path run parser, then executor, then model, then agent', () => {
-  // The reasoning layer is only a fallback. If it were consulted before the
-  // parser, every turn would cost a model call and the deterministic path would
-  // stop being deterministic; if it were consulted after the agent, it would be
-  // dead code. The order is the contract, so it is asserted rather than trusted.
+test('voice runs context first, typed runs the parser first', () => {
+  // The two paths are deliberately different contracts. Typed text is
+  // deliberate and instant: the deterministic parser answers it, and the
+  // reasoning layer only sees what it missed. A spoken instruction is phrased
+  // freely - "bigger", "again", "that one" - so it is read against the screen
+  // and the recent conversation first, with the keyword parsers as the
+  // fallback for what no catalogue can express (a reminder's text, a skill
+  // name). Both orders are asserted rather than trusted, because getting it
+  // backwards either costs a model call on every keystroke or silently
+  // reintroduces phrase matching as the gate on voice.
   const provider = fs.readFileSync(path.join(FRONTEND, 'components/ApexProvider.tsx'), 'utf8');
   const voice = provider.match(/async function handleVoiceCommand\(text: string\) \{[\s\S]*?\n  \}/);
   assert.ok(voice, 'handleVoiceCommand not found');
   const voiceBody = voice[0];
-  const voiceOrder = ['parseLocalCommand', 'executeLocalCommand', 'resolveCommandWithModel', 'sendRef.current'];
+  const voiceOrder = ['resolveCommandWithModel', 'runResolvedCommands', 'parseCommand(', 'executeLocalCommand', 'sendRef.current'];
   let at = -1;
   for (const step of voiceOrder) {
     const found = voiceBody.indexOf(step, at + 1);
@@ -571,11 +577,24 @@ test('both the voice and the typed path run parser, then executor, then model, t
   // An empty proposal must not be treated as an answer: [] means "send it on".
   assert.match(voiceBody, /if \(resolved\.length\)/);
   assert.match(voiceBody, /if \(reply !== null\)/);
+  // `parseCommand` is the one entry point: it is the deterministic parser plus
+  // the caller's language, skills and player state, so both paths read an
+  // utterance the same way.
+  const wrapper = provider.match(/const parseCommand = \(text: string[^\n]*\n?[^=]*=\s*\n?[\s\S]*?parseLocalCommand\(/);
+  assert.ok(wrapper, 'parseCommand must wrap parseLocalCommand');
 
+  // The context that makes those free phrasings mean something is actually
+  // sent: the media queue, the recent exchange, the active skill.
+  const resolver = provider.match(/const resolveCommandWithModel = useCallback\([\s\S]*?\n  \}, \[/);
+  assert.ok(resolver, 'resolveCommandWithModel not found');
+  assert.match(resolver[0], /commandContextBlock\(\{/);
+  assert.match(resolver[0], /\.\.\.\(context \? \{ context \} : \{\}\)/);
+  assert.match(resolver[0], /messages: byConvRef\.current/);
+  // Typed text keeps the old order: parser, executor, then the model.
   const typed = provider.match(/const sendMessage = useCallback\([\s\S]*?\n  \}, \[/);
   assert.ok(typed, 'sendMessage not found');
   const typedBody = typed[0];
-  const typedOrder = ['parseLocalCommand', 'executeLocalCommand', 'resolveCommandWithModel'];
+  const typedOrder = ['parseCommand(', 'executeLocalCommand', 'resolveCommandWithModel'];
   at = -1;
   for (const step of typedOrder) {
     const found = typedBody.indexOf(step, at + 1);
@@ -598,5 +617,70 @@ test('rubbish in place of a list of actions yields nothing', () => {
   assert.deepEqual(
     sanitizeActions({ actions: [{ type: 'terminal', action: 'restore_all' }] }, ctx),
     [{ type: 'terminal', action: 'restore_all' }],
+  );
+});
+/* ---------- the media player in the state ---------- */
+
+const mediaState = (over = {}) => buildUiState({
+  windows: [],
+  focusedWindowId: null,
+  activeDesktop: 0,
+  media: { app: 'music', title: 'A track', paused: false, ...over },
+});
+
+test('the snapshot reports the open player, its state and its title', () => {
+  assert.match(renderUiState(mediaState()), /Media player: music - playing "A track"\./);
+  assert.match(renderUiState(mediaState({ paused: true, title: 'Second' })),
+    /Media player: music - paused "Second"\./);
+  assert.match(renderUiState(mediaState({ paused: true, app: 'video', title: 'A film' })),
+    /Media player: video - paused "A film"\./);
+  // No player: the line is not printed at all, so the model is never told a
+  // player exists when one does not.
+  const bare = renderUiState(stateWith([]));
+  assert.equal(bare.includes('Media player'), false);
+  assert.equal(stateWith([]).media, null);
+});
+
+test('buildUiState carries the player through, and defaults it to null', () => {
+  assert.equal(buildUiState({ windows: [], focusedWindowId: null, activeDesktop: 0 }).media, null);
+  const state = mediaState({ app: 'video', title: 'A film', paused: true });
+  assert.deepEqual(state.media, { app: 'video', title: 'A film', paused: true });
+});
+
+test('the guarded transport actions need the parser to agree while a player is open', () => {
+  assert.deepEqual([...MEDIA_GUARDED_ACTIONS].sort(), ['window.close', 'window.next', 'window.previous']);
+  const state = mediaState();
+
+  // A bare "next" is a track skip; the parser declines it, so the router's
+  // proposal of a window command goes with it rather than moving a window the
+  // operator never meant.
+  assert.deepEqual(
+    sanitizeActions([{ type: 'window', action: 'next' }],
+      { state, utterance: 'next', language: 'en', skills }),
+    [],
+  );
+  assert.deepEqual(
+    sanitizeActions([{ type: 'window', action: 'previous' }],
+      { state, utterance: 'back', language: 'en', skills }),
+    [],
+  );
+  assert.deepEqual(
+    sanitizeActions([{ type: 'window', action: 'close' }],
+      { state, utterance: 'play some music', language: 'en', skills }),
+    [],
+  );
+
+  // An utterance both readers can only mean one way still runs.
+  assert.deepEqual(
+    sanitizeActions([{ type: 'window', action: 'next' }],
+      { state, utterance: 'next window', language: 'en', skills }),
+    [{ type: 'window', action: 'next' }],
+  );
+
+  // The same words with no player open are the old behaviour.
+  assert.deepEqual(
+    sanitizeActions([{ type: 'window', action: 'next' }],
+      { state: stateWith([]), utterance: 'next', language: 'en', skills }),
+    [{ type: 'window', action: 'next' }],
   );
 });

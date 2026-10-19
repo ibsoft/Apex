@@ -323,6 +323,13 @@ export type ChatEvent =
      short-lived signed URL held in memory on the backend, never written to
      disk. The browser opens it in a window and the assistant describes it. */
   | { type: "visio_frame"; url: string; title: string; camera: string }
+  /* The media tool picked a YouTube result: the queue itself travels here (the
+     backend keeps no playback state) and the browser opens or retunes the
+     player window. */
+  | { type: "media_play"; app: "music" | "video"; items: unknown[]; index: number }
+  /* Transport for an already-open player: pause/resume/next/previous, plus the
+     window-level actions. Playback state still lives only in the frontend. */
+  | { type: "media_control"; app: "music" | "video"; action: string }
   | { type: "skills_changed" }
   /* A sub-agent tool created, edited or deleted an agent. Like task_changed the
      event carries no row: the client re-reads the list. */
@@ -593,7 +600,7 @@ export const api = {
    *  the router is unavailable, so a failure here costs nothing but a reply
    *  delay. The reply is a *proposal*: `sanitizeActions` is what decides it is
    *  executable, and it runs against the same catalogue sent here. */
-  resolveCommand: (payload: { text: string; language: string; catalogue: string; state: string }) =>
+  resolveCommand: (payload: { text: string; language: string; catalogue: string; state: string; context?: string }) =>
     json<{ actions: Array<Record<string, unknown>> }>("/api/resolve-command", {
       method: "POST",
       body: JSON.stringify(payload),

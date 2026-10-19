@@ -6,7 +6,7 @@
 
 export const MAX_WINDOWS = 10;
 
-export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "terminal" | "files" | "notepad" | "other";
+export type WindowKind = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "text" | "terminal" | "files" | "notepad" | "music" | "video" | "other";
 export type WindowArrangement = "cascade" | "grid" | "tile-h" | "tile-v" | "center";
 
 export type WindowItem = { url: string; title: string; kind?: WindowKind };
@@ -157,6 +157,22 @@ export function isNotepadWindow(window: AppWindow): boolean {
     || (!!item && kindForItem(item) === "text");
 }
 
+/** True when a window hosts the YouTube music player. */
+export function isMusicWindow(window: AppWindow): boolean {
+  return window.kind === "music";
+}
+
+/** True when a window hosts the YouTube video player. */
+export function isVideoWindow(window: AppWindow): boolean {
+  return window.kind === "video";
+}
+
+/** Either of the two media players. `windowContextBlock` already reports them
+ *  through their kind, so this exists for code that acts on "the player". */
+export function isMediaWindow(window: AppWindow): boolean {
+  return isMusicWindow(window) || isVideoWindow(window);
+}
+
 /** React StrictMode (Next dev default) double-mounts effects: an unmount within
  *  ~1.5s of mount is the phantom cleanup of a fresh session, so the teardown
  *  DELETE must be skipped to keep the PTY alive for the second mount. */
@@ -170,6 +186,9 @@ export function windowDownload(item: WindowItem): { href: string; download?: str
   const url = item?.url;
   if (!url) return null;
   if (terminalSessionId(item)) return null; // terminals stream, they don't download
+  // A playing YouTube page is not a file: the ⭳ button would save the watch
+  // page's HTML. The player window plays it or does not offer anything.
+  if (kindForItem(item) === "music" || kindForItem(item) === "video") return null;
   const title = itemTitle(item);
   const signed = isSignedPreviewToken(url);
   if (signed) {

@@ -1528,12 +1528,14 @@ def create_app() -> Flask:
     # ---- local command reasoning ---------------------------------------------
     @app.post("/api/resolve-command")
     def resolve_command():
-        """Ask a model which window actions an unrecognized utterance asks for.
+        """Ask a model which window actions an utterance asks for.
 
-        The browser's own parsers run first and still win; this is only reached
-        when one of them missed, which used to mean the utterance went to the
-        agent. The agent cannot un-minimize a window, so a miss was a turn that
-        produced a reply and no change.
+        Typed text still reaches this only after the deterministic parsers
+        missed it, which used to mean the utterance went to the agent. The agent
+        cannot un-minimize a window, so a miss was a turn that produced a reply
+        and no change. A *spoken* instruction comes here first, against the
+        screen and the recent conversation: voice is meant to be phrased freely,
+        and the keyword lists are the fallback rather than the gate.
 
         The browser sends the catalogue of actions it can perform and the state
         of the screen, and validates the answer itself against the same
@@ -1550,6 +1552,10 @@ def create_app() -> Flask:
         utterance = str(data.get("text") or "").strip()
         catalogue = str(data.get("catalogue") or "").strip()
         state = str(data.get("state") or "").strip()
+        # Optional: the recent conversation and the open player, so an
+        # instruction that does not name its target can be read against what the
+        # operator was just doing. Absent is the old behaviour, not an error.
+        context = str(data.get("context") or "").strip()
         if not utterance or not catalogue:
             return jsonify({"actions": []})
 
@@ -1590,6 +1596,7 @@ def create_app() -> Flask:
             catalogue=catalogue,
             state=state,
             provider=provider,
+            context=context,
         )
         return jsonify({"actions": actions})
 
@@ -1802,6 +1809,14 @@ def create_app() -> Flask:
         window_context = str(data.get("window_context") or "").strip()
         if window_context:
             system_prompt = system_prompt.rstrip() + "\n\n" + window_context
+
+        # The same, one layer over: what the on-screen music/video player is
+        # doing right now. It is what makes "next" or "stop" a player request
+        # instead of a guess - the browser knows because it owns the iframe, and
+        # the model only ever sees it as this turn's build-time context.
+        media_context = str(data.get("media_context") or "").strip()
+        if media_context:
+            system_prompt = system_prompt.rstrip() + "\n\n" + media_context
 
         # The operator attached one or more documents this turn. Their full text
         # is already in long-term memory (see /api/memory/upload); this is the

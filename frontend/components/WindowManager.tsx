@@ -22,8 +22,10 @@ import {
   WindowArrangement,
   WindowItem,
   isFilesWindow,
+  isMusicWindow,
   isNotepadWindow,
   isTerminalWindow,
+  isVideoWindow,
   itemTitle,
   kindForName,
   layoutRects,
@@ -37,6 +39,8 @@ import { backendFileHref } from "./FileDownloads";
 import TerminalWindow from "./TerminalWindow";
 import FileManagerWindow from "./FileManagerWindow";
 import NotepadWindow from "./NotepadWindow";
+import MusicWindow from "./MusicWindow";
+import VideoWindow from "./VideoWindow";
 
 const C = {
   cyan: "#00e5ff",
@@ -62,12 +66,15 @@ function windowSource(url: string): { src: string; proxy: boolean } {
 }
 
 function KindTag({ kind }: { kind: string }) {
+  // Media reads gold like images: both are "a thing being shown", the rest of
+  // the desktop is cyan.
+  const accent = kind === "image" || kind === "music" || kind === "video" ? "gold" : "cyan";
   return (
     <span style={{
       fontSize: 8.5, letterSpacing: "0.14em", textTransform: "uppercase",
-      color: kind === "image" ? C.gold : C.cyan,
-      border: `1px solid ${kind === "image" ? C.lineGold : C.line}`,
-      background: kind === "image" ? `${C.gold}0d` : `${C.cyan}0a`,
+      color: accent === "gold" ? C.gold : C.cyan,
+      border: `1px solid ${accent === "gold" ? C.lineGold : C.line}`,
+      background: accent === "gold" ? `${C.gold}0d` : `${C.cyan}0a`,
       padding: "1px 6px", borderRadius: 9, whiteSpace: "nowrap",
     }}>
       {kind}
@@ -254,6 +261,10 @@ function WindowBody({ w, focused, onNext, onPrevious }: {
     const source = item && !item.url.startsWith("notepad:") ? item : undefined;
     return <NotepadWindow key={`${w.id}:${source?.url ?? ""}`} windowId={w.id} focused={focused} source={source} />;
   }
+  // The players render from the provider's `media` queue, not from their item:
+  // the item is only the title bar, the state is what plays.
+  if (isMusicWindow(w)) return <MusicWindow key={w.id} windowId={w.id} focused={focused} />;
+  if (isVideoWindow(w)) return <VideoWindow key={w.id} windowId={w.id} focused={focused} />;
   const kind = w.kind === "image" && w.items.length > 1 ? "image" : w.kind;
   if (kind === "image") return <ImageBody items={w.items} index={w.index} onNext={onNext} onPrevious={onPrevious} />;
   if (kind === "pdf") return <PdfBody item={item} />;
@@ -360,8 +371,15 @@ export default function WindowManager() {
     if (node && /^(input|textarea|select)$/i.test(node.tagName)) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { a.windowClose(focused.id); }
-      else if (e.key === "ArrowRight") a.windowNext();
-      else if (e.key === "ArrowLeft") a.windowPrevious();
+      else if (e.key === "ArrowRight") {
+        // A player's arrows skip tracks: one item per media window makes the
+        // gallery "next" a no-op there, which is what it looked like before.
+        if (focused.kind === "music" || focused.kind === "video") a.mediaAction(focused.kind, "next");
+        else a.windowNext();
+      } else if (e.key === "ArrowLeft") {
+        if (focused.kind === "music" || focused.kind === "video") a.mediaAction(focused.kind, "previous");
+        else a.windowPrevious();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

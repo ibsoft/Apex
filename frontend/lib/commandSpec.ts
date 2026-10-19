@@ -19,17 +19,24 @@
  *     do, so the model cannot be offered an action that does not exist here.
  *  2. {@link buildUiState} - what is on screen right now: every window with its
  *     number, kind, minimized/maximized flags and desktop, plus the scheduled
- *     tasks. This is what turns "the other terminal" or "the one I closed" from
- *     an unanswerable phrase into a number.
+ *     tasks and the open media player. This is what turns "the other terminal"
+ *     or "the one I closed" from an unanswerable phrase into a number, and what
+ *     tells a free phrasing that a player is what it is probably about.
  *  3. {@link sanitizeActions} - the trust boundary. Model output is untrusted
  *     JSON: anything not in the catalogue is dropped, numbers are range-checked
  *     against the state, and the three consequential actions (end the session,
  *     lock the screen, type into the chat box) are only accepted when the
- *     deterministic parser independently agrees.
+ *     deterministic parser independently agrees - as are the player's transport
+ *     words while a player is open ({@link MEDIA_GUARDED_ACTIONS}).
  *
- *  The deterministic parsers still run first and still win. This is the fallback
- *  for what they do not recognise, so a turn that already works costs nothing and
- *  behaves exactly as before.
+ *  Which runs first depends on the path, and both are deliberate. Typed text:
+ *     the deterministic parsers, then this layer, then the agent - typing is
+ *     deliberate and the keyword path is instant. A spoken instruction: this
+ *     layer first, with the screen *and* the recent conversation in the prompt,
+ *     because "bigger" and "again" only mean something against what is on
+ *     screen. The parsers stay as the fallback for what no catalogue can
+ *     express, and the orders are asserted in
+ *     `frontend/tests/commandSpec.test.cjs`.
  */
 import type { BulkWindowAction, LocalCommand } from "./commands";
 import { parseLocalCommand } from "./commands";
@@ -211,6 +218,20 @@ export const LOCAL_ACTIONS: LocalActionSpec[] = [
  *  words. */
 export const CONFIRMATORY_ACTIONS = new Set(["signout", "lock", "chatinput"]);
 
+/** Window actions that also need the parser's agreement *while a media player
+ *  is open* (`UiState.media` set), for two reasons that are both "a wrong
+ *  target is worse than no action":
+ *
+ *  - `window.next` / `window.previous` on a bare "next"/"previous" is a track
+ *    skip. `commands.ts` declines exactly that utterance while a player runs so
+ *    it reaches `media_player`; if the router proposes the window action anyway,
+ *    the parser saw no referent ("next window"), and letting it through would
+ *    silently jump the track instead.
+ *  - `window.close` acts on the *focused* window, which with a player open may
+ *    be something else entirely. A close is not a guess to make; with no player
+ *    open this set is inert and the reasoning layer keeps working as before. */
+export const MEDIA_GUARDED_ACTIONS = new Set(["window.next", "window.previous", "window.close"]);
+
 /** How many actions one utterance may produce.
  *
  *  "Close the browser window and restore terminal 2" is two. This is a cap on
@@ -273,6 +294,9 @@ export type UiState = {
   focusedTerminal: number | null;
   /** Shown as `number - label (status)`, in the same order the TASKS tab lists. */
   tasks: string[];
+  /** The open media player (music or video), if one is open. Its existence
+   *  changes who owns a bare "next"/"previous"/"stop" - see MEDIA_GUARDED_ACTIONS. */
+  media: { app: string; title: string; paused: boolean } | null;
 };
 
 /** Snapshot what the browser currently shows.
@@ -289,6 +313,7 @@ export function buildUiState(input: {
   focusedWindowId: string | null;
   activeDesktop: number;
   tasks?: Array<{ id: number; description?: string; status?: string; schedule?: string }>;
+  media?: { app: string; title: string; paused: boolean } | null;
 }): UiState {
   const { windows, focusedWindowId, activeDesktop } = input;
   const isPad = (w: AppWindow) =>
@@ -312,6 +337,7 @@ export function buildUiState(input: {
       return t && isTerminalWindow(t) ? terminalNumber(windows, t) : null;
     })(),
     tasks: (input.tasks ?? []).map((t) => `${t.id} - ${t.description ?? "(no description)"} [${t.status ?? "unknown"}]`),
+    media: input.media ?? null,
   };
 }
 
@@ -337,6 +363,11 @@ export function renderUiState(state: UiState): string {
     state.focusedWindow !== null ? `Focused window: #${state.focusedWindow}.` : "No window is focused.",
   ];
   if (lines.length) header.push("Open windows:");
+  if (state.media) {
+    header.push(
+      `Media player: ${state.media.app} - ${state.media.paused ? "paused" : "playing"} "${state.media.title}".`,
+    );
+  }
   if (state.tasks.length) header.push("Scheduled tasks:", ...state.tasks.map((t) => `- ${t}`));
   return header.concat(lines).join("\n");
 }
@@ -502,7 +533,11 @@ export function sanitizeActions(raw: unknown, input: {
     : raw && typeof raw === "object" && Array.isArray((raw as { actions?: unknown }).actions)
       ? (raw as { actions: unknown[] }).actions
       : [];
-  const parsed = parseLocalCommand(input.utterance, input.language, input.skills);
+  // The media flag matters here for the same reason it matters in the callers:
+  // with a player open the parser declines a bare "next"/"previous", so this
+  // call must see the same state the caller saw, or the two could disagree
+  // about an utterance they both read.
+  const parsed = parseLocalCommand(input.utterance, input.language, input.skills, Date.now(), { mediaActive: !!input.state.media });
   const out: LocalCommand[] = [];
   const seen = new Set<string>();
   for (const entry of list.slice(0, MAX_ACTION_CHAIN)) {
@@ -520,6 +555,12 @@ export function sanitizeActions(raw: unknown, input: {
       // one action this check exists to allow.
       const parsedAction = (parsed as { action?: string }).action ?? "";
       if (parsedAction !== action) continue;
+    }
+    // Same rule, narrower trigger: only while a player is open, and only for
+    // the actions whose wrong target would be felt immediately (see the set).
+    if (input.state.media && MEDIA_GUARDED_ACTIONS.has(specKey(type, action))) {
+      const parsedAction = (parsed as { action?: string } | null)?.action ?? "";
+      if (!parsed || parsed.type !== type || parsedAction !== action) continue;
     }
     const command: Record<string, unknown> = { type, ...(action ? { action } : {}) };
     /* A target the screen does not show is a *wrong address*, not a missing

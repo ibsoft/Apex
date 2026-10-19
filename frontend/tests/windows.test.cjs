@@ -12,7 +12,8 @@ const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
 const { MAX_WINDOWS, kindForName, layoutRects, collectPreviewableItems, windowContextBlock, windowDownload,
   terminalUrl, terminalSessionId, isTerminalWindow, isFilesWindow, shouldReleaseTerminal, onDesktop,
-  terminalNumber, terminalWindows, isSignedPreviewToken, groupItemsByKind } = moduleExports;
+  terminalNumber, terminalWindows, isSignedPreviewToken, groupItemsByKind, kindForItem,
+  isMusicWindow, isVideoWindow, isMediaWindow } = moduleExports;
 
 test('kindForName classifies files by extension', () => {
   assert.equal(kindForName('photo.png'), 'image');
@@ -257,4 +258,48 @@ test('a terminal window item is recognised by its terminal: url regardless of ki
   mislabelled.items[0].url = 'terminal:sABC';
   assert.equal(isTerminalWindow(mislabelled), true);
   assert.equal(terminalNumber([mislabelled], mislabelled), 1);
+});
+
+/* ---------- the two media windows ---------- */
+
+test('the media kinds are their own kinds, never "other"', () => {
+  assert.equal(kindForItem({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', title: 'A video', kind: 'video' }), 'video');
+  assert.equal(kindForItem({ url: 'apex:music', title: 'Music', kind: 'music' }), 'music');
+  // The kind is what the window is built from, and a YouTube watch page has no
+  // extension the filename classifier could read.
+  assert.equal(kindForName('https://www.youtube.com/watch?v=dQw4w9WgXcQ', ''), 'other');
+});
+
+test('a media window is identified by kind, and the two are distinct', () => {
+  const music = { id: 'm', items: [{ url: 'apex:music', title: 'Music' }], index: 0, kind: 'music' };
+  const video = { id: 'v', items: [{ url: 'apex:video', title: 'Video' }], index: 0, kind: 'video' };
+  assert.equal(isMusicWindow(music), true);
+  assert.equal(isVideoWindow(music), false);
+  assert.equal(isVideoWindow(video), true);
+  assert.equal(isMusicWindow(video), false);
+  assert.equal(isMediaWindow(music), true);
+  assert.equal(isMediaWindow(video), true);
+  assert.equal(isMediaWindow({ ...music, kind: 'image' }), false);
+});
+
+test('a player window offers no download button', () => {
+  // ⭳ would save the watch page's HTML, not the video: the window plays it or
+  // offers nothing at all.
+  assert.equal(windowDownload({ url: 'apex:music', title: 'Music', kind: 'music' }), null);
+  assert.equal(windowDownload({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', title: 'A video', kind: 'video' }), null);
+  // The same URL in an ordinary window keeps the old behaviour.
+  assert.deepEqual(windowDownload({ url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', title: 'A video' }), {
+    href: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', download: 'A video',
+  });
+});
+
+test('groupItemsByKind keeps each player in its own window', () => {
+  const groups = groupItemsByKind([
+    { url: 'apex:music', title: 'Music', kind: 'music' },
+    { url: 'apex:video', title: 'Video', kind: 'video' },
+    { url: 'apex:music', title: 'Music', kind: 'music' },
+  ]);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups.map((group) => group.length), [2, 1]);
+  assert.deepEqual(groups.map((group) => group[0].kind), ['music', 'video']);
 });
