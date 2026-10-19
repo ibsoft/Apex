@@ -34,7 +34,7 @@ import {
   User,
   ChatEvent,
 } from "../lib/api";
-import { useVoiceEngine, VoicePhase } from "../lib/voice";
+import { useVoiceEngine, VoicePhase, VoiceVadStatus } from "../lib/voice";
 import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
 import { sendNotepadCommand, notepadContext, requestsNotepadOutput } from "../lib/notepad";
@@ -151,6 +151,9 @@ type ApexContextType = {
   voiceActive: boolean;
   voiceEnabled: boolean;
   voiceError: string | null;
+  /* Talk-over interruption health; the settings card shows it under the switch. */
+  voiceVadStatus: VoiceVadStatus;
+  voiceVadNote: string;
   /* Auth state consumed by AppShell to decide which screen to mount. */
   locked: boolean;
   lockEnabled: boolean;
@@ -2571,6 +2574,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       voiceActive: voice.active,
       voiceEnabled,
       voiceError: voice.error,
+      voiceVadStatus: voice.vadStatus,
+      voiceVadNote: voice.vadNote,
       forceVoiceAwake,
       voiceLastHeard: voice.lastHeard,
       error,
@@ -2660,7 +2665,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       setGithubToken,
       closeGithubPrompt,
     }),
-    [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, queued, cancelQueued, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
+    [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, queued, cancelQueued, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, voice.vadStatus, voice.vadNote, forceVoiceAwake, error,
      windows, focusedWindowId, activeDesktop, desktopSet, desktopNext, desktopPrev, windowMoveToDesktop, chatCollapsed, timers, reminders, alarms, stopAlarm, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, windowOpen, windowClose, windowCloseAll, windowFocus, windowToggleMaximize, windowToggleMinimize, windowArrange, windowNext, windowPrevious,
      windowSetNote, windowToggleNotes, windowUpdate, setChatCollapsed,
