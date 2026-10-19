@@ -33,6 +33,13 @@ ALWAYS_ON_TOOLS = frozenset({
     "task_delete",
     "task_run_now",
     "task_index",
+    # The music/video players are the same class of capability as the terminal:
+    # "play some jazz" must not depend on which skill the router picked, and a
+    # compound request ("run df -h and put on some music") has to reach the
+    # player even though the host-state skill owns that turn. The handler gates
+    # itself on YOUTUBE_ENABLED, so inclusion is never a grant of anything that
+    # a deployment turned off.
+    "media_player",
 })
 
 #: Telegram tools are force-included only while the bot is enabled: unlike the

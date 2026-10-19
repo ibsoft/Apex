@@ -16,6 +16,12 @@ python-pptx>=1.0.2
 matplotlib>=3.9
 edge-tts>=7.0,<8
 mcp>=2.0
+# YouTube music/video search for the media apps. It is a binary, not an import,
+# so the code never imports it - but it is pinned here so the venv has a CURRENT
+# copy: YouTube breaks old builds (resolution fails with HTTP 400 "Precondition
+# check failed"), and a distro package can be years behind. config.py prefers
+# .venv/bin/yt-dlp over whatever is on PATH for exactly that reason.
+yt-dlp>=2025.1.15
 
 # SQL drivers for the MCP tab's database kinds. Every connector imports its
 # driver lazily, so a missing one is reported in the tab as "driver not

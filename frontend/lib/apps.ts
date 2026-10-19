@@ -67,6 +67,20 @@ function seedBuiltins(): void {
       { kind: "notepad" },
     ),
   });
+  // Both players open empty: the queue only exists once the agent plays
+  // something, so the window starts on its "say play some music" card.
+  registerApp({
+    id: "music",
+    name: "Music",
+    icon: "🎵",
+    open: (ctx) => ctx.windowOpenNew([{ url: "apex:music", title: "Music", kind: "music" }], { kind: "music" }),
+  });
+  registerApp({
+    id: "video",
+    name: "Video",
+    icon: "🎬",
+    open: (ctx) => ctx.windowOpenNew([{ url: "apex:video", title: "Video", kind: "video" }], { kind: "video" }),
+  });
 }
 
 seedBuiltins();

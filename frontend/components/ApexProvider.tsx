@@ -34,7 +34,7 @@ import {
   User,
   ChatEvent,
 } from "../lib/api";
-import { useVoiceEngine, VoicePhase } from "../lib/voice";
+import { useVoiceEngine, VoicePhase, VoiceVadStatus } from "../lib/voice";
 import { speechText } from "./speechText";
 import { useActivityTracker, useAutonomousMode } from "../lib/autonomous";
 import { sendNotepadCommand, notepadContext, requestsNotepadOutput } from "../lib/notepad";
@@ -83,6 +83,7 @@ import {
   groupItemsByKind,
   itemTitle,
   isFilesWindow,
+  isMediaWindow,
   isNotepadWindow,
   isTerminalWindow,
   kindForItems,
@@ -94,6 +95,19 @@ import {
   terminalWindows,
   windowContextBlock,
 } from "../lib/windows";
+import {
+  type MediaAction,
+  type MediaApp,
+  type MediaState,
+  asMediaApp,
+  currentItem as currentMediaItem,
+  mediaContextBlock,
+  availableMediaIndex,
+  rejectMediaTrack,
+  normalizeMediaAction,
+  stateFromPlayEvent,
+} from "../lib/media";
+import { commandContextBlock } from "../lib/commandContext";
 
 export type OrbState = "idle" | "listening" | "thinking" | "speaking";
 
@@ -151,6 +165,9 @@ type ApexContextType = {
   voiceActive: boolean;
   voiceEnabled: boolean;
   voiceError: string | null;
+  /* Talk-over interruption health; the settings card shows it under the switch. */
+  voiceVadStatus: VoiceVadStatus;
+  voiceVadNote: string;
   /* Auth state consumed by AppShell to decide which screen to mount. */
   locked: boolean;
   lockEnabled: boolean;
@@ -234,7 +251,13 @@ type ApexContextType = {
   windowPrevious: () => void;
   windowSetNote: (id: string, note: string) => void;
   windowToggleNotes: (id: string) => void;
-  windowUpdate: (id: string, patch: Partial<Pick<AppWindow, "rect" | "maximized" | "minimized">>) => void;
+  windowUpdate: (id: string, patch: Partial<Pick<AppWindow, "rect" | "maximized" | "minimized" | "items" | "index">>) => void;
+  /* The YouTube players. `media` is the live queue (null when no player is
+     open); `mediaAction` is the one way both the transport buttons and the
+     `media_play` / `media_control` tool events change it. */
+  media: MediaState | null;
+  /** `index` is only used by `select` - a queue click in the window. */
+  mediaAction: (app: MediaApp, action: MediaAction, index?: number) => void;
   setChatCollapsed: (collapsed: boolean) => void;
   setTimer: (name: string, seconds: number) => string;
   setReminder: (name: string, fireAt: number) => string;
@@ -313,6 +336,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [windows, setWindows] = useState<AppWindow[]>([]);
   const [focusedWindowId, setFocusedWindowId] = useState<string | null>(null);
   const [activeDesktop, setActiveDesktop] = useState(0);
+  /* The YouTube players: one queue at a time (music *or* video), owned here and
+     nowhere else - the backend only ever sends search results and control
+     events. `mediaRef` is the mirror every parser call and prompt block reads,
+     the same reason `tasksRef` exists. Closing the player window clears it. */
+  const [media, setMedia] = useState<MediaState | null>(null);
+  const mediaRef = useRef<MediaState | null>(null);
+  mediaRef.current = media;
   const [chatCollapsed, setChatCollapsedState] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("apex:chat-collapsed") === "1";
@@ -389,6 +419,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   const commandLanguage = () => settingsRef.current.response_language ?? cfgRef.current?.response_language ?? "en";
   const localize = (english: string, greek: string) => /^el(?:-|$)/i.test(commandLanguage()) ? greek : english;
+
+  /* Every deterministic parse goes through here, so every path (voice, typed,
+     the skill-rest re-parse) sees the same media state. If one caller passed it
+     and another did not, "next" would be a track skip in one and a window cycle
+     in the other - exactly the drift the mediaActive flag exists to prevent. */
+  const parseCommand = (text: string, now = Date.now()) =>
+    parseLocalCommand(text, commandLanguage(), skillsRef.current, now, { mediaActive: !!mediaRef.current });
 
   const messages = activeId ? byConv[activeId] ?? [] : [];
 
@@ -1015,9 +1052,130 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, showNotes: !w.showNotes } : w)));
   }, []);
 
-  const windowUpdate = useCallback((id: string, patch: Partial<Pick<AppWindow, "rect" | "maximized" | "minimized">>) => {
+  const windowUpdate = useCallback((id: string, patch: Partial<Pick<AppWindow, "rect" | "maximized" | "minimized" | "items" | "index">>) => {
     setWindows((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
   }, []);
+
+  /* ---------- media players (YouTube music / video) ---------- */
+
+  /* Point the player window at the track that is playing: the window carries
+     the item (title bar, taskbar, window list all read it) while the queue
+     itself lives only in `media`. Creating the window here - not through
+     `windowOpen`, which dedupes by item signature and would open a *second*
+     window for every new track. Returns false when the window could not be
+     opened (the cap), so the caller does not record a queue nothing renders. */
+  const syncMediaWindow = useCallback((state: MediaState, focus: boolean): boolean => {
+    const item = currentMediaItem(state);
+    if (!item) return false;
+    const url = item.url || `https://www.youtube.com/watch?v=${item.id}`;
+    const items: WindowItem[] = [{ url, title: item.title, kind: state.app }];
+    const existing = windowsRef.current.find((w) => w.kind === state.app);
+    if (existing) {
+      windowUpdate(existing.id, { items });
+      if (focus) windowFocus(existing.id);
+      return true;
+    }
+    return !!createWindow(items, { kind: state.app });
+  }, [createWindow, windowFocus, windowUpdate]);
+
+  /* The transport, shared by the tool events and the buttons in the player
+     windows. Window-level actions (maximize/minimize/restore) work even when
+     nothing plays: "maximize the video" is about the window, not the track.
+     The rest need the matching player to be open - an action aimed at the other
+     app is ignored rather than guessed at. */
+  const mediaAction = useCallback((app: MediaApp, action: MediaAction, index?: number) => {
+    if (action === "maximize" || action === "minimize" || action === "restore") {
+      const win = windowsRef.current.find((w) => w.kind === app);
+      if (!win) return;
+      if (action === "maximize") {
+        if (!win.maximized) windowToggleMaximize(win.id);
+      } else if (action === "minimize") {
+        if (!win.minimized) windowToggleMinimize(win.id);
+      } else {
+        windowUpdate(win.id, { maximized: false, minimized: false });
+        windowFocus(win.id);
+      }
+      return;
+    }
+    const state = mediaRef.current;
+    if (!state || state.app !== app) return;
+    if (action === "reject") {
+      const next = rejectMediaTrack(state, Number(index));
+      mediaRef.current = next;
+      setMedia(next);
+      syncMediaWindow(next, false);
+      return;
+    }
+    if (action === "select") {
+      const target = Math.trunc(Number(index));
+      if (!Number.isFinite(target) || target < 0 || target >= state.items.length) return;
+      if (target === state.index || state.unavailableIds?.includes(state.items[target].id)) return;
+      const selected: MediaState = { ...state, index: target, seq: state.seq + 1 };
+      mediaRef.current = selected;
+      setMedia(selected);
+      syncMediaWindow(selected, false);
+      return;
+    }
+    if (action === "next" || action === "previous") {
+      const target = availableMediaIndex(state, action === "next" ? 1 : -1);
+      if (target === null) return;
+      const next: MediaState = {
+        ...state,
+        index: target,
+        // Always bumped, even when the wrap lands on the same index: a one-item
+        // queue has no track change to notice, and the new seq is what tells
+        // the player to start that item again.
+        seq: state.seq + 1,
+      };
+      mediaRef.current = next;
+      setMedia(next);
+      syncMediaWindow(next, false);
+      return;
+    }
+    if (action === "pause" || action === "resume") {
+      if (action === "resume" && state.unavailableIds?.includes(state.items[state.index]?.id)) return;
+      const next: MediaState = { ...state, paused: action === "pause" };
+      mediaRef.current = next;
+      setMedia(next);
+      return;
+    }
+    // stop / close: the window is the player, so closing it is what stops it,
+    // and the queue goes with it (see the effect above for the manual case).
+    if (action === "stop" || action === "close") {
+      mediaRef.current = null;
+      setMedia(null);
+      const win = windowsRef.current.find((w) => w.kind === app);
+      if (win) windowClose(win.id);
+    }
+  }, [setMedia, syncMediaWindow, windowClose, windowFocus, windowToggleMaximize, windowToggleMinimize, windowUpdate]);
+
+  /* A `media_play` event: adopt the queue, retune the window to the picked
+     result and bring it forward. Opening a *different* app closes the previous
+     player first - one queue at a time is the model, and a stale second player
+     would render a body whose state has already moved on. */
+  const applyMediaPlay = useCallback((next: MediaState) => {
+    const previous = mediaRef.current;
+    if (previous && previous.app !== next.app) {
+      const old = windowsRef.current.find((w) => w.kind === previous.app);
+      if (old) windowClose(old.id);
+    }
+    if (!syncMediaWindow(next, true)) return;
+    mediaRef.current = next;
+    setMedia(next);
+  }, [setMedia, syncMediaWindow, windowClose]);
+
+  /* Closing the player window by hand stops the player: the queue is only
+     meaningful while its window exists, so the state is dropped instead of
+     surviving as a hidden "playing" that no screen shows. The window list is
+     the trigger because that is the only thing that changes here - a media
+     event that opens a window commits both in the same batch, so the effect
+     sees the window it just created and leaves the state alone. */
+  useEffect(() => {
+    setMedia((current) => {
+      if (!current) return current;
+      return windows.some((w) => w.kind === current.app) ? current : null;
+    });
+  }, [windows]);
 
   /* Show a terminal that already exists server-side (the model opened one for
    * itself) in a desktop window bound to that PTY session. */
@@ -1223,7 +1381,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
          and React may invoke an updater more than once. */
       const due = remindersRef.current.filter((r) => r.fireAt <= now);
       if (due.length) {
-        setReminders((prev) => prev.filter((r) => r.fireAt > now));
+        // Drop them from the live ref *and* state in the same tick, so a slow
+        // render cannot let the next tick fire the same reminder again (which
+        // would start a second alarm and speak it twice).
+        const dueIds = new Set(due.map((r) => r.id));
+        remindersRef.current = remindersRef.current.filter((r) => !dueIds.has(r.id));
+        setReminders((prev) => prev.filter((r) => !dueIds.has(r.id)));
         due.forEach((r) => startAlarm(r.name));
       }
     }, 1000);
@@ -1286,6 +1449,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
     responseLanguage: settings.response_language ?? cfg?.response_language ?? "en",
     interruptEnabled: settings.voice_interrupt_enabled === true,
     interruptSensitivity: Number(settings.voice_interrupt_sensitivity ?? 6),
+    alarmActive: alarms.length > 0,
+    onAlarmStop: () => stopAlarm(),
     onPhase: onVoicePhase,
     onCommand: (text: string) => {
       if (!userRef.current) return;
@@ -1807,6 +1972,14 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         const time = new Date(command.fireAt).toLocaleTimeString(commandLanguage(), { hour: "2-digit", minute: "2-digit" });
         return localize(`Reminder set: "${command.name}" at ${time}.`, `Ορίστηκε υπενθύμιση: «${command.name}» στις ${time}.`);
       }
+      case "language":
+        /* Persist the new reply language. The voice engine watches
+           `response_language` and re-arms itself (recognition language +
+           TTS voice) on the change, which is the "self restart". */
+        await updateSettings({ response_language: command.language });
+        return command.language === "el"
+          ? "Από εδώ και πέρα θα μιλάμε Ελληνικά."
+          : "From now on we will speak English.";
       case "operator":
         declareOperator(command.name);
         return command.name
@@ -1870,8 +2043,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
    * rather than cached: a model that is told about a window which has since
    * closed will confidently address a window that is not there. */
   const uiStateSnapshot = useCallback(
-    () =>
-      buildUiState({
+    () => {
+      const playing = mediaRef.current;
+      const currentItem = playing ? currentMediaItem(playing) : null;
+      return buildUiState({
         windows: windowsRef.current,
         focusedWindowId: focusedWindowIdRef.current,
         activeDesktop: activeDesktopRef.current,
@@ -1880,11 +2055,25 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           description: task.title,
           status: task.enabled ? "enabled" : "paused",
         })),
-      }),
+        // Only the *existence* of a player matters to the router (it is what
+        // MEDIA_GUARDED_ACTIONS keys off); the queue itself is model context
+        // and travels in `media_context`, not here.
+        media: playing
+          ? { app: playing.app, title: currentItem?.title ?? "", paused: playing.paused }
+          : null,
+      });
+    },
     [],
   );
 
-  /* Ask the model to read an utterance the parsers did not recognise.
+  /* Ask the model what one utterance means against the screen and the
+   * conversation.
+   *
+   * A spoken command reaches this FIRST: voice is meant to be phrased freely
+   * ("bigger", "again", "that one"), and only the model, reading the snapshot
+   * and the recent exchange, can tell what those words refer to. Typed text
+   * still comes here only after the parsers missed, because typing is
+   * deliberate and the deterministic path is instant.
    *
    * Returns [] for every failure, including "the provider is down" and "that
    * was a question for the agent". Both mean the same thing to the caller -
@@ -1895,14 +2084,25 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
    * decides it may run, and it checks every action against the catalogue the
    * browser just sent, so a hallucinated action is dropped instead of executed
    * and a number the screen does not show is discarded rather than aimed at
-   * whatever happens to be in that slot. */
+   * whatever happens to be in that slot. The consequential actions (lock, sign
+   * out, writing into the chat box, and the player's transport words) still
+   * need the deterministic parser to agree, in here as everywhere else. */
   const resolveCommandWithModel = useCallback(async (text: string): Promise<LocalCommand[]> => {
     try {
+      // What the operator was just doing, so an instruction that does not name
+      // its target has something to refer to. Built per request, like the
+      // snapshot: a stale exchange would resolve "again" to last turn's action.
+      const context = commandContextBlock({
+        media: mediaRef.current,
+        messages: byConvRef.current[activeIdRef.current ?? ""] ?? [],
+        skill: skillRef.current,
+      });
       const { actions } = await api.resolveCommand({
         text,
         language: commandLanguage(),
         catalogue: renderActionCatalogue(),
         state: renderUiState(uiStateSnapshot()),
+        ...(context ? { context } : {}),
       });
       return sanitizeActions(actions, {
         state: uiStateSnapshot(),
@@ -1955,13 +2155,28 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
 
   async function handleVoiceCommand(text: string) {
     try {
-      // A ringing alarm answers to a stop phrase before any parser runs.
+      // A ringing alarm answers to a stop phrase before any parser runs - that
+      // is context first in its own right: the alarm is what is happening now.
       if (alarmsRef.current.length && isAlarmStopPhrase(text)) {
         stopAlarm();
         speakRef.current(localize("Alarm stopped.", "Η υπενθύμιση σταμάτησε."));
         return;
       }
-      const command = parseLocalCommand(text, commandLanguage(), skillsRef.current);
+      // Context first, keywords second. A spoken instruction is phrased freely
+      // ("bigger", "again", "that one"), and only the model - reading the
+      // snapshot of the screen, the player and the last exchange - can say what
+      // those words refer to; the keyword lists are the fallback for what no
+      // catalogue can express (a reminder's text, a skill name), and they still
+      // guard the consequential actions inside `sanitizeActions`.
+      const resolved = await resolveCommandWithModel(text);
+      if (resolved.length) {
+        const reply = await runResolvedCommands(resolved);
+        if (reply !== null) {
+          if (reply) speakRef.current(reply);
+          return;
+        }
+      }
+      const command = parseCommand(text);
       if (command?.type === "skill" && command.rest) {
         setSkill(command.skill);
         await sendRef.current(command.rest, { voice: true, skill: command.skill });
@@ -1969,18 +2184,6 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       }
       if (command) {
         const reply = await executeLocalCommand(command);
-        if (reply !== null) {
-          if (reply) speakRef.current(reply);
-          return;
-        }
-      }
-      // The parsers did not recognise it and the local handler could not carry
-      // it out. Ask the model what it meant against the state of the screen -
-      // this is where "restore all terminals" and "bring back the one I closed"
-      // stop being nothing at all.
-      const resolved = await resolveCommandWithModel(text);
-      if (resolved.length) {
-        const reply = await runResolvedCommands(resolved);
         if (reply !== null) {
           if (reply) speakRef.current(reply);
           return;
@@ -2104,12 +2307,12 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         const thinkHard = parseThinkHard(clean, commandLanguage());
         clean = thinkHard.message;
 
-        let command = parseLocalCommand(clean, commandLanguage(), skillsRef.current);
+        let command = parseCommand(clean);
         if (command?.type === "skill" && command.rest) {
           setSkill(command.skill);
           clean = command.rest;
           opts = { ...opts, skill: command.skill };
-          command = parseLocalCommand(clean, commandLanguage(), skillsRef.current);
+          command = parseCommand(clean);
         }
         if (command) {
           const reply = await executeLocalCommand(command);
@@ -2209,6 +2412,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
         let streamError = "";
         let streamedTools: NonNullable<NonNullable<Message["meta"]>["tools"]> = [];
         const windowBlock = windowContextBlock(windowsRef.current, focusedWindowIdRef.current, activeDesktopRef.current) + notepadContext();
+        /* Playback is client state the tool cannot see, so it rides along with
+           the window list every turn - labelled as live state on the backend,
+           next to `window_context`, and never persisted. */
+        const mediaBlock = mediaContextBlock(mediaRef.current);
         // Tell the backend which terminal window is focused so terminal_command
         // can default to it ("run this on the focused terminal").
         const focusedWin = windowsRef.current.find((w) => w.id === focusedWindowIdRef.current);
@@ -2227,6 +2434,7 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
           skill: opts.skill ?? skillRef.current,
           voice_mode: !!opts.voice,
           ...(windowBlock ? { window_context: windowBlock } : {}),
+          ...(mediaBlock ? { media_context: mediaBlock } : {}),
           ...(opts.documentContext ? { document_context: opts.documentContext } : {}),
           ...(opts.images?.length ? { images: opts.images } : {}),
           ...(focusedTerminalId ? { focused_terminal: focusedTerminalId } : {}),
@@ -2319,6 +2527,17 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
               visioFrameMsgRef.current = asstId;
               windowOpen([{ url: ev.url, title: ev.title || "Camera snapshot" }], { kind: "image" });
             }
+          } else if (ev.type === "media_play") {
+            /* The tool searched and the model picked a result; the queue itself
+               arrives here because playback exists nowhere else. Open or retune
+               the player window on the event, not from the reply text - a model
+               paraphrasing "play some jazz" must not be able to drop it. */
+            const next = stateFromPlayEvent(ev);
+            if (next) applyMediaPlay(next);
+          } else if (ev.type === "media_control") {
+            const app = asMediaApp(ev.app);
+            const action = normalizeMediaAction(ev.action);
+            if (app && action) mediaAction(app, action);
           } else if (ev.type === "task_changed") {
             // The model created, edited or deleted a task during this turn.
             // Re-read instead of patching from the event: the event says *that*
@@ -2556,6 +2775,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       voiceActive: voice.active,
       voiceEnabled,
       voiceError: voice.error,
+      voiceVadStatus: voice.vadStatus,
+      voiceVadNote: voice.vadNote,
       forceVoiceAwake,
       voiceLastHeard: voice.lastHeard,
       error,
@@ -2630,6 +2851,8 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       windowSetNote,
       windowToggleNotes,
       windowUpdate,
+      media,
+      mediaAction,
       setChatCollapsed,
       setTimer,
       setReminder,
@@ -2645,10 +2868,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       setGithubToken,
       closeGithubPrompt,
     }),
-    [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, queued, cancelQueued, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, forceVoiceAwake, error,
+    [loading, user, cfg, settings, conversations, activeId, messages, skill, routedSkill, skills, memory, busy, queued, cancelQueued, orb, voice.active, voiceEnabled, voice.error, voice.lastHeard, voice.vadStatus, voice.vadNote, forceVoiceAwake, error,
      windows, focusedWindowId, activeDesktop, desktopSet, desktopNext, desktopPrev, windowMoveToDesktop, chatCollapsed, timers, reminders, alarms, stopAlarm, operator, silencedUntil, sudoPrompt, githubPrompt, refresh, login, logout, newConversation, openConversation, deleteConversation,      sendMessage, updateSettings, setVoiceEnabled, deleteSkill,
      addMemory, removeMemory, searchMemory, refreshMemory, clearError, windowOpen, windowClose, windowCloseAll, windowFocus, windowToggleMaximize, windowToggleMinimize, windowArrange, windowNext, windowPrevious,
-     windowSetNote, windowToggleNotes, windowUpdate, setChatCollapsed,
+     windowSetNote, windowToggleNotes, windowUpdate, media, mediaAction, setChatCollapsed,
      setTimer, setReminder, cancelTimer, cancelReminder, openImageBrowser, searchImages, declareOperator, silenceAutonomous, setSudoPassword, closeSudoPrompt, setGithubToken, closeGithubPrompt],
   );
 

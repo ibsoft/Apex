@@ -20,6 +20,7 @@
 */
 
 import { useEffect, useRef, useState } from "react";
+import { isAlarmStopPhrase } from "./commands";
 import { settleVoiceCommand } from "./voiceLifecycle";
 import {
   accumulateResults,
@@ -44,6 +45,9 @@ import {
 
 export type VoicePhase = "standby" | "awake" | "thinking" | "speaking";
 
+/** Health of the second mic stream that powers talk-over interruption. */
+export type VoiceVadStatus = "off" | "starting" | "live" | "blocked" | "error";
+
 export type VoiceEngine = {
   supported: boolean;
   active: boolean;
@@ -53,6 +57,8 @@ export type VoiceEngine = {
   isSpeaking: boolean;
   forceAwake: () => void;
   lastHeard: string;
+  vadStatus: VoiceVadStatus;
+  vadNote: string;
 };
 
 type SpeechRecognitionLike = {
@@ -123,14 +129,18 @@ export function useVoiceEngine(opts: {
   interruptEnabled: boolean;
   /** 1..10 slider; higher = interrupt more eagerly. */
   interruptSensitivity: number;
+  /** True while a reminder alarm is ringing. */
+  alarmActive?: boolean;
+  /** Called when a "stop" phrase is heard while `alarmActive`. */
+  onAlarmStop?: () => void;
   onPhase: (p: VoicePhase) => void;
   onWake?: () => void;
   onCommand: (text: string) => void | Promise<void>;
 }): VoiceEngine {
-  const { enabled, wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand } = opts;
+  const { enabled, wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, alarmActive, onAlarmStop, onPhase, onWake, onCommand } = opts;
 
-  const cfgRef = useRef({ wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand });
-  cfgRef.current = { wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, onPhase, onWake, onCommand };
+  const cfgRef = useRef({ wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, alarmActive, onAlarmStop, onPhase, onWake, onCommand });
+  cfgRef.current = { wakeWord, followUpSeconds, voiceName, responseLanguage, interruptEnabled, interruptSensitivity, alarmActive, onAlarmStop, onPhase, onWake, onCommand };
 
   const recRef = useRef<SpeechRecognitionLike | null>(null);
   const phaseRef = useRef<VoicePhase>("standby");
@@ -164,6 +174,17 @@ export function useVoiceEngine(opts: {
   const followUpLangTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCommand = useRef("");
   const [lastHeard, setLastHeard] = useState<string>("");
+
+  // Interruption health, surfaced in settings: a silently dead VAD looks
+  // exactly like a working one, which is how "does not stop talking" becomes
+  // unreportable. "live" means the analyser is running; "blocked"/"error"
+  // carry a note the operator can act on.
+  const [vadStatus, setVadStatus] = useState<VoiceVadStatus>("off");
+  const [vadNote, setVadNote] = useState<string>("");
+  const reportVad = (s: VoiceVadStatus, note = "") => {
+    setVadStatus(s);
+    setVadNote(note);
+  };
 
   // Interruption + resume state. resumeRef holds the untold remainder of a
   // reply cut off by voice activity, so "continue" can speak on from there;
@@ -679,6 +700,27 @@ export function useVoiceEngine(opts: {
     const low = text.toLowerCase();
     const phase = phaseRef.current;
 
+    /* A ringing reminder alarm answers to a stop phrase directly, with or
+       without the wake word ("Apex stop"), in any phase. It is checked before
+       the phase machine because the alarm must be stoppable at any moment and
+       because the alarm audio itself can make wake-word detection less
+       reliable. The caller only enables this while an alarm is actually
+       ringing, so a bare "stop" is otherwise an ordinary command. */
+    if (cfgRef.current.alarmActive && text) {
+      const withoutWake = sliceAfterLastWake(text, ww, language);
+      if (isAlarmStopPhrase(text) || isAlarmStopPhrase(withoutWake)) {
+        vlog("alarm stop phrase heard:", text);
+        cfgRef.current.onAlarmStop?.();
+        accRef.current = emptyResultSnapshot(lastResultLenRef.current);
+        pendingCommand.current = "";
+        if (commandTimer.current) {
+          clearTimeout(commandTimer.current);
+          commandTimer.current = null;
+        }
+        return;
+      }
+    }
+
     // barge-in: wake word cuts off speech / thinking
     if ((phase === "speaking" || phase === "thinking") && re.test(low)) {
       cancelSpeech();
@@ -1000,6 +1042,7 @@ export function useVoiceEngine(opts: {
       vadRef.current?.stop?.();
       vadRef.current = null;
       vadStateRef.current = initialVadState();
+      reportVad("off");
       return;
     }
     if (vadRef.current) return; // already running
@@ -1008,10 +1051,75 @@ export function useVoiceEngine(opts: {
     let analyser: AnalyserNode | null = null;
     let stream: MediaStream | null = null;
     let raf = 0;
+    let poll: ReturnType<typeof setTimeout> | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
     let buffer: Float32Array<ArrayBuffer> | null = null;
+    let attempts = 0;
+    let resumedAt = 0;
+    let startedAt = 0;
+    let live = false;
+    let rmsLogAt = 0;
+    let warned = false;
+    let handle: { stop: () => void } | null = null;
+
+    const warn = (msg: string) => {
+      if (warned) return;
+      warned = true;
+      // Deliberately not behind the debug flag: a dead interrupt is otherwise
+      // indistinguishable from a working one from the outside.
+      console.warn("[voice] interruption:", msg);
+    };
+
+    // A context created outside a user gesture (page load, background tab) or
+    // suspended by the browser stays suspended, and a suspended analyser reads
+    // digital silence: the RMS never reaches the threshold and the reply is
+    // never cut. Re-arm it on creation, on every gesture, on focus/visibility
+    // and on statechange until it is really running.
+    const ensureRunning = () => {
+      if (stopped || !ctx || ctx.state === "running") return;
+      const now = Date.now();
+      if (now - resumedAt < 300) return;
+      resumedAt = now;
+      void ctx.resume().catch(() => {});
+    };
+    const onWake = () => ensureRunning();
+    const detach = () => {
+      window.removeEventListener("pointerdown", onWake);
+      window.removeEventListener("keydown", onWake);
+      window.removeEventListener("focus", onWake);
+      document.removeEventListener("visibilitychange", onWake);
+    };
+
+    const stop = () => {
+      stopped = true;
+      if (raf) cancelAnimationFrame(raf);
+      if (poll) clearTimeout(poll);
+      if (retry) clearTimeout(retry);
+      detach();
+      try {
+        stream?.getTracks().forEach((t) => t.stop());
+      } catch {}
+      try {
+        void ctx?.close();
+      } catch {}
+      if (handle && vadRef.current === handle) vadRef.current = null;
+    };
+
     const tick = () => {
       if (stopped || !ctx || !analyser || !buffer) return;
+      if (ctx.state !== "running") {
+        ensureRunning();
+        if (startedAt && Date.now() - startedAt > 1500) {
+          reportVad("blocked", "audio blocked - click the page once");
+        }
+        if (!stopped) poll = setTimeout(tick, 200);
+        return;
+      }
+      if (!live) {
+        live = true;
+        reportVad("live");
+      }
       analyser.getFloatTimeDomainData(buffer);
       let sum = 0;
       for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
@@ -1021,6 +1129,10 @@ export function useVoiceEngine(opts: {
         // assistant's opening words cannot cut its own speech off.
         if (Date.now() - speakSinceRef.current > 400) {
           const threshold = sensitivityToThreshold(cfgRef.current.interruptSensitivity);
+          if (Date.now() - rmsLogAt > 1000) {
+            rmsLogAt = Date.now();
+            console.log("[voice] interruption rms", rms.toFixed(3), "threshold", threshold);
+          }
           const { state, fire } = vadStep(vadStateRef.current, rms, threshold);
           vadStateRef.current = state;
           if (fire) {
@@ -1032,54 +1144,70 @@ export function useVoiceEngine(opts: {
       } else {
         vadStateRef.current = initialVadState();
       }
-      raf = requestAnimationFrame(tick);
+      if (!stopped) raf = requestAnimationFrame(tick);
     };
 
     const start = () => {
       const AC = (window as any).AudioContext ?? (window as any).webkitAudioContext;
-      if (!AC) return;
-      void navigator.mediaDevices
+      const media = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+      if (!AC || !media?.getUserMedia) {
+        reportVad("error", "this browser does not expose the microphone");
+        warn("AudioContext/getUserMedia unavailable");
+        stop();
+        return;
+      }
+      reportVad("starting", attempts ? `microphone busy - retry ${attempts} of 3` : "");
+      void media
         // AEC is what separates the user's voice from the assistant's voice
         // coming out of the same speakers.
         .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
-        .then((media: MediaStream) => {
+        .then((m: MediaStream) => {
           if (stopped) {
-            media.getTracks().forEach((t) => t.stop());
+            m.getTracks().forEach((t) => t.stop());
             return;
           }
-          stream = media;
+          stream = m;
           const audioCtx: AudioContext = new AC();
           ctx = audioCtx;
-          const src = audioCtx.createMediaStreamSource(media);
+          audioCtx.onstatechange = () => ensureRunning();
+          const src = audioCtx.createMediaStreamSource(m);
           const node = audioCtx.createAnalyser();
           analyser = node;
           node.fftSize = 2048;
           node.smoothingTimeConstant = 0.1;
           src.connect(node);
           buffer = new Float32Array(node.fftSize);
-          raf = requestAnimationFrame(tick);
+          startedAt = Date.now();
+          ensureRunning();
+          if (audioCtx.state === "running" && !live) {
+            live = true;
+            reportVad("live");
+          }
+          if (!stopped) raf = requestAnimationFrame(tick);
         })
-        .catch((err) => {
-          vlog("interrupt VAD unavailable:", err instanceof Error ? err.message : err);
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          warn(`microphone unavailable (${message})`);
+          if (stopped) return;
+          attempts += 1;
+          if (attempts <= 3) {
+            reportVad("starting", `microphone busy - retry ${attempts} of 3`);
+            retry = setTimeout(start, 750 * attempts * attempts);
+          } else {
+            reportVad("error", `microphone unavailable (${message})`);
+            stop();
+          }
         });
     };
+
+    handle = { stop };
+    vadRef.current = handle;
+    window.addEventListener("pointerdown", onWake);
+    window.addEventListener("keydown", onWake);
+    window.addEventListener("focus", onWake);
+    document.addEventListener("visibilitychange", onWake);
     start();
-    vadRef.current = {
-      stop: () => {
-        stopped = true;
-        cancelAnimationFrame(raf);
-        try {
-          stream?.getTracks().forEach((t) => t.stop());
-        } catch {}
-        try {
-          void ctx?.close();
-        } catch {}
-      },
-    };
-    return () => {
-      vadRef.current?.stop?.();
-      vadRef.current = null;
-    };
+    return stop;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, interruptEnabled]);
 
@@ -1092,6 +1220,8 @@ export function useVoiceEngine(opts: {
     isSpeaking: segmentsLeft > 0,
     forceAwake,
     lastHeard,
+    vadStatus,
+    vadNote,
   };
 }
 

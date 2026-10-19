@@ -1449,11 +1449,27 @@ export default function ChatUI() {
                     </label>
                   </Row>
                   <Row label="Interruptions">
-                    <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
-                      <input type="checkbox" checked={!!a.settings.voice_interrupt_enabled}
-                        onChange={(e) => void a.updateSettings({ voice_interrupt_enabled: e.target.checked })} />
-                      Stop speaking when you talk (&ldquo;continue&rdquo; resumes)
-                    </label>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <label style={{ fontSize: 11.5, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+                        <input type="checkbox" checked={!!a.settings.voice_interrupt_enabled}
+                          onChange={(e) => void a.updateSettings({ voice_interrupt_enabled: e.target.checked })} />
+                        Stop speaking when you talk (&ldquo;continue&rdquo; resumes)
+                      </label>
+                      {!!a.settings.voice_interrupt_enabled && (
+                        <span style={{
+                          fontSize: 9.5,
+                          fontFamily: "var(--font-mono)",
+                          letterSpacing: "0.06em",
+                          color: a.voiceVadStatus === "live" ? C.cyan : a.voiceVadStatus === "off" ? C.dim : C.gold,
+                        }}>
+                          {a.voiceVadStatus === "live" ? "Ready - APEX stops when you talk over it"
+                            : a.voiceVadStatus === "starting" ? (a.voiceVadNote || "Starting microphone…")
+                            : a.voiceVadStatus === "blocked" ? (a.voiceVadNote || "Audio blocked - click the page once")
+                            : a.voiceVadStatus === "error" ? (a.voiceVadNote || "Microphone unavailable")
+                            : "Microphone off - turn voice mode on"}
+                        </span>
+                      )}
+                    </div>
                   </Row>
                   {!!a.settings.voice_interrupt_enabled && (
                     <Row label="Interrupt sensitivity">

@@ -10,7 +10,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const moduleExports = {};
 new Function('exports', compiled)(moduleExports);
-const { parseLocalCommand, formatDuration, parseThinkHard, parseSteerCommand } = moduleExports;
+const { parseLocalCommand, formatDuration, parseThinkHard, parseSteerCommand, isAlarmStopPhrase, parseLanguageCommand } = moduleExports;
 const skills = ['general', 'code', 'research', 'translator', 'obsidian', 'shell',
   'skill_creator', 'FILE_SEARCH', 'EDITOR', 'custom', 'custom helper'].map(name => ({ name }));
 const now = new Date(2026, 8, 23, 10, 15).getTime();
@@ -181,6 +181,32 @@ for (const [action, phrases] of [
 ]) {
   for (const phrase of phrases) test(`window: ${phrase}`, () => assert.deepEqual(parse(phrase), { type: 'window', action }));
 }
+
+/* ---------- transport words while a player is open ---------- */
+
+test('a bare next/previous declines while a player is open, in both languages', () => {
+  const withPlayer = (text, language = 'en') =>
+    parseLocalCommand(text, language, skills, now, { mediaActive: true });
+
+  // They belong to the player: the utterance has to reach the agent, which owns
+  // the queue (and knows it from the media block in its context).
+  for (const phrase of ['next', 'forward', 'previous', 'back', 'last', 'prev', 'earlier']) {
+    assert.equal(withPlayer(phrase), null, phrase);
+  }
+  for (const phrase of ['επόμενο', 'επόμενη', 'μπροστά', 'προηγούμενο', 'προηγούμενη', 'πίσω']) {
+    assert.equal(withPlayer(phrase, 'el'), null, phrase);
+  }
+
+  // Naming the referent leaves nothing ambiguous, so it stays a window command.
+  assert.deepEqual(withPlayer('next window'), { type: 'window', action: 'next' });
+  assert.deepEqual(withPlayer('previous image'), { type: 'window', action: 'previous' });
+  assert.deepEqual(withPlayer('επόμενο παράθυρο', 'el'), { type: 'window', action: 'next' });
+  assert.deepEqual(withPlayer('προηγούμενη εικόνα', 'el'), { type: 'window', action: 'previous' });
+
+  // With no player open the bare words keep meaning the window layer.
+  assert.deepEqual(parseLocalCommand('next', 'en', skills, now), { type: 'window', action: 'next' });
+  assert.deepEqual(parseLocalCommand('πίσω', 'el', skills, now), { type: 'window', action: 'previous' });
+});
 
 test('window commands target an explicit window by number or ordinal', () => {
   assert.deepEqual(parse('close window 2', 'en'), { type: 'window', action: 'close', target: 2 });
@@ -720,4 +746,73 @@ test('/steer only matches the exact verb at the start', () => {
   assert.equal(parseSteerCommand('/steering wheel'), null);
   assert.equal(parseSteerCommand('please /steer this'), null);
   assert.equal(parseSteerCommand(''), null);
+});
+
+/* ---------- ringing-alarm stop phrases ---------- */
+
+test('a bare stop phrase ends a ringing alarm in both languages', () => {
+  for (const phrase of [
+    'stop', 'stop it', 'stop the alarm', 'stop alarm', 'stop reminder',
+    'stop the reminder', 'silence', 'be quiet', 'shut up', 'enough',
+    'dismiss', 'cancel the alarm', 'turn it off', 'stop the alarm please',
+  ]) {
+    assert.equal(isAlarmStopPhrase(phrase), true, phrase);
+  }
+  for (const phrase of [
+    'σταμάτα', 'σταμάτα το', 'σταμάτησε την υπενθύμιση', 'σταμάτα το ξυπνητήρι',
+    'σκάσε', 'ησυχία', 'αρκετά', 'κλείστο', 'σταμάτα σε παρακαλώ',
+  ]) {
+    assert.equal(isAlarmStopPhrase(phrase), true, phrase);
+  }
+});
+
+test('a stop that carries an object is not an alarm stop', () => {
+  // These belong to the agent (or another parser), not the alarm banner.
+  for (const phrase of ['stop the timer', 'stop the download', 'stop talking',
+    'σταμάτα το χρονόμετρο', 'how do I stop', '']) {
+    assert.equal(isAlarmStopPhrase(phrase), false, phrase);
+  }
+});
+
+test('"Apex stop" is only an alarm stop once the wake word is sliced off', () => {
+  // voice.ts slices the wake word before consulting the matcher, so the full
+  // utterance is not a stop phrase on its own - but the remainder is.
+  assert.equal(isAlarmStopPhrase('Apex stop'), false);
+});
+
+/* ---------- response language by voice ---------- */
+
+test('the language command is recognised in English and Greek', () => {
+  for (const phrase of [
+    'from now on we will speak greek',
+    'from now on we will speak english',
+    'from now on we speak greek',
+    "let's speak greek",
+    'speak greek',
+    'switch to english',
+    'change the language to greek',
+    'use english from now on',
+  ]) {
+    const parsed = parseLanguageCommand(phrase);
+    assert.ok(parsed && parsed.type === 'language', phrase);
+  }
+  assert.deepEqual(parseLanguageCommand('from now on we will speak greek'), { type: 'language', language: 'el' });
+  assert.deepEqual(parseLanguageCommand('from now on we will speak english'), { type: 'language', language: 'en' });
+  // Greek spellings go through the accent/sigma folding.
+  assert.deepEqual(parseLanguageCommand('από δω και πέρα θα μιλάμε ελληνικά'), { type: 'language', language: 'el' });
+  assert.deepEqual(parseLanguageCommand('από εδώ και στο εξής θα μιλάμε αγγλικά'), { type: 'language', language: 'en' });
+  assert.deepEqual(parseLanguageCommand('άλλαξε τη γλώσσα σε αγγλικά'), { type: 'language', language: 'en' });
+  assert.deepEqual(parseLanguageCommand('μίλα ελληνικά'), { type: 'language', language: 'el' });
+});
+
+test('a sentence that merely mentions a language reaches the agent', () => {
+  assert.equal(parseLanguageCommand('how do I say good morning in greek'), null);
+  assert.equal(parseLanguageCommand('translate this to english please now'), null);
+  assert.equal(parseLanguageCommand('what does this greek word mean'), null);
+  assert.equal(parseLanguageCommand(''), null);
+});
+
+test('the language command routes through parseLocalCommand', () => {
+  assert.deepEqual(parse('from now on we will speak greek', 'en'), { type: 'language', language: 'el' });
+  assert.deepEqual(parse('από δω και πέρα θα μιλάμε αγγλικά'), { type: 'language', language: 'en' });
 });

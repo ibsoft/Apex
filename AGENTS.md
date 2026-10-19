@@ -398,7 +398,17 @@ A regex only matches the phrases its author wrote down, and the agent cannot fix
 the miss: no tool can un-minimize a window. So an unrecognized *window* phrase
 used to produce a reply and no change. Three pieces, in order:
 
-1. `frontend/lib/commands.ts` still runs first and still wins. The bulk
+1. `frontend/lib/commands.ts` is the deterministic half - but the two entry
+   points run it in opposite places, and that difference is deliberate.
+   **Voice (`handleVoiceCommand`) runs the resolver first and the parsers
+   second**: a spoken instruction is phrased freely ("bigger", "again", "that
+   one", "put it back"), so it is read against the screen and the recent
+   conversation first, and the keyword lists are only the fallback for what no
+   catalogue can express (a reminder's text, a skill name). **Typed text
+   (`sendMessage`) still runs the parser first**, because typing is deliberate
+   and the deterministic path is instant - the reasoning layer only sees what it
+   missed. The order in each path is asserted by
+   `frontend/tests/commandSpec.test.cjs`, not merely documented. The bulk
    vocabulary (`bulkWindowAction`, one function for windows, terminals, file
    managers and notepads) is the fix for the cheap half of the problem - a
    missing regex slot. A request is bulk when a quantifier is present **or** the
@@ -406,13 +416,19 @@ used to produce a reply and no change. Three pieces, in order:
    not bulk, so "restore terminal" keeps meaning the focused window.
 2. `frontend/lib/commandSpec.ts` describes what the browser can do to itself:
    `LOCAL_ACTIONS` (the catalogue), `buildUiState` (windows with the numbers
-   shown on screen, their kind, minimized/maximized/desktop, plus tasks) and
-   `sanitizeActions`, the trust boundary.
+   shown on screen, their kind, minimized/maximized/desktop, plus tasks, plus
+   whether a player is open) and `sanitizeActions`, the trust boundary.
 3. `backend/tools/command_router.py` + `POST /api/resolve-command` ask a model
-   to read one utterance against the catalogue and the state, and answer with
-   `{"actions": [...]}`. `COMMAND_ROUTER_ENABLED` (default on) and
-   `COMMAND_ROUTER_MODEL` (optional; ignored if the provider cannot serve it) are
-   in `backend/config.py`.
+   to read one utterance against the catalogue, the state and (optionally) a
+   `context` block, and answer with `{"actions": [...]}`.
+   `frontend/lib/commandContext.ts::commandContextBlock` builds that block from
+   the recent exchange, the open player's queue and the active skill; the route
+   clips it (`MAX_CONTEXT_CHARS`), fences it in the prompt as data *and folds it
+   into the cache key* - the same words against a different exchange are a
+   different question, which is exactly what "do that again" would otherwise
+   hit. `COMMAND_ROUTER_ENABLED` (default on) and `COMMAND_ROUTER_MODEL`
+   (optional; ignored if the provider cannot serve it) are in
+   `backend/config.py`.
 
 Four rules make this safe, and each has a test:
 
@@ -564,6 +580,38 @@ validates and stores them.
   stray "continue" can never resurrect an old reply.
 - If an engine never fires boundary events, `spoken` stays 0 and the in-progress
   chunk replays in full — a small repeat, never a lost tail.
+
+### Reminder alarms (a sound that rings until stopped)
+
+`frontend/lib/alarm.ts` is the melody (`FANCY_ALARM_NOTES`, `alarmLoopSeconds`),
+`AlarmOverlay.tsx` is the banner and `ApexProvider` owns the ring. A fired
+reminder is not a timer that chimes once: it moves out of the schedule and into
+`alarms`, and a single looping Web Audio cycle plays until the operator stops it.
+
+- **The alarm is stopped by voice without a wake word.** `voice.ts` gets
+  `alarmActive` + `onAlarmStop`, and checks `isAlarmStopPhrase` at the top of
+  `onResult` in every phase. "Apex stop" is handled by slicing the wake word
+  first; a bare "stop" / "σταμάτα" is only a stop *because* `alarmActive` is
+  true, so with nothing ringing it is an ordinary command. This is why the check
+  cannot live in the pure parser — the parser has no alarm state.
+- `isAlarmStopPhrase` (in `commands.ts`) is anchored to the whole utterance, so
+  "stop the timer" / "stop the download" stay requests; only object-less stop
+  phrases and explicit alarm nouns match. Tests: `commands.test.cjs`,
+  `alarm.test.cjs`.
+- STOP and the X both clear the alarm (clicking elsewhere does not — a dismiss
+  must be deliberate); `stopAlarm(id)` keeps ringing while other alarms remain
+  and only tears the audio graph down when the last goes.
+
+### Changing the reply language by voice
+
+`parseLanguageCommand` in `commands.ts` turns "from now on we will speak Greek"
+into `{ type: "language", language }` (EN + Greek). `executeLocalCommand`
+persists `response_language`; the voice engine watches that setting and re-arms
+itself (recognition language and TTS voice) — the "self restart". It is
+deterministic, so it never spends a model turn. The matcher is anchored so a
+sentence that merely mentions a language reaches the agent, and it runs on
+`normalize()`d text: any Greek written in it must use folded forms (`μιλάς` ->
+`μιλασ`, `εξής` -> `εξησ`), or it silently never matches.
 
 ## Terminals (model-opened, never requested from the user)
 
