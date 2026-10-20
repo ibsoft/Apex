@@ -83,7 +83,7 @@ test('the player and the skill travel with the exchange', () => {
     messages: [{ role: 'user', content: 'next one' }],
   });
   assert.match(block, /Recent conversation:/);
-  assert.match(block, /\[Media player: music · playing "A track" by Someone/);
+  assert.match(block, /\[Media player: music · source youtube · playing "A track" by Someone/);
   assert.match(block, /\[Active skill: research\]/);
   // Order: what was said, then what is playing, then what the turn is bound to.
   assert.ok(block.indexOf('Recent conversation') < block.indexOf('Media player'));

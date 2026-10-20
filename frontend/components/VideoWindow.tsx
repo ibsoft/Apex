@@ -316,7 +316,13 @@ export default function VideoWindow({ focused: _focused }: { windowId: string; f
                   key={`${entry.id}:${i}`}
                   disabled={media.unavailableIds?.includes(entry.id)}
                 title={media.unavailableIds?.includes(entry.id) ? localize(language, "Skipped: unavailable in this player", "Παραλείφθηκε: μη διαθέσιμο") : undefined}
-                onClick={() => act("select", i)}
+                // Select on pointerdown, before the window focus/reorder pass
+                // can swallow the click; stopPropagation keeps it out of the
+                // title-bar drag path.
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  if (event.button === 0) act("select", i);
+                }}
                   style={{
                     display: "flex", gap: 8, alignItems: "baseline", textAlign: "left",
                     background: current ? "rgba(245,166,35,0.10)" : "none",

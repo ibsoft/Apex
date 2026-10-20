@@ -143,6 +143,7 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     from tools.sip_tools import build_sip_tools
     from tools.telegram_tools import build_telegram_tools
     from tools.youtube_tools import build_media_tools
+    from tools.music_tools import build_music_tools
 
     for tool in build_visio_tools(config):
         registry.register(tool)
@@ -150,6 +151,10 @@ def load_default_tools(registry: ToolRegistry, memory=Any, config=config):
     # YOUTUBE_ENABLED gate inside the handler, so a settings change applies on
     # the next turn and the tool can still *say* why nothing will play.
     for tool in build_media_tools(config):
+        registry.register(tool)
+    # The local music library (download MP3s + play from disk): the escape hatch
+    # from YouTube error 150. Registered always, MUSIC_ENABLED gated inside.
+    for tool in build_music_tools(config):
         registry.register(tool)
     # Registered unconditionally, like VISIO. The gate is inside the handler, so
     # turning SIP on in the settings tab takes effect on the next turn instead of

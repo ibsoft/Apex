@@ -634,6 +634,7 @@ _MEDIA_NOUNS_EL = r"μουσικ|τραγουδ|βιντεο|ταινι|ραδι
 _MEDIA_VERBS_EL = (
     r"παιξ(?:ε|τε)|βαλ(?:ε|τε)|σταματ(?:α|ε)|στοπ|παυσ(?:ε|η)|συνεχισ(?:ε|η)"
     r"|επομεν(?:ο|η)|προηγουμεν(?:ο|η)|κλεισ(?:ε|η)|ανοιξ(?:ε|η)|αλλαξ(?:ε|τε)"
+    r"|κατεβασ\w*|σωσ\w*|αποθηκευσ\w*"
 )
 _MEDIA_BARE = r"play|pause|resume|stop|skip|next|previous|prev|σταματα|στοπ|επομενο|προηγουμενο"
 _MEDIA_RE = re.compile(
@@ -648,6 +649,17 @@ _MEDIA_RE = re.compile(
     r"^(?:please\s+|just\s+)?(?:(?:can|could|would|will)\s+(?:you|i)\s+)?(?:please\s+)?"
     r"(?:play|put\s+on|watch|listen\s+to|queue|shuffle)\s+"
     r"(?!(?:\w+\s+){0,2}(?:games?|chess|poker|sports?|ball|out|carefully)\b)"
+    # Downloading audio into the local library, the fix for YouTube error 150
+    # ("embedding disabled by the owner"): "download this song", "save the track
+    # offline", "κατέβασε το τραγούδι". Kept separate from playback so the two
+    # actions can be routed the same way (both are the MEDIA skill). The Greek
+    # verbs are written unaccented because the pattern is matched against
+    # `_strip_accents` output - an accented form could never match, which is the
+    # trap the memory patterns document. `κατεβασ` also covers "κατέβασέ μου …".
+    r"|^(?:please\s+|just\s+)?(?:(?:can|could|would|will)\s+(?:you|i)\s+)?(?:please\s+)?"
+    r"(?:download|save|rip|keep|κατεβασ\w*|σωσ\w*|αποθηκευσ\w*)\s+"
+    r"(?:\w+\s+){0,3}(?:song|track|tune|music|audio|album|mp3"
+    r"|τραγουδ|μουσικ|κομματ)"
     # The whole utterance is one transport word: bare "next"/"stop" while a
     # player may be running. Anchored, so "next steps" is not a player command.
     rf"|^(?:{_MEDIA_BARE})\s*[.!?]?$"

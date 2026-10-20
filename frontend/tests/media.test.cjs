@@ -17,12 +17,13 @@ const {
   nextIndex, prevIndex, currentItem, thumbUrl, mediaContextBlock, vuLevels,
   asMediaItem, stateFromPlayEvent, watchUrl, youtubeErrorKind, isTrackError,
   nextPlayableIndex, mediaErrorSentence, availableMediaIndex, rejectMediaTrack,
+  isLocalMedia, asMediaDownload, streamHref,
 } = moduleExports;
 
 const item = (over = {}) => ({ id: 'dQw4w9WgXcQ', title: 'A track', ...over });
 const state = (over = {}) => ({
   app: 'music', items: [item(), item({ id: 'abcdefghijk', title: 'Second' })],
-  index: 0, paused: false, seq: 0, ...over,
+  index: 0, paused: false, source: 'youtube', seq: 0, ...over,
 });
 
 /* ---------- untrusted events ---------- */
@@ -54,7 +55,15 @@ test('an item without a well-formed id never reaches the queue', () => {
   assert.equal(asMediaItem('abc'), null);
   assert.equal(asMediaItem({ title: 'no id' }), null);
   assert.equal(asMediaItem({ id: '<script>x</script>', title: 'x' }), null);
-  assert.equal(asMediaItem({ id: 'short', title: 'x' }), null);
+  assert.equal(asMediaItem({ id: 'quo"te', title: 'x' }), null);
+  assert.equal(asMediaItem({ id: 'back\\slash', title: 'x' }), null);
+  assert.equal(asMediaItem({ id: 'new\nline', title: 'x' }), null);
+  // Spaces are allowed: a local file may legitimately be "Artist - Song.mp3".
+  assert.equal(asMediaItem({ id: 'Artist - Song.mp3', title: 'x' }).id, 'Artist - Song.mp3');
+  // A local library id is not a YouTube id and must be accepted: the fallback
+  // to the local player is exactly what these ids are for.
+  assert.equal(asMediaItem({ id: 'own:Artist - Song.mp3', title: 'Song' }).id, 'own:Artist - Song.mp3');
+  assert.equal(asMediaItem({ id: 'local:Albums/x.mp3', title: 'x' }).id, 'local:Albums/x.mp3');
   // The title falls back to the id rather than to an empty string: a nameless
   // row in the queue would be unclickable.
   assert.equal(asMediaItem({ id: 'dQw4w9WgXcQ' }).title, 'dQw4w9WgXcQ');
@@ -84,6 +93,43 @@ test('a play event becomes state, and an unusable one is dropped', () => {
   assert.equal(stateFromPlayEvent({ app: 'music', items: [{ nope: 1 }] }), null);
   assert.equal(stateFromPlayEvent({ app: 'video', items: [{ id: 'dQw4w9WgXcQ' }], index: 9 }).index, 0);
   assert.equal(stateFromPlayEvent({ app: 'video', items: [{ id: 'dQw4w9WgXcQ' }], index: 'x' }).index, 0);
+});
+
+test('a local play event is marked local, and a mixed one keeps its source', () => {
+  const local = stateFromPlayEvent({
+    app: 'music',
+    source: 'local',
+    items: [{ id: 'own:Song.mp3', title: 'Song' }],
+  });
+  assert.equal(local.source, 'local');
+  assert.equal(isLocalMedia(local), true);
+  // The event source wins when present, even if an item disagrees.
+  const youtube = stateFromPlayEvent({
+    app: 'music',
+    source: 'youtube',
+    items: [{ id: 'own:Song.mp3', title: 'Song', source: 'local' }],
+  });
+  assert.equal(youtube.source, 'youtube');
+  // Without an explicit event source, the queue follows the first item.
+  const inferred = stateFromPlayEvent({ app: 'music', items: [{ id: 'own:x.mp3', title: 'x', source: 'local' }] });
+  assert.equal(inferred.source, 'local');
+  assert.equal(isLocalMedia(state({ source: 'youtube' })), false);
+  assert.equal(isLocalMedia(null), false);
+});
+
+test('a download bar parses only real percentages and clamps them', () => {
+  assert.equal(asMediaDownload(null), null);
+  assert.equal(asMediaDownload({}), null);
+  assert.equal(asMediaDownload({ percent: 'x' }), null);
+  assert.equal(asMediaDownload({ percent: 150 }).percent, 100);
+  assert.equal(asMediaDownload({ percent: -3 }).percent, 0);
+  const bar = asMediaDownload({ percent: 42, title: 'Song', id: 'own:x', stage: 'converting' });
+  assert.equal(bar.percent, 42);
+  assert.equal(bar.stage, 'converting');
+  // An unknown stage reads as downloading, not as a missing value.
+  assert.equal(asMediaDownload({ percent: 1, stage: 'weird' }).stage, 'downloading');
+  assert.equal(asMediaDownload({ percent: 100, stage: 'done' }).stage, 'done');
+  assert.equal(asMediaDownload({ percent: 1, title: 'y'.repeat(500) }).title.length, 300);
 });
 
 /* ---------- the queue ---------- */
@@ -116,15 +162,37 @@ test('a thumbnail is a URL for a well-formed id and nothing otherwise', () => {
   assert.equal(thumbUrl(null), '');
 });
 
+/* ---------- the local stream URL rewrite ---------- */
+
+test('a backend audio URL is rewritten onto the proxied same-origin path', () => {
+  // The backend signs an absolute BASE_URL URL, but Next only proxies /be/api.
+  // Left absolute it is cross-origin, cookie-less and 404/401 - nothing plays.
+  assert.equal(
+    streamHref('https://192.168.1.218:3001/api/music/stream/abc.def-_'),
+    '/be/api/music/stream/abc.def-_',
+  );
+  assert.equal(streamHref('/api/music/stream/tok123'), '/be/api/music/stream/tok123');
+  // Already-proxied paths are not double-prefixed.
+  assert.equal(streamHref('/be/api/music/stream/tok123'), '/be/api/music/stream/tok123');
+  // A non-stream URL is untouched, and junk is returned as-is rather than
+  // throwing inside a render.
+  assert.equal(streamHref('https://example.com/song.mp3'), 'https://example.com/song.mp3');
+  assert.equal(streamHref(''), '');
+  assert.equal(streamHref(undefined), '');
+  assert.equal(streamHref(null), '');
+});
+
 /* ---------- the prompt block ---------- */
 
 test('the media block is English, labelled and includes the queue', () => {
   assert.equal(mediaContextBlock(null), '');
   const playing = mediaContextBlock(state({ index: 1 }));
-  assert.match(playing, /^\[Media player: music · playing "Second"/);
+  assert.match(playing, /^\[Media player: music · source youtube · playing "Second"/);
   assert.match(playing, /position 2\/2/);
   assert.match(playing, /queue:/);
   assert.equal(mediaContextBlock(state({ paused: true })).includes('paused "A track"'), true);
+  // A local queue reports its source so the model knows playback is local.
+  assert.match(mediaContextBlock(state({ source: 'local' })), /source local library/);
   const solo = mediaContextBlock(state({ items: [item()], index: 0 }));
   // One item is not a queue; naming it as one would invite the model to talk
   // about a list the operator cannot see.
