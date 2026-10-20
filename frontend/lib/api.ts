@@ -326,10 +326,15 @@ export type ChatEvent =
   /* The media tool picked a YouTube result: the queue itself travels here (the
      backend keeps no playback state) and the browser opens or retunes the
      player window. */
-  | { type: "media_play"; app: "music" | "video"; items: unknown[]; index: number }
+  | { type: "media_play"; app: "music" | "video"; items: unknown[]; index: number; source?: "youtube" | "local" }
   /* Transport for an already-open player: pause/resume/next/previous, plus the
      window-level actions. Playback state still lives only in the frontend. */
   | { type: "media_control"; app: "music" | "video"; action: string }
+  /* A local MP3 download in progress; the music window paints it as a bar. */
+  | { type: "media_progress"; stage?: string; percent?: number; id?: string; title?: string }
+  /* The local library changed (a download completed, or a tool listed it); the
+     window re-reads `GET /api/music`. */
+  | { type: "media_library"; count?: number }
   | { type: "skills_changed" }
   /* A sub-agent tool created, edited or deleted an agent. Like task_changed the
      event carries no row: the client re-reads the list. */
@@ -657,6 +662,16 @@ export const api = {
     localSearch: (query?: string, limit?: number) =>
       json<{ images: { name: string; path: string; url: string }[]; query: string; count: number; source: string }>(
         `/api/images/local_search?${new URLSearchParams({ query: query ?? "", limit: String(limit ?? 50) }).toString()}`
+      ),
+  },
+
+  music: {
+    /* The local music library (downloaded MP3s + the operator's own Music
+       folder). The window browses it and plays tracks from the returned
+       signed stream URLs. */
+    library: (query?: string, limit?: number) =>
+      json<{ tracks: { id: string; title: string; duration?: number; size_bytes?: number; source?: string; url: string }[]; count: number }>(
+        `/api/music?${new URLSearchParams({ q: query ?? "", limit: String(limit ?? 200) }).toString()}`,
       ),
   },
 

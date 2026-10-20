@@ -188,7 +188,7 @@ Commands:
   doctor [fix] [--whisper]      Health check the environment and repo; 'fix' installs
                                 what is missing (--whisper adds the speech venv)
   update [ref]                  Copy local DBs, override with git (default origin/main), restore, rebuild, restart
-                               e.g. ./apex update origin/v_2.0.27   (or set APEX_UPDATE_REF)
+                               e.g. ./apex update v_2.0.50   (any GitHub branch; or set APEX_UPDATE_REF)
 EOF
 }
 
@@ -335,10 +335,41 @@ d.close(); s.close()
 PY
 }
 
+# resolve_update_ref <name> — turn a bare branch/tag name into a git ref.
+# `./apex update v_2.0.50` should install the GitHub branch of that name even
+# though it is not checked out locally. Prefer, in order: the remote branch
+# `origin/<name>` (the freshly fetched GitHub state — the whole point of the
+# update is to install what is on GitHub, and a local branch may be stale),
+# then `origin/tags/<name>`, then a local branch or tag. A name that already
+# spells a remote (`origin/v_2.0.50`) or an absolute ref is returned untouched.
+# Prints the resolved ref, or nothing when nothing matches.
+resolve_update_ref() {
+  local name="$1" candidate
+  [[ -n "$name" ]] || return 0
+  # Already an explicit ref (origin/foo, refs/tags/foo, a SHA, HEAD~2, …).
+  case "$name" in
+    */*|HEAD*|refs/*) printf '%s\n' "$name"; return 0 ;;
+  esac
+  # The fetched GitHub state is the authority — a local branch of the same name
+  # can lag behind origin, and installing that is exactly the bug to avoid.
+  for candidate in "refs/remotes/origin/$name" "refs/tags/$name"; do
+    if git -C "$ROOT" rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"; return 0
+    fi
+  done
+  # Fall back to a local ref for a name that only exists locally.
+  if git -C "$ROOT" rev-parse --verify --quiet "refs/heads/$name" >/dev/null 2>&1 ||
+     git -C "$ROOT" rev-parse --verify --quiet "refs/tags/$name"  >/dev/null 2>&1; then
+    printf '%s\n' "$name"; return 0
+  fi
+  return 0
+}
+
 # update_apex [ref] — back up the local databases, override the checkout with
 # git, then restore the databases. Default target is origin/main; pass a ref
-# (or set APEX_UPDATE_REF) to update to something else, e.g. `./apex update
-# origin/v_2.0.27`.
+# (or set APEX_UPDATE_REF) to update to something else. A bare branch or tag
+# name installs that GitHub branch, e.g. `./apex update v_2.0.50` (= the
+# origin/v_2.0.50 branch) or `./apex update origin/v_2.0.27`.
 update_apex() {
   local target="${1:-${APEX_UPDATE_REF:-origin/main}}"
   local head_before
@@ -351,14 +382,24 @@ update_apex() {
   branch="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   ok "repo $ROOT on branch '${branch:-detached}' @ ${head_before:0:7}"
 
+  say "${C_BOLD}Fetching ${C_RESET}"
+  spinner "fetching origin" git -C "$ROOT" fetch --prune origin || die "fetch failed"
+
+  # Resolve a bare name (v_2.0.50) to its remote branch/tag, now that the
+  # latest refs are local. Anything already explicit passes through.
+  local resolved
+  resolved="$(resolve_update_ref "$target")"
+  if [[ -n "$resolved" && "$resolved" != "$target" ]]; then
+    ok "resolved '$target' → $resolved"
+    target="$resolved"
+  fi
+
   if [[ -n "$branch" && "$branch" != "HEAD" && "$branch" != "main" ]]; then
     say "  ${C_DIM}target: ${target} · your '${branch}' branch will not be moved${C_RESET}"
   fi
 
-  say "${C_BOLD}Fetching ${C_RESET}"
-  spinner "fetching origin" git -C "$ROOT" fetch --prune origin || die "fetch failed"
   if ! git -C "$ROOT" rev-parse --verify --quiet "$target" >/dev/null 2>&1; then
-    die "'$target' does not exist — run './apex update origin/main' or pick a ref from 'git branch -r'"
+    die "'${1:-$target}' does not exist on origin — run 'git branch -r' to list branches"
   fi
   local head_target
   head_target="$(git -C "$ROOT" rev-parse --short "$target" 2>/dev/null || true)"

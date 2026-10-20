@@ -98,9 +98,12 @@ import {
 import {
   type MediaAction,
   type MediaApp,
+  type MediaDownload,
   type MediaState,
   asMediaApp,
+  asMediaDownload,
   currentItem as currentMediaItem,
+  isLocalMedia,
   mediaContextBlock,
   availableMediaIndex,
   rejectMediaTrack,
@@ -258,6 +261,12 @@ type ApexContextType = {
   media: MediaState | null;
   /** `index` is only used by `select` - a queue click in the window. */
   mediaAction: (app: MediaApp, action: MediaAction, index?: number) => void;
+  /** A local MP3 download in progress (null when none); the music window shows
+   *  it as a bar while the tool streams `media_progress` events. */
+  mediaDownload: MediaDownload | null;
+  /** The local music library, browsable from the music window. */
+  localTracks: { id: string; title: string; duration?: number; url?: string; source?: string }[];
+  setLocalTracks: (tracks: { id: string; title: string; duration?: number; url?: string; source?: string }[]) => void;
   setChatCollapsed: (collapsed: boolean) => void;
   setTimer: (name: string, seconds: number) => string;
   setReminder: (name: string, fireAt: number) => string;
@@ -343,6 +352,13 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const [media, setMedia] = useState<MediaState | null>(null);
   const mediaRef = useRef<MediaState | null>(null);
   mediaRef.current = media;
+  /* A local MP3 download the agent started; cleared a moment after it finishes
+     so the bar does not linger. Only the music window renders it. */
+  const [mediaDownload, setMediaDownload] = useState<MediaDownload | null>(null);
+  const downloadClearRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* The local music library the music window can browse. Loaded lazily when the
+     window opens and refreshed on `media_library` events. */
+  const [localTracks, setLocalTracks] = useState<{ id: string; title: string; duration?: number; url?: string; source?: string }[]>([]);
   const [chatCollapsed, setChatCollapsedState] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("apex:chat-collapsed") === "1";
@@ -1067,7 +1083,10 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
   const syncMediaWindow = useCallback((state: MediaState, focus: boolean): boolean => {
     const item = currentMediaItem(state);
     if (!item) return false;
-    const url = item.url || `https://www.youtube.com/watch?v=${item.id}`;
+    // A local track never has a YouTube id, so it must not fall back to a
+    // watch URL: the signed stream URL is the only thing that plays it.
+    const local = isLocalMedia(state) || item.source === "local";
+    const url = item.url || (local ? "" : `https://www.youtube.com/watch?v=${item.id}`);
     const items: WindowItem[] = [{ url, title: item.title, kind: state.app }];
     const existing = windowsRef.current.find((w) => w.kind === state.app);
     if (existing) {
@@ -2534,6 +2553,25 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
                paraphrasing "play some jazz" must not be able to drop it. */
             const next = stateFromPlayEvent(ev);
             if (next) applyMediaPlay(next);
+          } else if (ev.type === "media_progress") {
+            /* A local MP3 download is running. The bar is not played music, so
+               it lives beside the queue, not in it: a `done` clears it a beat
+               later so the operator sees it finish before the player takes over
+               (the tool emits `media_play` right after `done`). */
+            const download = asMediaDownload(ev);
+            if (download) {
+              if (downloadClearRef.current) { clearTimeout(downloadClearRef.current); downloadClearRef.current = null; }
+              setMediaDownload(download);
+              if (download.stage === "done") {
+                downloadClearRef.current = setTimeout(() => setMediaDownload(null), 1500);
+              }
+            }
+          } else if (ev.type === "media_library") {
+            // The model listed or changed the local library; re-read so the
+            // window's browse list stays honest.
+            void api.music.library().then((result) => {
+              if (result?.tracks) setLocalTracks(result.tracks);
+            }).catch(() => {});
           } else if (ev.type === "media_control") {
             const app = asMediaApp(ev.app);
             const action = normalizeMediaAction(ev.action);
@@ -2853,6 +2891,9 @@ export function ApexProvider({ children }: { children: React.ReactNode }) {
       windowUpdate,
       media,
       mediaAction,
+      mediaDownload,
+      localTracks,
+      setLocalTracks,
       setChatCollapsed,
       setTimer,
       setReminder,

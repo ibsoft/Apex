@@ -12,14 +12,30 @@ import { useApex } from "./ApexProvider";
 import {
   currentItem,
   formatMediaDuration,
+  isLocalMedia,
   isTrackError,
   localize,
   youtubeErrorKind,
   type MediaApp,
 } from "../lib/media";
-import YoutubePlayer, { type MediaFailure, type YoutubePlayerHandle } from "./YoutubePlayer";
+import YoutubePlayer, { type MediaFailure } from "./YoutubePlayer";
+import LocalAudioPlayer from "./LocalAudioPlayer";
 import MediaFailureBanner from "./MediaFailureBanner";
 import VuMeter from "./VuMeter";
+
+/** The transport methods this window drives, common to the YouTube iframe
+ *  player and the local `<audio>` element so one transport code path serves
+ *  both. */
+type PlayerHandle = {
+  playVideo: () => void;
+  pauseVideo: () => void;
+  seekTo: (seconds: number, allowSeekAhead: boolean) => void;
+  getPlayerState: () => number;
+  unMute: () => void;
+  mute: () => void;
+  setVolume: (volume: number) => void;
+  isMuted: () => boolean;
+};
 
 const APP: MediaApp = "music";
 
@@ -39,7 +55,7 @@ export default function MusicWindow({ focused: _focused }: { windowId: string; f
   const language = a.settings?.response_language ?? a.config?.response_language ?? "en";
   const media = a.media?.app === APP ? a.media : null;
   const item = currentItem(media);
-  const playerRef = useRef<YoutubePlayerHandle | null>(null);
+  const playerRef = useRef<PlayerHandle | null>(null);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [queueOpen, setQueueOpen] = useState(true);
@@ -185,6 +201,7 @@ export default function MusicWindow({ focused: _focused }: { windowId: string; f
   }
 
   const exhausted = media.items.every(entry => media.unavailableIds?.includes(entry.id));
+  const local = isLocalMedia(media);
   const total = duration || item.duration || 0;
   const percent = total > 0 ? Math.min(100, Math.max(0, (time / total) * 100)) : 0;
 
@@ -207,21 +224,48 @@ export default function MusicWindow({ focused: _focused }: { windowId: string; f
       <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
         {/* Keep native playback controls reachable when autoplay is refused. */}
         <div style={{ width: 240, height: 200, flexShrink: 0 }}>
-          <YoutubePlayer
-            key={retryKey}
-            videoId={item.id}
-            seq={media.seq}
-            playing={playing}
-            controls={1}
-            onEnded={() => act("next")}
-            onPause={() => act("pause")}
-            onResume={() => act("resume")}
-            onTime={onTime}
-            onPlayer={(player) => { playerRef.current = player; }}
-            onFail={onFail}
-            onBlocked={() => setBlocked(true)}
-            failText={localize(language, "PLAYER OFFLINE", "Ο ΑΝΑΠΑΡΑΓΩΓΟΣ ΔΕΝ ΕΙΝΑΙ ΔΙΑΘΕΣΙΜΟΣ")}
-          />
+          {local ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, height: "100%", justifyContent: "center" }}>
+              <div style={{ fontSize: 44, textAlign: "center", lineHeight: 1, opacity: 0.7 }}>♫</div>
+              <LocalAudioPlayer
+                ref={playerRef}
+                key={`${item.id}:${retryKey}`}
+                src={item.url ?? ""}
+                seq={media.seq}
+                playing={playing}
+                onEnded={() => act("next")}
+                onPause={() => act("pause")}
+                onResume={() => act("resume")}
+                onTime={onTime}
+                onFail={(info) => {
+                  setFailure(info);
+                  // A local failure has no YouTube code; it is always the file,
+                  // so skip to the next track (the shared `code: null` means
+                  // "not a removable/embeddable problem" - handled below).
+                  if (info.code === null) act("reject", media.index);
+                }}
+              />
+              <div style={{ fontFamily: MONO, fontSize: 9, letterSpacing: "0.2em", color: C.gold, textAlign: "center" }}>
+                {localize(language, "LOCAL FILE", "ΤΟΠΙΚΟ ΑΡΧΕΙΟ")}
+              </div>
+            </div>
+          ) : (
+            <YoutubePlayer
+              key={retryKey}
+              videoId={item.id}
+              seq={media.seq}
+              playing={playing}
+              controls={1}
+              onEnded={() => act("next")}
+              onPause={() => act("pause")}
+              onResume={() => act("resume")}
+              onTime={onTime}
+              onPlayer={(player) => { playerRef.current = player; }}
+              onFail={onFail}
+              onBlocked={() => setBlocked(true)}
+              failText={localize(language, "PLAYER OFFLINE", "Ο ΑΝΑΠΑΡΑΓΩΓΟΣ ΔΕΝ ΕΙΝΑΙ ΔΙΑΘΕΣΙΜΟΣ")}
+            />
+          )}
         </div>
 
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -316,7 +360,46 @@ export default function MusicWindow({ focused: _focused }: { windowId: string; f
         item={item}
         language={language}
         onRetry={retry}
+        onDownload={() => {
+          // "Embedding disabled" is not a dead end: the same song saved as a
+          // local MP3 plays from disk. Ask the agent to do it - the download
+          // runs the yt-dlp tool, which the browser cannot. The video id is
+          // named so the agent fetches *this* video, not a re-search guess.
+          const title = item.title.replace(/"/g, "'");
+          void a.sendMessage(
+            `Download this song to my local library and play it: `
+            + `id="${item.id}" title="${title}"`,
+          );
+        }}
       />
+
+      {a.mediaDownload && (
+        <div style={{
+          border: `1px solid ${C.lineGold}`, borderRadius: 8, padding: "6px 10px",
+          display: "flex", flexDirection: "column", gap: 5, background: "rgba(245,166,35,0.06)",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontFamily: MONO, fontSize: 10 }}>
+            <span style={{ color: C.gold, letterSpacing: "0.14em" }}>
+              {a.mediaDownload.stage === "done"
+                ? localize(language, "DOWNLOADED", "ΟΛΟΚΛΗΡΩΘΗΚΕ")
+                : a.mediaDownload.stage === "converting"
+                  ? localize(language, "CONVERTING TO MP3", "ΜΕΤΑΤΡΟΠΗ ΣΕ MP3")
+                  : localize(language, "DOWNLOADING", "ΛΗΨΗ")}
+            </span>
+            <span style={{ color: C.dim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}>
+              {a.mediaDownload.title}
+            </span>
+            <span style={{ color: C.text }}>{Math.round(a.mediaDownload.percent)}%</span>
+          </div>
+          <div style={{ height: 5, borderRadius: 3, background: "rgba(0,229,255,0.12)", overflow: "hidden" }}>
+            <div style={{
+              height: "100%", width: `${a.mediaDownload.percent}%`,
+              background: `linear-gradient(90deg, ${C.cyan}66, ${C.gold})`,
+              transition: "width 240ms ease-out",
+            }} />
+          </div>
+        </div>
+      )}
 
       <VuMeter running={audible} bands={34} height={44} />
 
@@ -338,7 +421,13 @@ export default function MusicWindow({ focused: _focused }: { windowId: string; f
                 key={`${entry.id}:${i}`}
                 disabled={media.unavailableIds?.includes(entry.id)}
                 title={media.unavailableIds?.includes(entry.id) ? localize(language, "Skipped: unavailable in this player", "Παραλείφθηκε: μη διαθέσιμο") : undefined}
-                onClick={() => act("select", i)}
+                // Select on pointerdown, before the window's own focus handler
+                // can re-render and reorder the row; `stopPropagation` keeps the
+                // click from also starting a title-bar drag / window focus.
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  if (event.button === 0) act("select", i);
+                }}
                 style={{
                   display: "flex", gap: 8, alignItems: "baseline", textAlign: "left",
                   background: current ? "rgba(245,166,35,0.10)" : "none",

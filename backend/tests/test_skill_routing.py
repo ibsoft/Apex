@@ -23,6 +23,7 @@ from skills.manager import (  # noqa: E402
     SkillManager,
     force_email_skill,
     force_host_skill,
+    force_media_skill,
     route_skill,
 )
 
@@ -236,6 +237,40 @@ class RouteSkillBypassesTheModelTests(unittest.TestCase):
         got = route_skill("run df -h and email me the result", skills,
                           ExplodingProvider(), fallback="general")
         self.assertEqual(got, "email_manager")
+
+
+class ForceMediaSkillTests(unittest.TestCase):
+    """Downloading a song by voice is the fix for YouTube error 150, so the
+    wording an operator really uses - in English and Greek - must reach MEDIA."""
+
+    def setUp(self):
+        self.skills = SkillManager(DEFINITIONS).all()
+
+    def test_download_phrasings_are_forced_in_both_languages(self):
+        for phrase in (
+            "download this song",
+            "save the track offline",
+            "save this song to my library",
+            "can you download some music",
+            "κατέβασε το τραγούδι",
+            "κατέβασε αυτό το κομμάτι",
+            "κατέβασέ μου μουσική",
+            "σώσε το τραγούδι",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(
+                    force_media_skill(phrase, self.skills), "MEDIA", phrase
+                )
+
+    def test_ordinary_downloads_are_not_hijacked(self):
+        # A file, a package or a coding question about a song is not playback.
+        for phrase in (
+            "download this file",
+            "download a python package",
+            "how do I download a song in python",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIsNone(force_media_skill(phrase, self.skills), phrase)
 
 
 if __name__ == "__main__":

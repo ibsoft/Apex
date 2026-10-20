@@ -8,6 +8,13 @@
 
 export type MediaApp = "music" | "video";
 
+/** Where a queue comes from. `youtube` plays in the iframe embed; `local`
+ *  streams a downloaded MP3 through a signed backend URL in an `<audio>`
+ *  element. The two have different players, different failure modes and a
+ *  different reason to exist: `local` is the escape hatch from YouTube error
+ *  150 ("embedding disabled by the owner"). */
+export type MediaSource = "youtube" | "local";
+
 export type MediaItem = {
   id: string;
   title: string;
@@ -15,6 +22,8 @@ export type MediaItem = {
   duration?: number;
   url?: string;
   thumbnail?: string;
+  /** Per-item source; defaults to the queue's when absent. */
+  source?: MediaSource;
 };
 
 export type MediaState = {
@@ -23,12 +32,25 @@ export type MediaState = {
   /** Index of the item playing (or that would play) in `items`. */
   index: number;
   paused: boolean;
+  /** Where this queue plays. A local queue never opens an iframe. */
+  source: MediaSource;
   /** Tracks refused in this queue; every transport path skips them. */
   unavailableIds?: string[];
   /** Bumped on every track change (and replay of the current one) so a queue
    *  of one item can restart it: the player keys off `(videoId, seq)`, and an
    *  unchanged video id with a new seq is "play this again". */
   seq: number;
+};
+
+/** A download in progress, reported by `media_progress` events while a local
+ *  track is fetched. `done` and `error` happen once and clear the bar. */
+export type MediaDownload = {
+  /** The YouTube video id being fetched, when known. */
+  id: string;
+  title: string;
+  /** 0..100. */
+  percent: number;
+  stage: "starting" | "downloading" | "converting" | "done";
 };
 
 /** Every control the window transport buttons and the tool events share.
@@ -220,7 +242,8 @@ export function thumbUrl(item: MediaItem | null | undefined): string {
 export function mediaContextBlock(state: MediaState | null | undefined): string {
   if (!state) return "";
   const item = currentItem(state);
-  if (!item) return `[Media player: ${state.app} window open, nothing playing.]`;
+  const source = isLocalMedia(state) ? "local library" : "youtube";
+  if (!item) return `[Media player: ${state.app} window open (${source}), nothing playing.]`;
   const position = `${Math.min(Math.max(state.index, 0), state.items.length - 1) + 1}/${state.items.length}`;
   const status = state.paused ? "paused" : "playing";
   const by = item.channel ? ` by ${item.channel}` : "";
@@ -229,7 +252,7 @@ export function mediaContextBlock(state: MediaState | null | undefined): string 
     .map((entry, i) => `${i + 1}. ${entry.title}`)
     .join(" · ");
   const more = state.items.length > 8 ? ` (+${state.items.length - 8} more)` : "";
-  return `[Media player: ${state.app} · ${status} "${item.title}"${by} · position ${position}`
+  return `[Media player: ${state.app} · source ${source} · ${status} "${item.title}"${by} · position ${position}`
     + `${state.items.length > 1 ? `, queue: ${queue}${more}` : ""}]`;
 }
 
@@ -261,7 +284,11 @@ export function asMediaItem(raw: unknown): MediaItem | null {
   if (!raw || typeof raw !== "object") return null;
   const entry = raw as Record<string, unknown>;
   const id = typeof entry.id === "string" ? entry.id : "";
-  if (!/^[A-Za-z0-9_-]{6,24}$/.test(id)) return null;
+  // A YouTube id is base64url-ish; a local id is `own:Artist - Song.mp3` or a
+  // library-relative path (`local:Albums/x.mp3`). Allowed characters cover both
+  // while still rejecting markup, quotes and control characters before an id
+  // can reach a queue or an element attribute.
+  if (!id.trim() || id.length > 400 || /[<>"'`\\\u0000-\u001f]/.test(id)) return null;
   const title = typeof entry.title === "string" && entry.title.trim() ? entry.title.trim().slice(0, 300) : id;
   return {
     id,
@@ -270,6 +297,7 @@ export function asMediaItem(raw: unknown): MediaItem | null {
     duration: typeof entry.duration === "number" && entry.duration > 0 ? entry.duration : undefined,
     url: typeof entry.url === "string" ? entry.url : undefined,
     thumbnail: typeof entry.thumbnail === "string" ? entry.thumbnail : undefined,
+    source: entry.source === "local" ? "local" : entry.source === "youtube" ? "youtube" : undefined,
   };
 }
 
@@ -280,6 +308,7 @@ export function stateFromPlayEvent(raw: {
   app?: unknown;
   items?: unknown;
   index?: unknown;
+  source?: unknown;
 }): MediaState | null {
   const app = asMediaApp(raw.app);
   if (!app) return null;
@@ -287,8 +316,63 @@ export function stateFromPlayEvent(raw: {
     .map(asMediaItem)
     .filter((item): item is MediaItem => item !== null);
   if (!items.length) return null;
+  // The source is a property of the queue. An explicit event wins; otherwise it
+  // follows the first item, whose source was validated above.
+  const source: MediaSource = raw.source === "local" || raw.source === "youtube"
+    ? raw.source
+    : items[0].source === "local" ? "local" : "youtube";
   const index = typeof raw.index === "number" && Number.isFinite(raw.index)
     ? Math.min(Math.max(Math.trunc(raw.index), 0), items.length - 1)
     : 0;
-  return { app, items, index, paused: false, seq: 0 };
+  return { app, items, index, paused: false, source, seq: 0 };
+}
+
+/** True when a queue (or a single item) plays from the local library. A local
+ *  queue must not be handed to the YouTube iframe, whatever else is set. */
+export function isLocalMedia(state: MediaState | null | undefined): boolean {
+  if (!state) return false;
+  return state.source === "local" || state.items.every((item) => item.source === "local");
+}
+
+/** Turn a backend-absolute audio-stream URL into the same-origin path the
+ *  browser must actually load.
+ *
+ *  The backend signs `BASE_URL/api/music/stream/<token>`, but the page is served
+ *  by Next, whose only proxy is `/be/api/*`. An `<audio src>` pointed at the
+ *  absolute backend URL is a cross-origin (and often mixed-content) request that
+ *  carries no session cookie, so it 404s or 401s and nothing plays. Rewriting it
+ *  to `/be/api/music/stream/<token>` puts it back on the proxied, same-origin
+ *  path the rest of the API uses. Any URL that is not a music-stream link is
+ *  returned unchanged, so a pre-proxied path is not double-prefixed. */
+export function streamHref(url: string | undefined | null): string {
+  if (!url) return "";
+  try {
+    const base = typeof window !== "undefined"
+      ? (process.env.NEXT_PUBLIC_API_URL ?? "/be")
+      : "/be";
+    const prefix = base.replace(/\/$/, "");
+    const parsed = new URL(url, typeof window !== "undefined" ? window.location.href : "http://localhost");
+    if (!/^\/api\/music\/stream\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)) return url;
+    if (parsed.pathname.startsWith(`${prefix}/`)) return url;
+    return `${prefix}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+/** Parse a `media_progress` event into a download bar, or null to ignore it. */
+export function asMediaDownload(raw: unknown): MediaDownload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const entry = raw as Record<string, unknown>;
+  const percent = Number(entry.percent);
+  if (!Number.isFinite(percent)) return null;
+  const stage = entry.stage === "starting" || entry.stage === "converting" || entry.stage === "done"
+    ? entry.stage
+    : "downloading";
+  return {
+    id: typeof entry.id === "string" ? entry.id : "",
+    title: typeof entry.title === "string" ? entry.title.slice(0, 300) : "",
+    percent: Math.min(100, Math.max(0, percent)),
+    stage,
+  };
 }

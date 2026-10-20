@@ -39,6 +39,7 @@ export default function MediaFailureBanner({
   item,
   language,
   onRetry,
+  onDownload,
 }: {
   failure?: MediaFailure | null;
   /** Autoplay was blocked: the track is cued but silent until a gesture. */
@@ -46,10 +47,14 @@ export default function MediaFailureBanner({
   item: MediaItem | null;
   language: string;
   onRetry: () => void;
+  /** Present when "embedding disabled" (error 150/101) is the failure: the
+   *  operator can have the track saved as a local MP3 and played from disk. */
+  onDownload?: () => void;
 }) {
   if (!failure && !blocked) return null;
 
-  const exhausted = Boolean(failure && isTrackError(youtubeErrorKind(failure.code)));
+  const kind = failure ? youtubeErrorKind(failure.code) : null;
+  const exhausted = kind !== null && isTrackError(kind);
 
   return (
     <div style={{
@@ -71,7 +76,13 @@ export default function MediaFailureBanner({
           >
             {localize(language, "WATCH ON YOUTUBE ↗", "ΠΡΟΒΟΛΗ ΣΤΟ YOUTUBE ↗")}
           </a>
-          {exhausted ? (
+          {/* Error 150/101 is fixable: the same song saved as a local MP3 plays
+              from disk, no iframe. That is the whole point of the offer. */}
+          {kind === "no-embed" && onDownload ? (
+            <button onClick={onDownload} style={{ ...btn, background: "rgba(245,166,35,0.12)", borderColor: `${C.gold}66`, color: C.gold }}>
+              {localize(language, "DOWNLOAD & PLAY OFFLINE", "ΛΗΨΗ & ΑΝΑΠΑΡΑΓΩΓΗ OFFLINE")}
+            </button>
+          ) : exhausted ? (
             <span>{localize(language, "No playable tracks remain. Try another search.", "Δεν υπάρχουν άλλα διαθέσιμα κομμάτια. Δοκιμάστε άλλη αναζήτηση.")}</span>
           ) : (
             <button onClick={onRetry} style={btn}>

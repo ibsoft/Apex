@@ -570,6 +570,9 @@ def create_app() -> Flask:
     register_notepad_routes(app, require_user, config)
     register_sip_routes(app, require_user, config)
     register_telegram_routes(app, require_user, config)
+    # Streams locally downloaded MP3s back to the browser and lists the library.
+    from tools.music_tools import register_music_routes
+    register_music_routes(app, require_user, config)
     # Registers the Tasks tab's REST surface and starts the runner thread that
     # fires due tasks. A no-op when TASKS_ENABLED is false.
     register_task_routes(app, require_user, config)

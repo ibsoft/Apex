@@ -40,6 +40,10 @@ ALWAYS_ON_TOOLS = frozenset({
     # itself on YOUTUBE_ENABLED, so inclusion is never a grant of anything that
     # a deployment turned off.
     "media_player",
+    # The local music library (download MP3s, play from disk) is the same
+    # capability: "download this song and play it" must work whichever skill the
+    # router picked. Gated on MUSIC_ENABLED inside the handler.
+    "music_library",
 })
 
 #: Telegram tools are force-included only while the bot is enabled: unlike the

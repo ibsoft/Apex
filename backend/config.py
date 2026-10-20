@@ -454,6 +454,30 @@ class Config:
     # app cannot otherwise undo. 0 disables the cache.
     YOUTUBE_SEARCH_CACHE_SECONDS = _int("YOUTUBE_SEARCH_CACHE_SECONDS", 300)
 
+    # --- Local music library (MP3 download + playback) -----------------------
+    # Some videos refuse embedded playback (error 150 "embedding disabled by the
+    # owner") no matter what this app does. The answer is to download the audio
+    # once, as an MP3, and play it from the local library instead of an iframe.
+    MUSIC_ENABLED = _bool("MUSIC_ENABLED", True)
+    # Where downloaded MP3s live. Per-user subdirectories are created under it.
+    MUSIC_DIR = Path(os.getenv("MUSIC_DIR", DATA_DIR / "music"))
+    # Extra roots the library also scans for local audio besides MUSIC_DIR: the
+    # operator's own Music folder is the conventional place to keep songs. Empty
+    # string is filtered out so a machine with no ~/Music still works.
+    MUSIC_LIBRARY_ROOTS = _csv("MUSIC_LIBRARY_ROOTS", ["~/Music", "~/Μουσική"])
+    # extra audio formats accepted as local tracks; mp3 is the download target.
+    MUSIC_AUDIO_EXTENSIONS = _csv("MUSIC_AUDIO_EXTENSIONS", [".mp3", ".m4a", ".opus", ".ogg", ".flac", ".wav"])
+    # yt-dlp --audio-format / --audio-quality for the download.
+    MUSIC_AUDIO_FORMAT = os.getenv("MUSIC_AUDIO_FORMAT", "mp3").strip() or "mp3"
+    MUSIC_AUDIO_QUALITY = os.getenv("MUSIC_AUDIO_QUALITY", "192").strip() or "192"
+    # A download may take minutes; it is a real subprocess, not a search.
+    MUSIC_DOWNLOAD_TIMEOUT = _int("MUSIC_DOWNLOAD_TIMEOUT", 600)
+    # Fully downloaded tracks are kept per user; this bounds the library.
+    MUSIC_LIBRARY_MAX = _int("MUSIC_LIBRARY_MAX", 500)
+    # Search the library only, or fall back to a YouTube search when a local
+    # request finds nothing ("play X" that is not downloaded yet).
+    MUSIC_FALLBACK_TO_YOUTUBE = _bool("MUSIC_FALLBACK_TO_YOUTUBE", True)
+
     # --- SIP skill (outbound phone calls) ------------------------------------
     # Off by default: this dials a real phone on a real account. A deployment
     # turns it on in the settings tab, which is also what writes the SIP_*
